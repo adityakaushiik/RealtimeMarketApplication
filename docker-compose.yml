@@ -1,0 +1,32 @@
+services:
+
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - temporal-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI App
+  fastapi:
+    build: .
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    environment:
+      REDIS_HOST: redis
+      # TEMPORAL_HOST: temporal:7233  # Commented out since Temporal is removed; update your app code to use external Temporal host
+    networks:
+      - temporal-network
+
+networks:
+  temporal-network:
+    driver: bridge
