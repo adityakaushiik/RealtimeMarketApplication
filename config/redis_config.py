@@ -1,7 +1,12 @@
-from typing import Dict, Set
+# Async Redis client instance
+import redis.asyncio as async_redis
 
-import redis.asyncio as aioredis
-from fastapi import WebSocket
+redis = async_redis.from_url("redis://redis", decode_responses=True)
 
-active_connections: Dict[WebSocket, Set[str]] = {}
-redis = aioredis.from_url("redis://localhost", decode_responses=True)
+
+# Sync Redis client instance
+# import redis as sync_redis
+# redis = sync_redis.Redis(host='localhost', port=6379, db=0)
+
+def get_redis():
+    return redis
