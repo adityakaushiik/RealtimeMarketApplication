@@ -21,4 +21,5 @@ services:
       - redis
     environment:
       REDIS_HOST: redis
+      REDIS_URL: redis://redis:6379
       # TEMPORAL_HOST: temporal:7233  # Commented out since Temporal is removed; update your app code to use external Temporal host

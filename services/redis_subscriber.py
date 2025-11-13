@@ -1,10 +1,10 @@
 import asyncio
-from typing import List
+from typing import List, Union
 
 from fastapi import WebSocket
 
 from config.logger import logger
-from config.redis_config import redis
+from config.redis_config import get_redis
 from services.websocket_manager import websocket_manager
 
 
@@ -30,6 +30,12 @@ async def redis_subscriber():
     - This function receives the message
     - Broadcasts to all clients subscribed to "stocks:AAPL"
     """
+    redis = get_redis()
+
+    if redis is None:
+        logger.error("Redis client is not available. Exiting subscriber.")
+        return
+
     pubsub = redis.pubsub()
     await pubsub.psubscribe("stocks:*")
 
@@ -41,11 +47,25 @@ async def redis_subscriber():
             if message.get("type") != "pmessage":
                 continue
 
-            # ✅ Decode bytes to string
+            # Message fields may be bytes because decode_responses=False
             channel = message.get("channel")
             data = message.get("data")
 
-            # print(f"📥 Received message on {channel}: {data}")
+            # Decode channel to string (channels are simple ascii identifiers)
+            if isinstance(channel, (bytes, bytearray)):
+                try:
+                    channel = channel.decode("utf-8")
+                except Exception:
+                    channel = channel.decode("utf-8", errors="replace")
+
+            # Try to decode data as UTF-8 text; if not text, keep as bytes
+            if isinstance(data, (bytes, bytearray)):
+                try:
+                    decoded = data.decode("utf-8")
+                    data = decoded
+                except Exception:
+                    # binary payload -> keep bytes; broadcast function will send as binary
+                    data = bytes(data)
 
             # Broadcast to all subscribed clients concurrently
             await _broadcast_to_clients(channel, data)
@@ -70,7 +90,7 @@ async def redis_subscriber():
         logger.info("Redis subscriber stopped")
 
 
-async def _broadcast_to_clients(channel: str, data: str) -> None:
+async def _broadcast_to_clients(channel: str, data: Union[str, bytes]) -> None:
     """
     Broadcast a message to all WebSocket clients subscribed to a specific channel.
 
@@ -133,5 +153,9 @@ async def _broadcast_to_clients(channel: str, data: str) -> None:
         )
 
 
-async def _send_to_client(ws: WebSocket, data: str) -> None:
-    await ws.send_text(data)
+async def _send_to_client(ws: WebSocket, data: Union[str, bytes]) -> None:
+    # Choose text or binary send based on data type
+    if isinstance(data, (bytes, bytearray)):
+        await ws.send_bytes(data)
+    else:
+        await ws.send_text(data)

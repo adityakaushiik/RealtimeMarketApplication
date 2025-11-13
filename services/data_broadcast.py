@@ -5,6 +5,7 @@ from typing import Dict, Any
 from config.logger import logger
 from config.redis_config import get_redis
 from services.redis_helper import get_redis_helper
+from utils.ohlcv_to_binary import pack_ohlcv
 
 
 class DataBroadcast:
@@ -35,8 +36,13 @@ class DataBroadcast:
                 logger.warning(f"Snapshot failed: {e}")
                 snapshot = {}
 
+            print(snapshot.keys())
             for channel, data in snapshot.items():
-                publish_tasks.append(self.redis.publish(channel, data.get('price', '')))
+                timestamp = float(data.get('timestamp', time.time()))
+                price = float(data.get('price', 0.0))
+                volume = float(data.get('day_volume', 0.0))
+                binary = pack_ohlcv(timestamp=timestamp, ohlcv=[price - 20, price + 50, price - 50, price, volume])
+                publish_tasks.append(self.redis.publish(channel, binary))
 
             # Add a fixed cadence sleep; runs in parallel with publishes,
             # so cadence ~= max(5s, publish time).

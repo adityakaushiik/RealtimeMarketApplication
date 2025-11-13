@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
 from config.logger import logger
-from config.redis_config import redis
+from config.redis_config import get_redis
 from services.data_broadcast import DataBroadcast
 from services.live_data_ingestion import LiveDataIngestion
 from services.redis_helper import RedisHelper
