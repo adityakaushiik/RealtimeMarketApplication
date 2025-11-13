@@ -8,6 +8,7 @@ import redis.asyncio as async_redis
 
 redis_client = None
 
+
 def _build_redis_url_from_env():
     # Priority: REDIS_URL > compose-style REDIS_HOST/REDIS_PORT > localhost default
     redis_url = os.getenv("REDIS_URL")
@@ -16,6 +17,7 @@ def _build_redis_url_from_env():
     host = os.getenv("REDIS_HOST", "localhost")
     port = os.getenv("REDIS_PORT", "6379")
     return f"redis://{host}:{port}"
+
 
 def get_redis():
     """Return a redis.asyncio.Redis client. Uses REDIS_URL or REDIS_HOST/REDIS_PORT from env.
@@ -34,6 +36,7 @@ def get_redis():
     except Exception as e:
         print(f"Redis connection error: {e}")
         return None
+
 
 async def ping_redis():
     """Async helper to verify connectivity. Returns True if ping succeeds, False otherwise."""

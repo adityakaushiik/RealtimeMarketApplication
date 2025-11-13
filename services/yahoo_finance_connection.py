@@ -15,9 +15,9 @@ class YahooFinanceProvider:
         self.websocket_connection.listen(self.message_handler)
 
     def message_handler(self, message: dict):
-        symbol = message.get('id', '')
-        channel = 'stocks:' + symbol
-        prices_dict = self.redis_helper.get_value('prices_dict')
+        symbol = message.get("id", "")
+        channel = "stocks:" + symbol
+        prices_dict = self.redis_helper.get_value("prices_dict")
         prices_dict[channel] = message
 
     def disconnect_websocket(self):

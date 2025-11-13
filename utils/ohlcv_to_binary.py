@@ -22,7 +22,7 @@ def pack_ohlcv(timestamp: float, ohlcv: list[float]) -> bytes:
     open_, high, low, close, volume = ohlcv
 
     try:
-        bytesss = struct.pack('<dddddd', timestamp, open_, high, low, close, volume)
+        bytesss = struct.pack("<dddddd", timestamp, open_, high, low, close, volume)
     except Exception as e:
         print(e)
     return bytesss
@@ -45,5 +45,5 @@ def unpack_ohlcv(binary_data: bytes) -> tuple[float, list[float]]:
     if len(binary_data) != 48:
         raise ValueError("Binary data must be exactly 48 bytes.")
 
-    timestamp, open_, high, low, close, volume = struct.unpack('<dddddd', binary_data)
+    timestamp, open_, high, low, close, volume = struct.unpack("<dddddd", binary_data)
     return timestamp, [open_, high, low, close, volume]

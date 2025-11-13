@@ -18,11 +18,17 @@ class ExchangeProviderMapping(Base):
     provider_id: Mapped[int] = mapped_column(ForeignKey("providers.id"), nullable=False)
     exchange_id: Mapped[int] = mapped_column(ForeignKey("exchanges.id"), nullable=False)
 
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
-    is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true"
+    )
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
 
     __table_args__ = (
-        PrimaryKeyConstraint("provider_id", "exchange_id", name="pk_exchange_provider_mapping"),
+        PrimaryKeyConstraint(
+            "provider_id", "exchange_id", name="pk_exchange_provider_mapping"
+        ),
     )
 
     provider: Mapped["Provider"] = relationship(back_populates="exchange_mappings")

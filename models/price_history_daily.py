@@ -16,7 +16,9 @@ class PriceHistoryDaily(Base):
     __tablename__ = "price_history_daily"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), index=True, nullable=False)
+    instrument_id: Mapped[int] = mapped_column(
+        ForeignKey("instruments.id"), index=True, nullable=False
+    )
 
     date: Mapped[date] = mapped_column(Date, nullable=False)
     open: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -27,7 +29,9 @@ class PriceHistoryDaily(Base):
     adj_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
     deliver_percentage: Mapped[float | None] = mapped_column(Float, nullable=True)
-    price_not_found: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    price_not_found: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     dividend: Mapped[float | None] = mapped_column(Float, nullable=True)
     split: Mapped[float | None] = mapped_column(Float, nullable=True)
     split_adjusted: Mapped[float | None] = mapped_column(Float, nullable=True)

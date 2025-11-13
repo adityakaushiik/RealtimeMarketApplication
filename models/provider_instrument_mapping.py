@@ -16,11 +16,17 @@ class ProviderInstrumentMapping(Base):
     __tablename__ = "provider_instrument_mappings"
 
     provider_id: Mapped[int] = mapped_column(ForeignKey("providers.id"), nullable=False)
-    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), nullable=False)
-    provider_instrument_search_code: Mapped[str] = mapped_column(String(255), nullable=False)
+    instrument_id: Mapped[int] = mapped_column(
+        ForeignKey("instruments.id"), nullable=False
+    )
+    provider_instrument_search_code: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
 
     __table_args__ = (
-        PrimaryKeyConstraint("provider_id", "instrument_id", name="pk_provider_instrument_mapping"),
+        PrimaryKeyConstraint(
+            "provider_id", "instrument_id", name="pk_provider_instrument_mapping"
+        ),
     )
 
     provider: Mapped["Provider"] = relationship(back_populates="instrument_mappings")

@@ -20,4 +20,5 @@ class Base(DeclarativeBase):
     def __tablename__(cls) -> str:  # type: ignore[override]
         return cls.__name__.lower()
 
+
 __all__ = ["Base"]

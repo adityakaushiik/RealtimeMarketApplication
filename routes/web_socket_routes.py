@@ -11,7 +11,7 @@ from utils.common_constants import WebSocketMessageType
 @app.websocket("/ws")
 async def websocket_endpoint(
         websocket: WebSocket,
-        websocket_manager: WebSocketManager = Depends(get_websocket_manager)
+        websocket_manager: WebSocketManager = Depends(get_websocket_manager),
 ):
     """Main WebSocket endpoint for clients to subscribe/unsubscribe to stocks."""
     await websocket.accept()
@@ -26,18 +26,22 @@ async def websocket_endpoint(
             channel = msg.get("channel")
 
             if message_type == WebSocketMessageType.SUBSCRIBE.value and channel:
-                websocket_manager.active_connections[websocket].add(channel)
-                await websocket.send_json({
-                    "message_type": WebSocketMessageType.INFO.value,
-                    "message": f"✅ Subscribed to {channel}"
-                })
+                websocket_manager.subscribe(websocket, channel)
+                await websocket.send_json(
+                    {
+                        "message_type": WebSocketMessageType.INFO.value,
+                        "message": f"Subscribed to {channel}",
+                    }
+                )
 
             elif message_type == WebSocketMessageType.UNSUBSCRIBE.value and channel:
-                websocket_manager.active_connections[websocket].discard(channel)
-                await websocket.send_json({
-                    "message_type": WebSocketMessageType.INFO.value,
-                    "message": f"❌ Unsubscribed from {channel}"
-                })
+                websocket_manager.unsubscribe(websocket, channel)
+                await websocket.send_json(
+                    {
+                        "message_type": WebSocketMessageType.INFO.value,
+                        "message": f"Unsubscribed from {channel}",
+                    }
+                )
 
     except WebSocketDisconnect:
         print("🔌 Client disconnected")

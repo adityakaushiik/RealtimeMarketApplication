@@ -3,7 +3,14 @@ from __future__ import annotations
 from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from . import Sector, InstrumentType, Exchange, PriceHistoryIntraday, PriceHistoryDaily, ProviderInstrumentMapping
+from . import (
+    Sector,
+    InstrumentType,
+    Exchange,
+    PriceHistoryIntraday,
+    PriceHistoryDaily,
+    ProviderInstrumentMapping,
+)
 from .base import Base
 from .mixins import BaseMixin
 
@@ -16,9 +23,15 @@ class Instrument(Base, BaseMixin):
     symbol: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
 
-    exchange_id: Mapped[int] = mapped_column(ForeignKey("exchanges.id"), nullable=False, index=True)
-    blacklisted: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
-    delisted: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
+    exchange_id: Mapped[int] = mapped_column(
+        ForeignKey("exchanges.id"), nullable=False, index=True
+    )
+    blacklisted: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
+    delisted: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
 
     instrument_type_id: Mapped[int] = mapped_column(
         ForeignKey("instrument_types.id"), nullable=False, index=True
@@ -29,7 +42,9 @@ class Instrument(Base, BaseMixin):
 
     # Minimal relationships
     exchange: Mapped["Exchange"] = relationship(back_populates="instruments")
-    instrument_type: Mapped["InstrumentType"] = relationship(back_populates="instruments")
+    instrument_type: Mapped["InstrumentType"] = relationship(
+        back_populates="instruments"
+    )
     sector: Mapped["Sector"] | None = relationship(back_populates="instruments")
 
     intraday_prices: Mapped[list["PriceHistoryIntraday"]] = relationship(

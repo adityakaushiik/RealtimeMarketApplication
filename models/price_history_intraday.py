@@ -16,7 +16,9 @@ class PriceHistoryIntraday(Base):
     __tablename__ = "price_history_intraday"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id"), index=True, nullable=False)
+    instrument_id: Mapped[int] = mapped_column(
+        ForeignKey("instruments.id"), index=True, nullable=False
+    )
 
     date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     open: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -27,7 +29,9 @@ class PriceHistoryIntraday(Base):
     adj_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
     deliver_percentage: Mapped[float | None] = mapped_column(Float, nullable=True)
-    price_not_found: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
+    price_not_found: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
     interval: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     instrument: Mapped["Instrument"] = relationship(back_populates="intraday_prices")

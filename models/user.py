@@ -26,8 +26,11 @@ class User(Base):
     username: Mapped[str | None] = mapped_column(String(128), nullable=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     profile_picture_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    blacklisted: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
+    blacklisted: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
 
-    role_id: Mapped[int | None] = mapped_column(ForeignKey("roles.id"), nullable=True, index=True)
+    role_id: Mapped[int | None] = mapped_column(
+        ForeignKey("roles.id"), nullable=True, index=True
+    )
     role: Mapped[Role | None] = relationship(back_populates="users")
-

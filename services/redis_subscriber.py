@@ -43,33 +43,20 @@ async def redis_subscriber():
 
     try:
         async for message in pubsub.listen():
-
             if message.get("type") != "pmessage":
                 continue
 
             # Message fields may be bytes because decode_responses=False
-            channel = message.get("channel")
-            data = message.get("data")
+            ## This should be string not bytes
+            channel: str = message.get("channel")
+            if isinstance(channel, bytes):
+                channel = channel.decode("utf-8")
 
-            # Decode channel to string (channels are simple ascii identifiers)
-            if isinstance(channel, (bytes, bytearray)):
-                try:
-                    channel = channel.decode("utf-8")
-                except Exception:
-                    channel = channel.decode("utf-8", errors="replace")
-
-            # Try to decode data as UTF-8 text; if not text, keep as bytes
-            if isinstance(data, (bytes, bytearray)):
-                try:
-                    decoded = data.decode("utf-8")
-                    data = decoded
-                except Exception:
-                    # binary payload -> keep bytes; broadcast function will send as binary
-                    data = bytes(data)
+            ## This should be bytes not string
+            data: bytes = message.get("data")
 
             # Broadcast to all subscribed clients concurrently
             await _broadcast_to_clients(channel, data)
-
 
     except asyncio.CancelledError:
         logger.info("Redis subscriber cancellation requested")
@@ -117,14 +104,13 @@ async def _broadcast_to_clients(channel: str, data: Union[str, bytes]) -> None:
             clients_and_tasks.append((ws, send_coroutine))
 
     if not clients_and_tasks:
-        # logger.info(f"No clients subscribed to {channel}")
+        logger.info(f"No clients subscribed to {channel}")
         return
 
     # Execute all sends concurrently
     # return_exceptions=True prevents one failure from canceling others
     results = await asyncio.gather(
-        *[coro for _, coro in clients_and_tasks],
-        return_exceptions=True
+        *[coro for _, coro in clients_and_tasks], return_exceptions=True
     )
 
     # Track clients that failed to receive the message

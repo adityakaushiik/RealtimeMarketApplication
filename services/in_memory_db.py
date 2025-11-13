@@ -1,9 +1,6 @@
-
 class InMemoryDB:
     def __init__(self):
-        self.storage = {
-            'prices_dict': {}
-        }
+        self.storage = {"prices_dict": {}}
 
     def set(self, key, value, expire=None):
         self.storage[key] = value
@@ -21,7 +18,10 @@ class InMemoryDB:
     def exists(self, key):
         return key in self.storage
 
+
 in_memory_db = None
+
+
 def get_in_memory_db() -> InMemoryDB:
     global in_memory_db
     if in_memory_db is None:

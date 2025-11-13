@@ -2,7 +2,6 @@ from services.in_memory_db import get_in_memory_db
 
 
 class RedisHelper:
-
     def __init__(self):
         self.redis_client = get_in_memory_db()
 

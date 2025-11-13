@@ -14,7 +14,7 @@ from services.redis_subscriber import redis_subscriber
 # Background task reference
 subscriber_task = None
 live_data_ingestion: LiveDataIngestion | None = None
-data_broadcast : DataBroadcast | None = None
+data_broadcast: DataBroadcast | None = None
 
 
 @asynccontextmanager
@@ -65,7 +65,7 @@ app = FastAPI(
     description="API for Realtime Stock Screener application",
     version="1.0.0",
     lifespan=lifespan,
-    swagger_url="/"
+    swagger_url="/",
 )
 
 # Add CORS middleware correctly
