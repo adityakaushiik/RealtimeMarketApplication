@@ -40,6 +40,9 @@ class DataBroadcast:
                 snapshot = {}
 
             # Filter snapshot to only active channels
+            # No need for for loop here
+            # Get active channels and then get the data for those channels only
+            # like snapshot[active_channel] instead of looping through all snapshot items
             active_channels = self.websocket_manager.get_active_channels()
             snapshot = {k: v for k, v in snapshot.items() if k in active_channels}
 
