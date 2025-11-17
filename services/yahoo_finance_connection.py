@@ -19,6 +19,9 @@ class YahooFinanceProvider:
         channel = "stocks:" + symbol
         prices_dict = self.redis_helper.get_value("prices_dict")
         prices_dict[channel] = message
+        print(
+            f"Received message for {symbol}: {message}"
+        )
 
     def disconnect_websocket(self):
         """Disconnect from Yahoo Finance WebSocket."""

@@ -30,7 +30,7 @@ def get_redis():
         if redis_client is None:
             redis_url = _build_redis_url_from_env()
             # DO NOT decode responses here; pubsub may carry binary payloads
-            redis_client = async_redis.from_url(redis_url, decode_responses=False)
+            redis_client = async_redis.from_url(redis_url, decode_responses=True)
             print(f"Created redis client for {redis_url} (decode_responses=False)")
         return redis_client
     except Exception as e:

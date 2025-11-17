@@ -6,7 +6,10 @@ from config.logger import logger
 from config.redis_config import get_redis
 from services.redis_helper import get_redis_helper
 from services.websocket_manager import get_websocket_manager
-from utils.ohlcv_to_binary import pack_ohlcv
+from utils.ohlcv_to_binary import pack_ohlcv_json
+
+
+# from utils.ohlcv_to_binary import pack_ohlcv
 
 
 class DataBroadcast:
@@ -50,10 +53,12 @@ class DataBroadcast:
                 timestamp = float(data.get("timestamp", time.time()))
                 price = float(data.get("price", 0.0))
                 volume = float(data.get("day_volume", 0.0))
-                binary = pack_ohlcv(
+                binary = pack_ohlcv_json(
+                    channel=channel,
                     timestamp=timestamp,
                     ohlcv=[price - 20, price + 50, price - 50, price, volume],
                 )
+                print(binary)
                 publish_tasks.append(self.redis.publish(channel, binary))
 
             # Add a fixed cadence sleep; runs in parallel with publishes,

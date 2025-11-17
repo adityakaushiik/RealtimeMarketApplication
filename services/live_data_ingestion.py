@@ -2440,6 +2440,12 @@ class LiveDataIngestion:
             "ADA-USD",
             "XRP-USD",
             "XAUT-USD",
+            "ASML.AS",
+            "MC.PA",
+            "SAP.DE",
+            "ROG.SW",
+            "RMS.PA",
+            "NESN.SW",
         ]
 
     async def start_ingestion(self):
