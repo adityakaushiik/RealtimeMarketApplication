@@ -1,6 +1,11 @@
 from enum import Enum
 
 
+class UserRoles(Enum):
+    ADMIN = 1
+    VIEWER = 2
+
+
 class WebSocketMessageType(Enum):
     # Message Types from clients to server
     SUBSCRIBE = "subscribe"

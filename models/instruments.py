@@ -3,14 +3,12 @@ from __future__ import annotations
 from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from . import (
-    Sector,
-    InstrumentType,
-    Exchange,
-    PriceHistoryIntraday,
-    PriceHistoryDaily,
-    ProviderInstrumentMapping,
-)
+from .sector import Sector
+from .instrument_types import InstrumentType
+from .exchange import Exchange
+from .price_history_intraday import PriceHistoryIntraday
+from .price_history_daily import PriceHistoryDaily
+from .provider_instrument_mapping import ProviderInstrumentMapping
 from .base import Base
 from .mixins import BaseMixin
 
@@ -45,7 +43,7 @@ class Instrument(Base, BaseMixin):
     instrument_type: Mapped["InstrumentType"] = relationship(
         back_populates="instruments"
     )
-    sector: Mapped["Sector"] | None = relationship(back_populates="instruments")
+    sector: Mapped["Sector | None"] = relationship(back_populates="instruments")
 
     intraday_prices: Mapped[list["PriceHistoryIntraday"]] = relationship(
         back_populates="instrument", cascade="all, delete-orphan"

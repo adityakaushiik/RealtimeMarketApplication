@@ -5,10 +5,9 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
 from config.logger import logger
-from config.redis_config import get_redis
+from config.database_config import close_database_engine
 from services.data_broadcast import DataBroadcast
 from services.live_data_ingestion import LiveDataIngestion
-from services.redis_helper import RedisHelper
 from services.redis_subscriber import redis_subscriber
 
 # Background task reference
@@ -57,6 +56,9 @@ async def lifespan(app: FastAPI):
 
     if live_data_ingestion:
         live_data_ingestion.stop_ingestion()
+
+    # Dispose DB engine so async connections close cleanly
+    await close_database_engine()
     logger.info("Shutdown complete")
 
 
@@ -78,4 +80,7 @@ app.add_middleware(
 )
 
 # Import routes to register endpoints (after app is created)
-import routes.web_socket_routes
+import routes.web_socket_routes  # noqa: F401
+from routes.auth_routes import auth_router
+
+app.include_router(auth_router)
