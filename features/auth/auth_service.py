@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Coroutine
 
 import jwt
 from fastapi import HTTPException, Request, Depends
@@ -7,6 +7,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette import status
 
 from config.settings import get_settings
+from features.user.user_schema import UserInDb
 from utils.common_constants import UserRoles
 
 # New imports for authentication
@@ -21,16 +22,28 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # Reusable bearer scheme instance
 bearer_scheme = HTTPBearer(auto_error=True)
 
+from pwdlib import PasswordHash
+
+
+# def hash_password(password: str) -> str:
+#     return pwd_context.hash(password)
+#
+#
+# def verify_password(plain_password: str, hashed_password: str) -> bool:
+#     return pwd_context.verify(plain_password, hashed_password)
+
+
+password_hash = PasswordHash.recommended()
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return password_hash.hash(password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    return password_hash.verify(plain_password, hashed_password)
 
 
-async def authenticate_user(session: AsyncSession, username_or_email: str, password: str) -> Optional[User]:
+async def authenticate_user(session: AsyncSession, username_or_email: str, password: str) -> UserInDb | None:
     """Return user if username/email+password are valid; else None."""
     stmt = select(User).where((User.email == username_or_email) | (User.username == username_or_email))
     res = await session.execute(stmt)
@@ -41,7 +54,7 @@ async def authenticate_user(session: AsyncSession, username_or_email: str, passw
         return None
     if not verify_password(password, user.hashed_password):
         return None
-    return user
+    return UserInDb.validate(user)
 
 
 def create_access_token(data: dict, expires_delta_in_days: Optional[float] = 2) -> str:

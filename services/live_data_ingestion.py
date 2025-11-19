@@ -2451,7 +2451,7 @@ class LiveDataIngestion:
     async def start_ingestion(self):
         await run_in_threadpool(
             self.data_provider.connect_websocket,
-            self.futures_tickers,
+            self.indian_tickers,
         )
 
     def stop_ingestion(self):

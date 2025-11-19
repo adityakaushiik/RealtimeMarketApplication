@@ -1,8 +1,8 @@
 import re
-from typing import Optional
+from typing import Optional, AsyncGenerator
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from config.settings import get_settings
 
@@ -42,3 +42,8 @@ async def close_database_engine() -> None:
         await _DATABASE_ENGINE.dispose()
         _DATABASE_ENGINE = None
 
+
+async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+    engine = get_database_engine()
+    async with AsyncSession(engine) as session:
+        yield session

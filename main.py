@@ -26,14 +26,14 @@ async def lifespan(app: FastAPI):
     # await redis_helper.initialize_prices_dict()
 
     live_data_ingestion = LiveDataIngestion()
-    asyncio.create_task(live_data_ingestion.start_ingestion())
+    # asyncio.create_task(live_data_ingestion.start_ingestion())
 
     data_broadcast = DataBroadcast()
-    await data_broadcast.start_broadcast()
+    # await data_broadcast.start_broadcast()
 
     # Startup
     logger.info("🚀 Starting Redis subscriber...")
-    subscriber_task = asyncio.create_task(redis_subscriber())
+    # subscriber_task = asyncio.create_task(redis_subscriber())
 
     yield
 
@@ -80,7 +80,7 @@ app.add_middleware(
 )
 
 # Import routes to register endpoints (after app is created)
-import routes.web_socket_routes  # noqa: F401
-from routes.auth_routes import auth_router
+import features.websocket.web_socket_routes  # noqa: F401
+from features.auth.auth_routes import auth_router
 
 app.include_router(auth_router)
