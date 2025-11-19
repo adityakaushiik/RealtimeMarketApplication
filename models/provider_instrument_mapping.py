@@ -6,13 +6,14 @@ from sqlalchemy import ForeignKey, PrimaryKeyConstraint, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
+from .mixins import BaseMixin
 
 if TYPE_CHECKING:
     from .provider import Provider
     from .instruments import Instrument
 
 
-class ProviderInstrumentMapping(Base):
+class ProviderInstrumentMapping(Base, BaseMixin):
     __tablename__ = "provider_instrument_mappings"
 
     provider_id: Mapped[int] = mapped_column(ForeignKey("providers.id"), nullable=False)

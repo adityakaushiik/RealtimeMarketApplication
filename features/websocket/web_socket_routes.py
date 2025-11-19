@@ -1,14 +1,14 @@
 import json
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket, WebSocketDisconnect, APIRouter
 from fastapi.params import Depends
 
-from main import app
 from services.websocket_manager import WebSocketManager, get_websocket_manager
 from utils.common_constants import WebSocketMessageType
 
+websocket_route = APIRouter(prefix="", tags=["socket"])
 
-@app.websocket("/ws")
+@websocket_route.websocket("/ws")
 async def websocket_endpoint(
         websocket: WebSocket,
         websocket_manager: WebSocketManager = Depends(get_websocket_manager),

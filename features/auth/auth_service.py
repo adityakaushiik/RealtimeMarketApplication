@@ -1,39 +1,25 @@
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, Optional, Coroutine
+from typing import Dict, Any, Optional
 
 import jwt
 from fastapi import HTTPException, Request, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 
 from config.settings import get_settings
 from features.user.user_schema import UserInDb
-from utils.common_constants import UserRoles
-
-# New imports for authentication
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from passlib.context import CryptContext
 from models.user import User
-
-# Password hashing context (bcrypt with safe defaults)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+from utils.common_constants import UserRoles
+from pwdlib import PasswordHash
 
 # Reusable bearer scheme instance
 bearer_scheme = HTTPBearer(auto_error=True)
 
-from pwdlib import PasswordHash
-
-
-# def hash_password(password: str) -> str:
-#     return pwd_context.hash(password)
-#
-#
-# def verify_password(plain_password: str, hashed_password: str) -> bool:
-#     return pwd_context.verify(plain_password, hashed_password)
-
-
+# Password Hashing with pwdlib[argon2]
 password_hash = PasswordHash.recommended()
+
 
 def hash_password(password: str) -> str:
     return password_hash.hash(password)
@@ -113,8 +99,8 @@ def require_auth(required_roles: Optional[list[UserRoles]] = None, require_all: 
     """
 
     async def dependency(
-        request: Request,
-        credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+            request: Request,
+            credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     ) -> Dict[str, Any]:
         token = credentials.credentials
         payload = verify_jwt(token)

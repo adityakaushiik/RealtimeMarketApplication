@@ -4,8 +4,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from config.logger import logger
 from config.database_config import close_database_engine
+from config.logger import logger
+from features.auth.auth_routes import auth_router
+from features.websocket.web_socket_routes import websocket_route
 from services.data_broadcast import DataBroadcast
 from services.live_data_ingestion import LiveDataIngestion
 from services.redis_subscriber import redis_subscriber
@@ -33,7 +35,7 @@ async def lifespan(app: FastAPI):
 
     # Startup
     logger.info("🚀 Starting Redis subscriber...")
-    # subscriber_task = asyncio.create_task(redis_subscriber())
+    subscriber_task = asyncio.create_task(redis_subscriber())
 
     yield
 
@@ -63,8 +65,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Realtime Stock Screener API",
-    description="API for Realtime Stock Screener application",
+    title="Realtime Application API",
+    description="API documentation for the Realtime Application",
     version="1.0.0",
     lifespan=lifespan,
     swagger_url="/",
@@ -73,14 +75,11 @@ app = FastAPI(
 # Add CORS middleware correctly
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4200", "https://stock-project-aac9d.web.app"],
+    allow_origins=["http://localhost:4200"],
     allow_credentials=True,
     allow_methods=["*"],  # Allows all HTTP methods (GET, POST, etc.)
     allow_headers=["*"],  # Allows all headers
 )
 
-# Import routes to register endpoints (after app is created)
-import features.websocket.web_socket_routes  # noqa: F401
-from features.auth.auth_routes import auth_router
-
+app.include_router(websocket_route)
 app.include_router(auth_router)

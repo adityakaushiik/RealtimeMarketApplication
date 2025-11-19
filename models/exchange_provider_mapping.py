@@ -6,13 +6,14 @@ from sqlalchemy import Boolean, ForeignKey, PrimaryKeyConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
+from .mixins import BaseMixin
 
 if TYPE_CHECKING:
     from .provider import Provider
     from .exchange import Exchange
 
 
-class ExchangeProviderMapping(Base):
+class ExchangeProviderMapping(Base,BaseMixin):
     __tablename__ = "exchange_provider_mappings"
 
     provider_id: Mapped[int] = mapped_column(ForeignKey("providers.id"), nullable=False)

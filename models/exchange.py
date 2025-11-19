@@ -6,13 +6,14 @@ from sqlalchemy import Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
+from .mixins import BaseMixin
 
 if TYPE_CHECKING:
     from .instruments import Instrument
     from .exchange_provider_mapping import ExchangeProviderMapping
 
 
-class Exchange(Base):
+class Exchange(Base,BaseMixin):
     __tablename__ = "exchanges"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

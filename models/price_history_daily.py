@@ -7,12 +7,13 @@ from sqlalchemy import Boolean, Date, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
+from .mixins import BaseMixin
 
 if TYPE_CHECKING:
     from .instruments import Instrument
 
 
-class PriceHistoryDaily(Base):
+class PriceHistoryDaily(Base, BaseMixin):
     __tablename__ = "price_history_daily"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

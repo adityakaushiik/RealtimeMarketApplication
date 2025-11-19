@@ -4,9 +4,10 @@ from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
+from .mixins import BaseMixin
 
 
-class Role(Base):
+class Role(Base, BaseMixin):
     __tablename__ = "roles"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -16,7 +17,7 @@ class Role(Base):
     users: Mapped[list["User"]] = relationship(back_populates="role")
 
 
-class User(Base):
+class User(Base, BaseMixin):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
