@@ -40,12 +40,7 @@ import json
 
 
 def pack_ohlcv_json(channel: str, timestamp: float, ohlcv: list[float]) -> str:
-
-    res = {
-        "channel": channel,
-        "timestamp": timestamp,
-        "ohlcv": ohlcv
-    }
+    res = {"channel": channel, "timestamp": timestamp, "ohlcv": ohlcv}
 
     return json.dumps(res)
 

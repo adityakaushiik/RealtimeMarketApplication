@@ -7,6 +7,9 @@ from starlette.middleware.cors import CORSMiddleware
 from config.database_config import close_database_engine
 from config.logger import logger
 from features.auth.auth_routes import auth_router
+from features.instruments.instrument_routes import instrument_router
+from features.exchange.exchange_routes import exchange_router
+from features.provider.provider_routes import provider_router
 from features.websocket.web_socket_routes import websocket_route
 from services.data_broadcast import DataBroadcast
 from services.live_data_ingestion import LiveDataIngestion
@@ -83,3 +86,6 @@ app.add_middleware(
 
 app.include_router(websocket_route)
 app.include_router(auth_router)
+app.include_router(instrument_router)
+app.include_router(exchange_router)
+app.include_router(provider_router)

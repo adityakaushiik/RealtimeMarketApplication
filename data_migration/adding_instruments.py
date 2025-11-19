@@ -9,26 +9,35 @@ from models import Instrument, Exchange, Sector, InstrumentType
 
 
 async def add_instruments():
-    file_path ="C:/Users/tech/Result_13.csv"
+    file_path = "C:/Users/tech/Result_13.csv"
 
     # Read csv file and add instruments to the database
     df = pd.read_csv(file_path)
 
     engine = get_database_engine()
     async with AsyncSession(engine) as session:
-
         for row in df.itertuples():
-
-
             symbol = row[1]
             instrument_name = row[2]
             sector_name = row[3]
             instrument_type_name = row[4]
             exchange_name = row[5]
 
-            exchange_id = await session.scalar(select(Exchange.id).where(Exchange.code == exchange_name))
-            instrument_type_id = await session.scalar(select(InstrumentType.id).where(InstrumentType.name == instrument_type_name))
-            sector_id = await session.scalar(select(Sector.id).where(Sector.name == sector_name)) if sector_name else None
+            exchange_id = await session.scalar(
+                select(Exchange.id).where(Exchange.code == exchange_name)
+            )
+            instrument_type_id = await session.scalar(
+                select(InstrumentType.id).where(
+                    InstrumentType.name == instrument_type_name
+                )
+            )
+            sector_id = (
+                await session.scalar(
+                    select(Sector.id).where(Sector.name == sector_name)
+                )
+                if sector_name
+                else None
+            )
 
             instrument = Instrument(
                 name=instrument_name,
@@ -46,6 +55,7 @@ async def add_instruments():
 
 
 import asyncio
+
 if __name__ == "__main__":
-     settings = get_settings()
-     asyncio.run(add_instruments())
+    settings = get_settings()
+    asyncio.run(add_instruments())

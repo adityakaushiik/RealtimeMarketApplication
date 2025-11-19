@@ -14,7 +14,6 @@ if TYPE_CHECKING:
 
 
 class Provider(Base, BaseMixin):
-
     __tablename__ = "providers"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

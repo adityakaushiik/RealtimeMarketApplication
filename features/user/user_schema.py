@@ -8,6 +8,7 @@ class UserBase(BaseModelPy):
     username: str | None = None
     profile_picture_url: str | None = None
 
+
 class UserWithPassword(UserBase):
     hashed_password: str
 

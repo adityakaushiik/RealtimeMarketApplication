@@ -29,9 +29,13 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return password_hash.verify(plain_password, hashed_password)
 
 
-async def authenticate_user(session: AsyncSession, username_or_email: str, password: str) -> UserInDb | None:
+async def authenticate_user(
+    session: AsyncSession, username_or_email: str, password: str
+) -> UserInDb | None:
     """Return user if username/email+password are valid; else None."""
-    stmt = select(User).where((User.email == username_or_email) | (User.username == username_or_email))
+    stmt = select(User).where(
+        (User.email == username_or_email) | (User.username == username_or_email)
+    )
     res = await session.execute(stmt)
     user: Optional[User] = res.scalar_one_or_none()
     if not user:
@@ -57,7 +61,9 @@ def verify_jwt(token: str) -> Dict[str, Any]:
     """Verify JWT token and return decoded payload or raise HTTPException."""
     settings = get_settings()
     try:
-        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+        payload = jwt.decode(
+            token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM]
+        )
         return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(
@@ -79,7 +85,9 @@ def verify_jwt(token: str) -> Dict[str, Any]:
         )
 
 
-def require_auth(required_roles: Optional[list[UserRoles]] = None, require_all: bool = False):
+def require_auth(
+    required_roles: Optional[list[UserRoles]] = None, require_all: bool = False
+):
     """Dependency factory enforcing authentication and optional role authorization.
 
     Usage:
@@ -99,8 +107,8 @@ def require_auth(required_roles: Optional[list[UserRoles]] = None, require_all: 
     """
 
     async def dependency(
-            request: Request,
-            credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+        request: Request,
+        credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     ) -> Dict[str, Any]:
         token = credentials.credentials
         payload = verify_jwt(token)

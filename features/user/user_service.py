@@ -12,9 +12,8 @@ async def create_user(
     fname: str | None = None,
     lname: str | None = None,
     username: str | None = None,
-    profile_picture_url: str | None = None
+    profile_picture_url: str | None = None,
 ) -> UserInDb:
-
     hashed_password = hash_password(plain_password)
 
     new_user = User(
@@ -23,7 +22,7 @@ async def create_user(
         fname=fname,
         lname=lname,
         username=username,
-        profile_picture_url=profile_picture_url
+        profile_picture_url=profile_picture_url,
     )
     session.add(new_user)
     await session.commit()

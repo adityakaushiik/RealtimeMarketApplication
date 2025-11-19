@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from .exchange_provider_mapping import ExchangeProviderMapping
 
 
-class Exchange(Base,BaseMixin):
+class Exchange(Base, BaseMixin):
     __tablename__ = "exchanges"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
