@@ -28,9 +28,7 @@ async def get_exchange_by_id(
     exchange_id: int,
 ):
     """Get exchange by ID"""
-    result = await session.execute(
-        select(Exchange).where(Exchange.id == exchange_id)
-    )
+    result = await session.execute(select(Exchange).where(Exchange.id == exchange_id))
     exchange = result.scalar_one_or_none()
     if exchange:
         return exchange
@@ -42,9 +40,7 @@ async def get_exchange_by_code(
     code: str,
 ):
     """Get exchange by code"""
-    result = await session.execute(
-        select(Exchange).where(Exchange.code == code)
-    )
+    result = await session.execute(select(Exchange).where(Exchange.code == code))
     exchange = result.scalar_one_or_none()
     if exchange:
         return exchange
@@ -65,9 +61,7 @@ async def update_exchange(
     exchange_data: ExchangeCreateOrUpdate,
 ):
     """Update an exchange"""
-    result = await session.execute(
-        select(Exchange).where(Exchange.id == exchange_id)
-    )
+    result = await session.execute(select(Exchange).where(Exchange.id == exchange_id))
     exchange = result.scalar_one_or_none()
     if not exchange:
         return None
@@ -86,9 +80,7 @@ async def delete_exchange(
     exchange_id: int,
 ) -> bool:
     """Delete an exchange"""
-    result = await session.execute(
-        select(Exchange).where(Exchange.id == exchange_id)
-    )
+    result = await session.execute(select(Exchange).where(Exchange.id == exchange_id))
     exchange = result.scalar_one_or_none()
     if not exchange:
         return False
@@ -96,4 +88,3 @@ async def delete_exchange(
     await session.delete(exchange)
     await session.commit()
     return True
-

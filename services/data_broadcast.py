@@ -1,23 +1,18 @@
 import asyncio
 import time
-from typing import Dict, Any
 
 from config.logger import logger
 from config.redis_config import get_redis
-from services.redis_helper import get_redis_helper
+from services.redis_timeseries import RedisTimeSeries
 from services.websocket_manager import get_websocket_manager
-from utils.ohlcv_to_binary import pack_ohlcv_json
-
-
-# from utils.ohlcv_to_binary import pack_ohlcv
 
 
 class DataBroadcast:
     def __init__(self):
         self.redis = get_redis()
-        self.redis_helper = get_redis_helper()
         self.websocket_manager = get_websocket_manager()
         self.broadcast_task = None
+        self.redis_ts = RedisTimeSeries()  # Added: for fetching last traded prices
 
     async def start_broadcast(self):
         if self.broadcast_task and not self.broadcast_task.done():
@@ -27,54 +22,58 @@ class DataBroadcast:
 
     async def broadcast_prices(self):
         """
-        Publish only when values change, using a snapshot to avoid race with writer threads.
+        Broadcast latest traded prices (timestamp, price, volume) only for active channels.
+        Uses RedisTimeSeries.get_multiple_last_traded_prices for efficient concurrent fetch.
+        Falls back to no publish if no active channels or no data.
         """
         while True:
             start = time.time()
             publish_tasks = []
 
+            # Get currently active subscription channels (symbols)
             try:
-                # Take a snapshot to avoid 'dict changed size during iteration' from threadpool writer
-                snapshot: Dict[str, Any] = dict(
-                    self.redis_helper.get_value("prices_dict")
-                )
+                active_channels = self.websocket_manager.get_active_channels()
             except Exception as e:
-                logger.warning(f"Snapshot failed: {e}")
-                snapshot = {}
+                logger.error(f"Failed to get active channels: {e}")
+                active_channels = []
 
-            # Filter snapshot to only active channels
-            # No need for for loop here
-            # Get active channels and then get the data for those channels only
-            # like snapshot[active_channel] instead of looping through all snapshot items
-            active_channels = self.websocket_manager.get_active_channels()
-            snapshot = {k: v for k, v in snapshot.items() if k in active_channels}
+            if not active_channels:
+                # Nothing to broadcast; sleep cadence and continue
+                await asyncio.sleep(3)
+                logger.info("Broadcast tick: no active channels")
+                continue
 
-            for channel, data in snapshot.items():
-                timestamp = float(data.get("timestamp", time.time()))
-                price = float(data.get("price", 0.0))
-                volume = float(data.get("day_volume", 0.0))
-                binary = pack_ohlcv_json(
-                    channel=channel,
-                    timestamp=timestamp,
-                    ohlcv=[price - 20, price + 50, price - 50, price, volume],
-                )
-                print(binary)
-                publish_tasks.append(self.redis.publish(channel, binary))
+            # Fetch latest prices & volumes for active channels
+            try:
+                last_points = await self.redis_ts.get_multiple_last_traded_prices(active_channels)
+            except Exception as e:
+                logger.error(f"Failed to fetch last traded prices: {e}")
+                last_points = []
 
-            # Add a fixed cadence sleep; runs in parallel with publishes,
-            # so cadence ~= max(5s, publish time).
+            if not last_points:
+                # Sleep and continue if no data returned
+                await asyncio.sleep(3)
+                logger.info("Broadcast tick: no data for active channels")
+                continue
+
+            # Build publish tasks
+            for point in last_points:
+                publish_tasks.append(self.redis.publish(point.symbol, point.model_dump()))
+
+            # Add fixed cadence sleep; runs concurrently with publishes
             publish_tasks.append(asyncio.sleep(3))
 
-            # Await all
-            result = await asyncio.gather(*publish_tasks, return_exceptions=True)
+            # Execute all publish tasks in parallel
+            results = await asyncio.gather(*publish_tasks, return_exceptions=True)
 
-            # Log any publish errors
-            for idx, res in enumerate(result):
+            # Log any publish errors (exclude last item which is sleep)
+            error_count = 0
+            for idx, res in enumerate(results[:-1]):
                 if isinstance(res, Exception):
+                    error_count += 1
                     logger.error(f"Publish task {idx} failed: {res}")
 
-            # Optional: basic metrics
-            sent = len(publish_tasks) - 1  # exclude sleep
+            sent = len(publish_tasks) - 1  # exclude sleep task
             logger.info(
-                f"Broadcast tick: sent={sent}, dt={round(time.time() - start, 3)}s"
+                f"Broadcast tick: sent={sent}, errors={error_count}, dt={round(time.time() - start, 3)}s"
             )

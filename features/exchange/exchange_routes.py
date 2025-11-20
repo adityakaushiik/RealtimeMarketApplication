@@ -24,7 +24,7 @@ async def create_exchange(
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Exchange with this code already exists"
+            detail="Exchange with this code already exists",
         )
 
     return await exchange_service.create_exchange(session, exchange_data)
@@ -49,8 +49,7 @@ async def get_exchange(
     exchange = await exchange_service.get_exchange_by_id(session, exchange_id)
     if not exchange:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Exchange not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Exchange not found"
         )
     return exchange
 
@@ -65,8 +64,7 @@ async def get_exchange_by_code(
     exchange = await exchange_service.get_exchange_by_code(session, code)
     if not exchange:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Exchange not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Exchange not found"
         )
     return exchange
 
@@ -79,11 +77,12 @@ async def update_exchange(
     session: AsyncSession = Depends(get_db_session),
 ):
     """Update an exchange"""
-    exchange = await exchange_service.update_exchange(session, exchange_id, exchange_data)
+    exchange = await exchange_service.update_exchange(
+        session, exchange_id, exchange_data
+    )
     if not exchange:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Exchange not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Exchange not found"
         )
     return exchange
 
@@ -98,8 +97,6 @@ async def delete_exchange(
     deleted = await exchange_service.delete_exchange(session, exchange_id)
     if not deleted:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Exchange not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Exchange not found"
         )
     return None
-

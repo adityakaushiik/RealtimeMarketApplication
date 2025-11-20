@@ -1,9 +1,8 @@
 services:
 
-
-  # Redis
+  # Redis Stack (TimeSeries, Search, JSON, etc.)
   redis:
-    image: redis:7-alpine
+    image: redis/redis-stack-server:latest
     ports:
       - "6379:6379"
     healthcheck:
@@ -11,6 +10,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # RedisInsight GUI
+  redisinsight:
+    image: redis/redisinsight:latest
+    ports:
+      - "5540:5540"
+    depends_on:
+      - redis
 
   # FastAPI App
   fastapi:

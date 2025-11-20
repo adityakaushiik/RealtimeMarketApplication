@@ -26,10 +26,12 @@ async def list_instruments(
     if not exchange_obj:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invalid or Unsupported exchange code"
+            detail="Invalid or Unsupported exchange code",
         )
 
-    result = await session.execute(select(Instrument).where(Instrument.exchange_id == exchange_obj.id))
+    result = await session.execute(
+        select(Instrument).where(Instrument.exchange_id == exchange_obj.id)
+    )
     instrument_list = result.scalars().all()
     return instrument_list
 
@@ -44,7 +46,7 @@ async def instrument_details(
     if len(user_query) != 2:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid exchange:symbol format"
+            detail="Invalid exchange:symbol format",
         )
 
     exchange, symbol = user_query
@@ -57,7 +59,7 @@ async def instrument_details(
     if not exchange_obj:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invalid or Unsupported exchange code"
+            detail="Invalid or Unsupported exchange code",
         )
 
     # Fetch Instrument

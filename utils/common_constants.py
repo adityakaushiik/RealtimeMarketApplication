@@ -1,5 +1,7 @@
 from enum import Enum
 
+from models.base_model_py import BaseModelPy
+
 
 class UserRoles(Enum):
     ADMIN = 1
@@ -16,3 +18,14 @@ class WebSocketMessageType(Enum):
     CHART_DATA = "chart_data"
     INFO = "info"
     ERROR = "error"
+
+class DataBroadcastFormat(BaseModelPy):
+    timestamp: int
+    symbol: str
+    price: float
+    volume: float
+
+class DataIngestionFormat(DataBroadcastFormat):
+    provider_code: str
+
+

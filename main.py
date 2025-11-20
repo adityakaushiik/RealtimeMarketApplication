@@ -11,8 +11,10 @@ from features.instruments.instrument_routes import instrument_router
 from features.exchange.exchange_routes import exchange_router
 from features.provider.provider_routes import provider_router
 from features.websocket.web_socket_routes import websocket_route
+from features.marketdata.marketdata_routes import marketdata_router  # added
 from services.data_broadcast import DataBroadcast
 from services.live_data_ingestion import LiveDataIngestion
+from services.redis_helper import RedisHelper
 from services.redis_subscriber import redis_subscriber
 
 # Background task reference
@@ -27,11 +29,11 @@ async def lifespan(app: FastAPI):
     global subscriber_task, live_data_ingestion, data_broadcast
 
     # Initialize RedisHelper and ensure prices_dict exists
-    # redis_helper = RedisHelper()
+    redis_helper = RedisHelper()
     # await redis_helper.initialize_prices_dict()
 
     live_data_ingestion = LiveDataIngestion()
-    # asyncio.create_task(live_data_ingestion.start_ingestion())
+    asyncio.create_task(live_data_ingestion.start_ingestion())
 
     data_broadcast = DataBroadcast()
     # await data_broadcast.start_broadcast()
@@ -89,3 +91,4 @@ app.include_router(auth_router)
 app.include_router(instrument_router)
 app.include_router(exchange_router)
 app.include_router(provider_router)
+app.include_router(marketdata_router)  # added

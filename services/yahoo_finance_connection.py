@@ -1,25 +1,35 @@
 import yfinance as yf
 
-from services.redis_helper import get_redis_helper
+from utils.common_constants import DataIngestionFormat
 
 
 class YahooFinanceProvider:
-    def __init__(self):
+    def __init__(self, callback=None):
         self.websocket_connection = None
-        self.redis_helper = get_redis_helper()
+        self.callback = callback
 
     def connect_websocket(self, symbols: list[str]):
         """Connect to Yahoo Finance WebSocket for live data."""
         self.websocket_connection = yf.WebSocket()
         self.websocket_connection.subscribe(symbols)
+
+        if not self.callback:
+            raise ValueError(
+                "Callback function must be provided for handling messages."
+            )
         self.websocket_connection.listen(self.message_handler)
 
     def message_handler(self, message: dict):
-        symbol = message.get("id", "")
-        channel = "stocks:" + symbol
-        prices_dict = self.redis_helper.get_value("prices_dict")
-        prices_dict[channel] = message
-        print(f"Received message for {symbol}: {message}")
+        """Handle incoming messages from Yahoo Finance WebSocket."""
+        self.callback(
+            DataIngestionFormat(
+                symbol=message["symbol"],
+                price=message["price"],
+                volume=message["day_volume"],
+                timestamp=int(message["time"]),
+                provider_code="YF",
+            )
+        )
 
     def disconnect_websocket(self):
         """Disconnect from Yahoo Finance WebSocket."""
