@@ -1,16 +1,10 @@
 from __future__ import annotations
 
-from datetime import date
-from typing import TYPE_CHECKING
-
-from sqlalchemy import Boolean, Date, Float, ForeignKey, Integer
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import BigInteger, Boolean, Float, ForeignKey, Integer
+from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
 from .mixins import BaseMixin
-
-if TYPE_CHECKING:
-    from .instruments import Instrument
 
 
 class PriceHistoryDaily(Base, BaseMixin):
@@ -21,7 +15,7 @@ class PriceHistoryDaily(Base, BaseMixin):
         ForeignKey("instruments.id"), index=True, nullable=False
     )
 
-    date: Mapped[date] = mapped_column(Date, nullable=False)
+    timestamp: Mapped[int] = mapped_column(BigInteger, nullable=False)
     open: Mapped[float | None] = mapped_column(Float, nullable=True)
     high: Mapped[float | None] = mapped_column(Float, nullable=True)
     low: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -36,5 +30,3 @@ class PriceHistoryDaily(Base, BaseMixin):
     dividend: Mapped[float | None] = mapped_column(Float, nullable=True)
     split: Mapped[float | None] = mapped_column(Float, nullable=True)
     split_adjusted: Mapped[float | None] = mapped_column(Float, nullable=True)
-
-    instrument: Mapped["Instrument"] = relationship(back_populates="daily_prices")

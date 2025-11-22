@@ -12,9 +12,8 @@ from features.exchange.exchange_routes import exchange_router
 from features.provider.provider_routes import provider_router
 from features.websocket.web_socket_routes import websocket_route
 from features.marketdata.marketdata_routes import marketdata_router  # added
-from services.data_broadcast import DataBroadcast
-from services.live_data_ingestion import LiveDataIngestion
-from services.redis_helper import RedisHelper
+from services.data.data_broadcast import DataBroadcast
+from services.data.data_ingestion import LiveDataIngestion
 from services.redis_subscriber import redis_subscriber
 
 # Background task reference
@@ -28,18 +27,16 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown."""
     global subscriber_task, live_data_ingestion, data_broadcast
 
-    # Initialize RedisHelper and ensure prices_dict exists
-    redis_helper = RedisHelper()
-    # await redis_helper.initialize_prices_dict()
-
+    logger.info("Task - 1. Starting Live Data Ingestion...")
     live_data_ingestion = LiveDataIngestion()
     asyncio.create_task(live_data_ingestion.start_ingestion())
 
+    logger.info("Task - 2. Starting Data Broadcast...")
     data_broadcast = DataBroadcast()
-    # await data_broadcast.start_broadcast()
+    await data_broadcast.start_broadcast()
 
-    # Startup
-    logger.info("🚀 Starting Redis subscriber...")
+    # Start Subscriber
+    logger.info("Task - 3. Starting Redis subscriber...")
     subscriber_task = asyncio.create_task(redis_subscriber())
 
     yield
@@ -80,7 +77,7 @@ app = FastAPI(
 # Add CORS middleware correctly
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4200"],
+    allow_origins=["*"], # Allows all origins
     allow_credentials=True,
     allow_methods=["*"],  # Allows all HTTP methods (GET, POST, etc.)
     allow_headers=["*"],  # Allows all headers

@@ -19,17 +19,13 @@ async def redis_subscriber():
     4. Handles client disconnections gracefully
     5. Cleans up resources on shutdown
 
-    Performance:
-    - Uses asyncio.gather() for concurrent broadcasting to avoid bottlenecks
-    - Can handle thousands of clients efficiently
-    - One slow client doesn't block others
-
     Example Flow:
     - Publisher sends: POST /publish/AAPL?price=150.25
     - Redis publishes to channel "stocks:AAPL"
     - This function receives the message
     - Broadcasts to all clients subscribed to "stocks:AAPL"
     """
+
     redis = get_redis()
 
     if redis is None:
@@ -37,9 +33,9 @@ async def redis_subscriber():
         return
 
     pubsub = redis.pubsub()
-    await pubsub.psubscribe("stocks:*")
+    await pubsub.psubscribe("*")
 
-    logger.info("🎧 Redis subscriber started, listening to stocks:*")
+    logger.info("🎧 Redis subscriber started, listening to All Channels *")
 
     try:
         async for message in pubsub.listen():
@@ -94,6 +90,7 @@ async def _broadcast_to_clients(channel: str, data: Union[str, bytes]) -> None:
     - return_exceptions=True ensures one failure doesn't crash all sends
     - Disconnected clients are tracked and cleaned up after broadcasting
     """
+
     # Collect all clients subscribed to this channel with their send coroutines
     clients_and_tasks = []
 

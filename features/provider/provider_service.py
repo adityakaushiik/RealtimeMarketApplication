@@ -1,11 +1,14 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Provider
+from models import Provider, ProviderInstrumentMapping
 from features.provider.provider_schema import (
     ProviderCreate,
     ProviderUpdate,
     ProviderInDb,
+    ProviderInstrumentMappingCreate,
+    ProviderInstrumentMappingUpdate,
+    ProviderInstrumentMappingInDb,
 )
 
 
@@ -120,5 +123,114 @@ async def delete_provider(session: AsyncSession, provider_id: int) -> bool:
         return False
 
     await session.delete(provider)
+    await session.commit()
+    return True
+
+
+async def create_provider_instrument_mapping(
+    session: AsyncSession,
+    mapping_data: ProviderInstrumentMappingCreate,
+) -> ProviderInstrumentMappingInDb:
+    """Create a new provider-instrument mapping"""
+    new_mapping = ProviderInstrumentMapping(
+        provider_id=mapping_data.provider_id,
+        instrument_id=mapping_data.instrument_id,
+        provider_instrument_search_code=mapping_data.provider_instrument_search_code,
+    )
+    session.add(new_mapping)
+    await session.commit()
+    await session.refresh(new_mapping)
+    return ProviderInstrumentMappingInDb(
+        provider_id=new_mapping.provider_id,
+        instrument_id=new_mapping.instrument_id,
+        provider_instrument_search_code=new_mapping.provider_instrument_search_code,
+    )
+
+
+async def get_mappings_for_provider(
+    session: AsyncSession,
+    provider_id: int,
+) -> list[ProviderInstrumentMappingInDb]:
+    """Get all instrument mappings for a provider"""
+    result = await session.execute(
+        select(ProviderInstrumentMapping).where(ProviderInstrumentMapping.provider_id == provider_id)
+    )
+    mappings = result.scalars().all()
+    return [
+        ProviderInstrumentMappingInDb(
+            provider_id=mapping.provider_id,
+            instrument_id=mapping.instrument_id,
+            provider_instrument_search_code=mapping.provider_instrument_search_code,
+        )
+        for mapping in mappings
+    ]
+
+
+async def get_mappings_for_instrument(
+    session: AsyncSession,
+    instrument_id: int,
+) -> list[ProviderInstrumentMappingInDb]:
+    """Get all provider mappings for an instrument"""
+    result = await session.execute(
+        select(ProviderInstrumentMapping).where(ProviderInstrumentMapping.instrument_id == instrument_id)
+    )
+    mappings = result.scalars().all()
+    return [
+        ProviderInstrumentMappingInDb(
+            provider_id=mapping.provider_id,
+            instrument_id=mapping.instrument_id,
+            provider_instrument_search_code=mapping.provider_instrument_search_code,
+        )
+        for mapping in mappings
+    ]
+
+
+async def update_provider_instrument_mapping(
+    session: AsyncSession,
+    provider_id: int,
+    instrument_id: int,
+    update_data: ProviderInstrumentMappingUpdate,
+) -> ProviderInstrumentMappingInDb | None:
+    """Update a provider-instrument mapping"""
+    result = await session.execute(
+        select(ProviderInstrumentMapping).where(
+            (ProviderInstrumentMapping.provider_id == provider_id) &
+            (ProviderInstrumentMapping.instrument_id == instrument_id)
+        )
+    )
+    mapping = result.scalar_one_or_none()
+    if not mapping:
+        return None
+
+    update_dict = update_data.model_dump(exclude_unset=True)
+    for key, value in update_dict.items():
+        setattr(mapping, key, value)
+
+    await session.commit()
+    await session.refresh(mapping)
+    return ProviderInstrumentMappingInDb(
+        provider_id=mapping.provider_id,
+        instrument_id=mapping.instrument_id,
+        provider_instrument_search_code=mapping.provider_instrument_search_code,
+    )
+
+
+async def delete_provider_instrument_mapping(
+    session: AsyncSession,
+    provider_id: int,
+    instrument_id: int,
+) -> bool:
+    """Delete a provider-instrument mapping"""
+    result = await session.execute(
+        select(ProviderInstrumentMapping).where(
+            (ProviderInstrumentMapping.provider_id == provider_id) &
+            (ProviderInstrumentMapping.instrument_id == instrument_id)
+        )
+    )
+    mapping = result.scalar_one_or_none()
+    if not mapping:
+        return False
+
+    await session.delete(mapping)
     await session.commit()
     return True

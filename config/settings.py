@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     JWT_SECRET: str = ""
     JWT_ALGORITHM: str = "HS256"
 
+    # For Dhan API
+    DHAN_CLIENT_ID: str = ""
+    DHAN_ACCESS_TOKEN: str = ""
+
     model_config = SettingsConfigDict(env_file=".env")
 
 

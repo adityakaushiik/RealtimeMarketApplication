@@ -1,9 +1,10 @@
 import asyncio
+import json
 import time
 
 from config.logger import logger
 from config.redis_config import get_redis
-from services.redis_timeseries import RedisTimeSeries
+from services.redis_timeseries import RedisTimeSeries, get_redis_timeseries
 from services.websocket_manager import get_websocket_manager
 
 
@@ -12,7 +13,7 @@ class DataBroadcast:
         self.redis = get_redis()
         self.websocket_manager = get_websocket_manager()
         self.broadcast_task = None
-        self.redis_ts = RedisTimeSeries()  # Added: for fetching last traded prices
+        self.redis_ts = get_redis_timeseries()  # Added: for fetching last traded prices
 
     async def start_broadcast(self):
         if self.broadcast_task and not self.broadcast_task.done():
@@ -58,7 +59,7 @@ class DataBroadcast:
 
             # Build publish tasks
             for point in last_points:
-                publish_tasks.append(self.redis.publish(point.symbol, point.model_dump()))
+                publish_tasks.append(self.redis.publish(point.symbol, json.dumps(point.model_dump())))
 
             # Add fixed cadence sleep; runs concurrently with publishes
             publish_tasks.append(asyncio.sleep(3))

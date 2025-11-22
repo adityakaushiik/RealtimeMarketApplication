@@ -27,3 +27,19 @@ class ProviderInDb(BaseModelPy):
     created_at: datetime
     updated_at: datetime
     is_active: bool
+
+
+class ProviderInstrumentMappingCreate(BaseModelPy):
+    provider_id: int
+    instrument_id: int
+    provider_instrument_search_code: str
+
+
+class ProviderInstrumentMappingUpdate(BaseModelPy):
+    provider_instrument_search_code: str | None = None
+
+
+class ProviderInstrumentMappingInDb(BaseModelPy):
+    provider_id: int
+    instrument_id: int
+    provider_instrument_search_code: str

@@ -28,27 +28,46 @@ class RedisTimeSeries:
             self._redis = get_redis()
         return self._redis
 
-    def _align_to_5min_slot(self, timestamp_ms: int) -> int:
+    def _align_to_5min_slot(self, timestamp_ms: int, ceiling: bool = False) -> int:
         """
-        Align a timestamp to the nearest 5-minute slot boundary (floor).
+        Align a timestamp to the nearest 5-minute slot boundary.
 
-        Example:
+        Args:
+            timestamp_ms: Timestamp in milliseconds
+            ceiling: If True, align to next slot (ceiling); if False, align to current slot (floor)
+
+        Examples (floor mode, ceiling=False):
             10:07 -> 10:05
             10:03 -> 10:00
             9:58 -> 9:55
 
-        Args:
-            timestamp_ms: Timestamp in milliseconds
+        Examples (ceiling mode, ceiling=True):
+            10:07 -> 10:10
+            10:03 -> 10:05
+            10:00 -> 10:00 (exact boundary stays the same)
+            9:58 -> 10:00
 
         Returns:
-            Aligned timestamp in milliseconds (floor to nearest 5-min boundary)
+            Aligned timestamp in milliseconds
         """
         five_min_ms = 5 * 60 * 1000
-        return (timestamp_ms // five_min_ms) * five_min_ms
+        if ceiling:
+            # Ceiling: round up to next 5-min boundary (unless already on boundary)
+            remainder = timestamp_ms % five_min_ms
+            if remainder == 0:
+                return timestamp_ms
+            return timestamp_ms + (five_min_ms - remainder)
+        else:
+            # Floor: round down to current 5-min boundary
+            return (timestamp_ms // five_min_ms) * five_min_ms
 
     async def create_timeseries(self, key: str) -> None:
         """Create price and volume time series for a symbol with retention of 15 minutes.
         If the series already exist, the calls are ignored.
+
+        Uses DUPLICATE_POLICY LAST to allow multiple samples at the same timestamp,
+        keeping the most recent value. This is important for real-time data where
+        multiple ticks can arrive within the same millisecond.
         """
         r = self._get_client()
         price_key = f"{key}:price"
@@ -58,6 +77,7 @@ class RedisTimeSeries:
                 price_key,
                 retention_msecs=self.retention_ms,
                 labels={"ts": "price", "key": key},
+                duplicate_policy="last",
             )
         except ResponseError as e:
             # Ignore if key already exists
@@ -68,13 +88,14 @@ class RedisTimeSeries:
                 vol_key,
                 retention_msecs=self.retention_ms,
                 labels={"ts": "volume", "key": key},
+                duplicate_policy="last",
             )
         except ResponseError as e:
             if "key already exists" not in str(e).lower():
                 raise
 
     async def add_to_timeseries(
-        self, key: str, timestamp: float, price: float, volume: float = 0.0
+            self, key: str, timestamp: float, price: float, volume: float = 0.0
     ) -> None:
         r = self._get_client()
         price_key = f"{key}:price"
@@ -109,13 +130,15 @@ class RedisTimeSeries:
         return result
 
     async def get_ohlcv_last_5m(self, key: str) -> Optional[Dict[str, float]]:
-        """Return the OHLCV for the previous 5 minutes as a single bucket aligned to current 5-min slot.
+        """Return the OHLCV for the last 5 minutes as a single bucket, including the ongoing candle.
+
+        For example, if current time is 10:08, this returns data for the 10:05-10:10 slot.
 
         Returns None if there is no data in the window.
         """
         now = int(time.time() * 1000)
-        # Align to current 5-minute slot
-        aligned_now = self._align_to_5min_slot(now)
+        # Align to next 5-minute slot (ceiling) to include ongoing candle
+        aligned_now = self._align_to_5min_slot(now, ceiling=True)
         return await self.get_ohlcv_window(key, window_minutes=5, align_to_ts=aligned_now)
 
     async def get_last_traded_price(self, key: str) -> Optional[DataBroadcastFormat]:
@@ -218,10 +241,10 @@ class RedisTimeSeries:
         return results
 
     async def get_ohlcv_window(
-        self,
-        key: str,
-        window_minutes: int,
-        align_to_ts: Optional[int] = None,
+            self,
+            key: str,
+            window_minutes: int,
+            align_to_ts: Optional[int] = None,
     ) -> Optional[Dict[str, float]]:
         """Return OHLCV for the last window_minutes as a single bucket aligned to align_to_ts (default now)."""
         if align_to_ts is None:
@@ -249,18 +272,19 @@ class RedisTimeSeries:
         }
 
     async def get_ohlcv_series(
-        self,
-        key: str,
-        window_minutes: int = 15,
-        bucket_minutes: int = 5,
-        align_to_ts: Optional[int] = None,
+            self,
+            key: str,
+            window_minutes: int = 15,
+            bucket_minutes: int = 5,
+            align_to_ts: Optional[int] = None,
     ) -> Dict[str, List[float]]:
         """
         Return OHLCV buckets for the previous window_minutes, aggregated in bucket_minutes buckets.
 
-        All timestamps are aligned to 5-minute slot boundaries. For example, if current time is 10:07:
-        - The current slot is 10:05
-        - Previous 3 candles would be: 10:05, 10:00, 9:55
+        All timestamps are aligned to 5-minute slot boundaries. For example, if current time is 10:08:
+        - The query range end aligns to 10:10 (next slot, ceiling)
+        - With 15 min window, query from 9:55 to 10:10
+        - This returns 3 candles: 10:05 (ongoing), 10:00, 9:55
 
         Returns data in columnar format for better performance and smaller payload:
         {
@@ -275,8 +299,8 @@ class RedisTimeSeries:
         if align_to_ts is None:
             align_to_ts = int(time.time() * 1000)
 
-        # Align to the current 5-minute slot
-        aligned_ts = self._align_to_5min_slot(align_to_ts)
+        # Align to the NEXT 5-minute slot (ceiling) to include the ongoing candle
+        aligned_ts = self._align_to_5min_slot(align_to_ts, ceiling=True)
         to_ts = aligned_ts
         from_ts = to_ts - window_minutes * 60 * 1000
         bucket = bucket_minutes * 60 * 1000
@@ -387,3 +411,41 @@ class RedisTimeSeries:
             "close": closes,
             "volume": volumes,
         }
+
+    async def get_all_ohlcv_last_5m(self, keys: List[str]) -> Dict[str, Optional[Dict[str, float]]]:
+        """Return OHLCV for the last 5 minutes for multiple symbols."""
+
+        results: Dict[str, Optional[Dict[str, float]]] = {}
+        tasks = [
+            self.get_ohlcv_last_5m(key)
+            for key in keys
+        ]
+        ohlcv_list = await asyncio.gather(*tasks)
+        for key, ohlcv in zip(keys, ohlcv_list):
+            results[key] = ohlcv
+        return results
+
+    async def get_all_keys(self) -> List[str]:
+        """Return all symbol keys that have price time series in Redis."""
+
+        r = self._get_client()
+        # Use TS.INFO to get all keys with label ts=price
+        info = await r.ts().info_by_label("ts", "price")
+        keys = []
+        for entry in info:
+            labels = entry.get("labels", {})
+            key = labels.get("key")
+            if key:
+                keys.append(key)
+        return keys
+
+
+redis_ts = None
+
+
+def get_redis_timeseries() -> RedisTimeSeries:
+    global redis_ts
+
+    if redis_ts is None:
+        redis_ts = RedisTimeSeries()
+    return redis_ts
