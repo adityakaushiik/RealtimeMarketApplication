@@ -23,6 +23,18 @@ class Exchange(Base, BaseMixin):
     country: Mapped[str | None] = mapped_column(String(128), nullable=True)
     currency: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # Start Time and End Time in 24-hour HHMM (int) format
+    pre_market_open_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    market_open_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    market_close_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    post_market_close_time: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+    is_open_24_hours: Mapped[bool] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+
+
     # Minimal relationships
     instruments: Mapped[list["Instrument"]] = relationship(back_populates="exchange")
     provider_mappings: Mapped[list["ExchangeProviderMapping"]] = relationship(

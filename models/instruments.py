@@ -45,12 +45,12 @@ class Instrument(Base, BaseMixin):
     )
     sector: Mapped["Sector | None"] = relationship(back_populates="instruments")
 
-    intraday_prices: Mapped[list["PriceHistoryIntraday"]] = relationship(
-        back_populates="instrument", cascade="all, delete-orphan"
-    )
-    daily_prices: Mapped[list["PriceHistoryDaily"]] = relationship(
-        back_populates="instrument", cascade="all, delete-orphan"
-    )
+    # intraday_prices: Mapped[list["PriceHistoryIntraday"]] = relationship(
+    #     back_populates="instrument", cascade="all, delete-orphan"
+    # )
+    # daily_prices: Mapped[list["PriceHistoryDaily"]] = relationship(
+    #     back_populates="instrument", cascade="all, delete-orphan"
+    # )
 
     provider_mappings: Mapped[list["ProviderInstrumentMapping"]] = relationship(
         back_populates="instrument", cascade="all, delete-orphan"

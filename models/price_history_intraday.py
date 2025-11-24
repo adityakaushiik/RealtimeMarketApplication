@@ -28,3 +28,4 @@ class PriceHistoryIntraday(Base, BaseMixin):
         Boolean, server_default="false", nullable=False
     )
     interval: Mapped[str | None] = mapped_column(String(32), nullable=True)
+

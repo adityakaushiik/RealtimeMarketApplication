@@ -28,71 +28,57 @@ class RedisTimeSeries:
             self._redis = get_redis()
         return self._redis
 
-    def _align_to_5min_slot(self, timestamp_ms: int, ceiling: bool = False) -> int:
+    def _align_to_interval_slot(self, timestamp_ms: int, interval_minutes: int = 5, ceiling: bool = False) -> int:
         """
-        Align a timestamp to the nearest 5-minute slot boundary.
+        Align a timestamp to the nearest interval slot boundary.
 
         Args:
             timestamp_ms: Timestamp in milliseconds
+            interval_minutes: Interval in minutes (e.g., 1, 5, 15)
             ceiling: If True, align to next slot (ceiling); if False, align to current slot (floor)
-
-        Examples (floor mode, ceiling=False):
-            10:07 -> 10:05
-            10:03 -> 10:00
-            9:58 -> 9:55
-
-        Examples (ceiling mode, ceiling=True):
-            10:07 -> 10:10
-            10:03 -> 10:05
-            10:00 -> 10:00 (exact boundary stays the same)
-            9:58 -> 10:00
 
         Returns:
             Aligned timestamp in milliseconds
         """
-        five_min_ms = 5 * 60 * 1000
+        interval_ms = interval_minutes * 60 * 1000
         if ceiling:
-            # Ceiling: round up to next 5-min boundary (unless already on boundary)
-            remainder = timestamp_ms % five_min_ms
+            # Ceiling: round up to next interval boundary (unless already on boundary)
+            remainder = timestamp_ms % interval_ms
             if remainder == 0:
                 return timestamp_ms
-            return timestamp_ms + (five_min_ms - remainder)
+            return timestamp_ms + (interval_ms - remainder)
         else:
-            # Floor: round down to current 5-min boundary
-            return (timestamp_ms // five_min_ms) * five_min_ms
+            # Floor: round down to current interval boundary
+            return (timestamp_ms // interval_ms) * interval_ms
 
     async def create_timeseries(self, key: str) -> None:
         """Create price and volume time series for a symbol with retention of 15 minutes.
         If the series already exist, the calls are ignored.
-
-        Uses DUPLICATE_POLICY LAST to allow multiple samples at the same timestamp,
-        keeping the most recent value. This is important for real-time data where
-        multiple ticks can arrive within the same millisecond.
         """
         r = self._get_client()
         price_key = f"{key}:price"
         vol_key = f"{key}:volume"
-        try:
-            await r.ts().create(
-                price_key,
-                retention_msecs=self.retention_ms,
-                labels={"ts": "price", "key": key},
-                duplicate_policy="last",
-            )
-        except ResponseError as e:
-            # Ignore if key already exists
-            if "key already exists" not in str(e).lower():
-                raise
-        try:
-            await r.ts().create(
-                vol_key,
-                retention_msecs=self.retention_ms,
-                labels={"ts": "volume", "key": key},
-                duplicate_policy="last",
-            )
-        except ResponseError as e:
-            if "key already exists" not in str(e).lower():
-                raise
+        
+        # Use pipeline to create both keys in one go
+        async with r.pipeline() as pipe:
+            try:
+                pipe.ts().create(
+                    price_key,
+                    retention_msecs=self.retention_ms,
+                    labels={"ts": "price", "key": key},
+                    duplicate_policy="last",
+                )
+                pipe.ts().create(
+                    vol_key,
+                    retention_msecs=self.retention_ms,
+                    labels={"ts": "volume", "key": key},
+                    duplicate_policy="last",
+                )
+                await pipe.execute()
+            except ResponseError as e:
+                # Ignore "key already exists" errors, raise others
+                if "key already exists" not in str(e).lower():
+                    raise
 
     async def add_to_timeseries(
             self, key: str, timestamp: float, price: float, volume: float = 0.0
@@ -101,25 +87,34 @@ class RedisTimeSeries:
         price_key = f"{key}:price"
         vol_key = f"{key}:volume"
 
-        # Ensure series exist (idempotent create)
-        await self.create_timeseries(key)
-
-        # Add points
-        await r.ts().add(price_key, timestamp, float(price))
-        await r.ts().add(vol_key, timestamp, float(volume))
+        # Optimistic add: try to add first. If it fails because key doesn't exist, create and retry.
+        # This avoids checking existence or calling create on every single tick.
+        try:
+            async with r.pipeline() as pipe:
+                pipe.ts().add(price_key, timestamp, float(price))
+                pipe.ts().add(vol_key, timestamp, float(volume))
+                await pipe.execute()
+        except ResponseError as e:
+            if "key does not exist" in str(e).lower():
+                await self.create_timeseries(key)
+                # Retry add
+                async with r.pipeline() as pipe:
+                    pipe.ts().add(price_key, timestamp, float(price))
+                    pipe.ts().add(vol_key, timestamp, float(volume))
+                    await pipe.execute()
+            else:
+                raise
 
     async def get_from_timeseries(self, key: str) -> List[List]:
-        """Back-compat helper: returns AVG over last 5 minutes for the price series in a single bucket.
-        Prefer using get_ohlcv_last_5m or get_ohlcv_series.
-        """
+        """Back-compat helper: returns AVG over last 5 minutes for the price series in a single bucket."""
         now = int(time.time() * 1000)
         # Align to current 5-minute slot
-        aligned_now = self._align_to_5min_slot(now)
+        aligned_now = self._align_to_interval_slot(now, interval_minutes=5)
         from_ts = aligned_now - 5 * 60 * 1000
         to_ts = aligned_now
         r = self._get_client()
-        # Aggregate with AVG over a single 5-minute bucket, aligned to the 5-min slot
-        result = await r.ts().range(
+        
+        return await r.ts().range(
             f"{key}:price",
             from_ts,
             to_ts,
@@ -127,18 +122,12 @@ class RedisTimeSeries:
             bucket_size_msec=5 * 60 * 1000,
             align=to_ts,
         )
-        return result
 
     async def get_ohlcv_last_5m(self, key: str) -> Optional[Dict[str, float]]:
-        """Return the OHLCV for the last 5 minutes as a single bucket, including the ongoing candle.
-
-        For example, if current time is 10:08, this returns data for the 10:05-10:10 slot.
-
-        Returns None if there is no data in the window.
-        """
+        """Return the OHLCV for the last 5 minutes as a single bucket, including the ongoing candle."""
         now = int(time.time() * 1000)
         # Align to next 5-minute slot (ceiling) to include ongoing candle
-        aligned_now = self._align_to_5min_slot(now, ceiling=True)
+        aligned_now = self._align_to_interval_slot(now, interval_minutes=5, ceiling=True)
         return await self.get_ohlcv_window(key, window_minutes=5, align_to_ts=aligned_now)
 
     async def get_last_traded_price(self, key: str) -> Optional[DataBroadcastFormat]:
@@ -207,30 +196,43 @@ class RedisTimeSeries:
             return []
         r = self._get_client()
 
-        # Build tasks for prices and volumes
-        price_tasks = [r.ts().get(f"{k}:price") for k in keys]
-        volume_tasks = [r.ts().get(f"{k}:volume") for k in keys]
+        # Use pipeline to batch all GET commands in a single RTT
+        async with r.pipeline() as pipe:
+            for k in keys:
+                pipe.ts().get(f"{k}:price")
+                pipe.ts().get(f"{k}:volume")
+            
+            # Execute all commands in one batch
+            # Results will be [price1, vol1, price2, vol2, ...]
+            # raise_on_error=False ensures that if one key is missing, the whole pipeline doesn't fail
+            results = await pipe.execute(raise_on_error=False)
 
-        price_results = await asyncio.gather(*price_tasks, return_exceptions=True)
-        volume_results = await asyncio.gather(*volume_tasks, return_exceptions=True)
+        broadcast_data: List[DataBroadcastFormat] = []
+        
+        # Iterate through results in pairs (price, volume)
+        for i in range(0, len(results), 2):
+            key = keys[i // 2]
+            p_res = results[i]
+            v_res = results[i + 1]
 
-        results: List[DataBroadcastFormat] = []
-        for key, p_res, v_res in zip(keys, price_results, volume_results):
             # Skip if price retrieval failed or invalid
             if isinstance(p_res, Exception) or not p_res or len(p_res) < 2:
                 continue
+            
             try:
                 ts = int(p_res[0])
                 price_val = float(p_res[1])
             except Exception:
                 continue
+                
             volume_val = 0.0
             if not isinstance(v_res, Exception) and v_res and len(v_res) >= 2:
                 try:
                     volume_val = float(v_res[1])
                 except Exception:
                     volume_val = 0.0
-            results.append(
+            
+            broadcast_data.append(
                 DataBroadcastFormat(
                     timestamp=ts,
                     symbol=key,
@@ -238,7 +240,8 @@ class RedisTimeSeries:
                     volume=volume_val,
                 )
             )
-        return results
+            
+        return broadcast_data
 
     async def get_ohlcv_window(
             self,
@@ -281,10 +284,15 @@ class RedisTimeSeries:
         """
         Return OHLCV buckets for the previous window_minutes, aggregated in bucket_minutes buckets.
 
-        All timestamps are aligned to 5-minute slot boundaries. For example, if current time is 10:08:
+        All timestamps are aligned to bucket_minutes slot boundaries. For example, if current time is 10:08 and bucket_minutes=5:
         - The query range end aligns to 10:10 (next slot, ceiling)
         - With 15 min window, query from 9:55 to 10:10
         - This returns 3 candles: 10:05 (ongoing), 10:00, 9:55
+
+        For 1-minute buckets at 10:07:30:
+        - Aligns to 10:08 (next minute, ceiling)
+        - With 15 min window, query from 9:53 to 10:08
+        - Returns 15 one-minute candles
 
         Returns data in columnar format for better performance and smaller payload:
         {
@@ -299,8 +307,8 @@ class RedisTimeSeries:
         if align_to_ts is None:
             align_to_ts = int(time.time() * 1000)
 
-        # Align to the NEXT 5-minute slot (ceiling) to include the ongoing candle
-        aligned_ts = self._align_to_5min_slot(align_to_ts, ceiling=True)
+        # Align to the NEXT bucket interval slot (ceiling) to include the ongoing candle
+        aligned_ts = self._align_to_interval_slot(align_to_ts, interval_minutes=bucket_minutes, ceiling=True)
         to_ts = aligned_ts
         from_ts = to_ts - window_minutes * 60 * 1000
         bucket = bucket_minutes * 60 * 1000
@@ -309,49 +317,62 @@ class RedisTimeSeries:
         price_key = f"{key}:price"
         vol_key = f"{key}:volume"
 
-        # Query aggregations for the same buckets (aligned to the end time) in parallel
-        first, last, high, low, vol = await asyncio.gather(
-            r.ts().range(
-                price_key,
-                from_ts,
-                to_ts,
-                aggregation_type="first",
-                bucket_size_msec=bucket,
-                align=to_ts,
-            ),
-            r.ts().range(
-                price_key,
-                from_ts,
-                to_ts,
-                aggregation_type="last",
-                bucket_size_msec=bucket,
-                align=to_ts,
-            ),
-            r.ts().range(
-                price_key,
-                from_ts,
-                to_ts,
-                aggregation_type="max",
-                bucket_size_msec=bucket,
-                align=to_ts,
-            ),
-            r.ts().range(
-                price_key,
-                from_ts,
-                to_ts,
-                aggregation_type="min",
-                bucket_size_msec=bucket,
-                align=to_ts,
-            ),
-            r.ts().range(
-                vol_key,
-                from_ts,
-                to_ts,
-                aggregation_type="sum",
-                bucket_size_msec=bucket,
-                align=to_ts,
-            ),
-        )
+        try:
+            # Query aggregations for the same buckets (aligned to the end time) in parallel
+            first, last, high, low, vol = await asyncio.gather(
+                r.ts().range(
+                    price_key,
+                    from_ts,
+                    to_ts,
+                    aggregation_type="first",
+                    bucket_size_msec=bucket,
+                    align=to_ts,
+                ),
+                r.ts().range(
+                    price_key,
+                    from_ts,
+                    to_ts,
+                    aggregation_type="last",
+                    bucket_size_msec=bucket,
+                    align=to_ts,
+                ),
+                r.ts().range(
+                    price_key,
+                    from_ts,
+                    to_ts,
+                    aggregation_type="max",
+                    bucket_size_msec=bucket,
+                    align=to_ts,
+                ),
+                r.ts().range(
+                    price_key,
+                    from_ts,
+                    to_ts,
+                    aggregation_type="min",
+                    bucket_size_msec=bucket,
+                    align=to_ts,
+                ),
+                r.ts().range(
+                    vol_key,
+                    from_ts,
+                    to_ts,
+                    aggregation_type="sum",
+                    bucket_size_msec=bucket,
+                    align=to_ts,
+                ),
+            )
+        except ResponseError as e:
+            # Handle case where key might have been deleted or expired
+            if "key does not exist" in str(e).lower() or "TSDB: the key does not exist" in str(e):
+                return {
+                    "timestamp": [],
+                    "open": [],
+                    "high": [],
+                    "low": [],
+                    "close": [],
+                    "volume": [],
+                }
+            raise
 
         # Convert lists like [[ts, val], ...] into a dict keyed by ts
         def to_map(lst):
@@ -412,12 +433,27 @@ class RedisTimeSeries:
             "volume": volumes,
         }
 
-    async def get_all_ohlcv_last_5m(self, keys: List[str]) -> Dict[str, Optional[Dict[str, float]]]:
-        """Return OHLCV for the last 5 minutes for multiple symbols."""
+    async def get_all_ohlcv_last_5m(self, keys: List[str], interval_minutes: int = 5) -> Dict[str, Optional[Dict[str, float]]]:
+        """Return OHLCV for the last N minutes for multiple symbols.
+
+        Args:
+            keys: List of symbol keys
+            interval_minutes: Interval in minutes for OHLCV aggregation (default: 5)
+                Supports 1, 5, 15, or any custom minute interval
+
+        Returns:
+            Dictionary mapping symbol to OHLCV data or None
+        """
 
         results: Dict[str, Optional[Dict[str, float]]] = {}
+
+        # Use get_ohlcv_window to support custom intervals
+        now = int(time.time() * 1000)
+        # Align to the interval slot (e.g., 1-min, 5-min, or 15-min)
+        aligned_now = self._align_to_interval_slot(now, interval_minutes=interval_minutes, ceiling=True)
+
         tasks = [
-            self.get_ohlcv_last_5m(key)
+            self.get_ohlcv_window(key, window_minutes=interval_minutes, align_to_ts=aligned_now)
             for key in keys
         ]
         ohlcv_list = await asyncio.gather(*tasks)
@@ -429,15 +465,36 @@ class RedisTimeSeries:
         """Return all symbol keys that have price time series in Redis."""
 
         r = self._get_client()
-        # Use TS.INFO to get all keys with label ts=price
-        info = await r.ts().info_by_label("ts", "price")
-        keys = []
-        for entry in info:
-            labels = entry.get("labels", {})
-            key = labels.get("key")
-            if key:
-                keys.append(key)
-        return keys
+
+        # Use TS.QUERYINDEX to find all keys with label ts=price
+        try:
+            # TS.QUERYINDEX returns a list of keys matching the filter
+            price_keys = await r.ts().queryindex(["ts=price"])
+
+            # Extract symbol names by removing the ":price" suffix
+            keys = []
+            for key in price_keys:
+                # Handle both string and bytes
+                key_str = key.decode('utf-8') if isinstance(key, bytes) else str(key)
+                if key_str.endswith(":price"):
+                    symbol = key_str[:-6]  # Remove ":price" suffix
+                    keys.append(symbol)
+
+            return keys
+        except Exception as e:
+            # Fallback to KEYS pattern matching if TS.QUERYINDEX fails
+            try:
+                price_keys = await r.keys("*:price")
+                keys = []
+                for key in price_keys:
+                    key_str = key.decode('utf-8') if isinstance(key, bytes) else str(key)
+                    if key_str.endswith(":price"):
+                        symbol = key_str[:-6]
+                        keys.append(symbol)
+                return keys
+            except Exception as fallback_error:
+                # If both methods fail, return empty list
+                return []
 
 
 redis_ts = None

@@ -86,54 +86,51 @@ async def _broadcast_to_clients(channel: str, data: Union[str, bytes]) -> None:
         data: The message payload to send (JSON string)
 
     Performance Notes:
+    - Uses O(1) lookup for subscribers via websocket_manager.get_subscribers()
     - All sends happen concurrently using asyncio.gather()
     - return_exceptions=True ensures one failure doesn't crash all sends
     - Disconnected clients are tracked and cleaned up after broadcasting
     """
 
-    # Collect all clients subscribed to this channel with their send coroutines
-    clients_and_tasks = []
-
-    for ws, subscriptions in websocket_manager.active_connections.items():
-        if channel in subscriptions:
-            # Create a coroutine for each client (will run concurrently via gather)
-            send_coroutine = _send_to_client(ws, data)
-            clients_and_tasks.append((ws, send_coroutine))
-
-    if not clients_and_tasks:
-        logger.info(f"No clients subscribed to {channel}")
+    # Get subscribers efficiently (O(1))
+    subscribers = websocket_manager.get_subscribers(channel)
+    
+    if not subscribers:
+        # No debug log here to avoid spamming logs for channels with no listeners
         return
+
+    # Create tasks for all subscribers
+    # We convert the set to a list to avoid "Set changed size during iteration" if a disconnect happens concurrently
+    clients = list(subscribers)
+    tasks = [_send_to_client(ws, data) for ws in clients]
 
     # Execute all sends concurrently
     # return_exceptions=True prevents one failure from canceling others
-    results = await asyncio.gather(
-        *[coro for _, coro in clients_and_tasks], return_exceptions=True
-    )
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
     # Track clients that failed to receive the message
     disconnected_clients: List[WebSocket] = []
     successful_sends = 0
 
-    for (ws, _), result in zip(clients_and_tasks, results):
+    for ws, result in zip(clients, results):
         if isinstance(result, Exception):
-            logger.error(f"❌ Error sending to client: {result}")
+            # Only log real errors, not normal disconnects if possible
+            logger.debug(f"Error sending to client: {result}")
             disconnected_clients.append(ws)
         else:
             successful_sends += 1
 
     # Clean up disconnected clients
-    for ws in disconnected_clients:
-        try:
-            websocket_manager.disconnect(ws)
-            logger.info(f"🔌 Removed disconnected client")
-        except Exception as e:
-            logger.error(f"Error removing client: {e}")
+    if disconnected_clients:
+        for ws in disconnected_clients:
+            try:
+                websocket_manager.disconnect(ws)
+            except Exception:
+                pass
+        logger.info(f"Cleaned up {len(disconnected_clients)} disconnected clients")
 
-    # Log broadcast summary
-    if successful_sends > 0:
-        logger.debug(
-            f"📤 Broadcasted to {successful_sends}/{len(clients_and_tasks)} clients on {channel}"
-        )
+    # Log broadcast summary (only for debug/trace to reduce noise)
+    # logger.debug(f"📤 Broadcasted to {successful_sends}/{len(clients)} clients on {channel}")
 
 
 async def _send_to_client(ws: WebSocket, data: Union[str, bytes]) -> None:

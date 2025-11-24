@@ -11,21 +11,86 @@ class LiveDataIngestion:
     def __init__(self):
         self._loop = None
         self.redis_timeseries = get_redis_timeseries()
+        self.queue = asyncio.Queue()
+        self._worker_task = None
 
         # NEW: Use ProviderManager instead of single provider
         self.provider_manager = ProviderManager(callback=self.handle_market_data)
         self._sync_task = None
 
     def handle_market_data(self, message: DataIngestionFormat):
-        """Handle incoming market data from ANY provider and save to Redis."""
+        """
+        Handle incoming market data from ANY provider.
+        Pushes data to an in-memory queue for async processing to avoid blocking the callback.
+        """
         try:
-            # Schedule the async method in the main loop
+            # Fast path: push to queue immediately
+            # We resolve the symbol in the worker to keep this callback as fast as possible
             if self._loop and self._loop.is_running():
-                asyncio.run_coroutine_threadsafe(
-                    self._save_to_timeseries(**message.model_dump()), self._loop
-                )
+                self.queue.put_nowait(message)
         except Exception as e:
-            logger.error(f"Error handling market data: {e}")
+            logger.error(f"Error queuing market data: {e}")
+
+    async def _process_queue(self):
+        """
+        Background worker to process market data from the queue.
+        Batches writes to Redis for better performance.
+        """
+        logger.info("Starting data ingestion worker...")
+        batch_size = 50  # Process up to 50 items at a time
+        
+        while True:
+            try:
+                # Fetch first item (blocking wait)
+                message = await self.queue.get()
+                batch = [message]
+                
+                # Try to fetch more items immediately if available (up to batch_size)
+                try:
+                    for _ in range(batch_size - 1):
+                        batch.append(self.queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    pass
+                
+                # Process the batch
+                for msg in batch:
+                    try:
+                        await self._process_message(msg)
+                    except Exception as e:
+                        logger.error(f"Error processing message: {e}")
+                    finally:
+                        self.queue.task_done()
+                        
+            except asyncio.CancelledError:
+                logger.info("Data ingestion worker cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Fatal error in ingestion worker: {e}")
+                await asyncio.sleep(1)  # Prevent tight loop on error
+
+    async def _process_message(self, message: DataIngestionFormat):
+        """Process a single message and save to Redis."""
+        # Resolve internal instrument symbol using the sync method
+        internal_symbol = self.provider_manager.get_internal_symbol_sync(
+            message.provider_code, message.symbol
+        )
+        
+        if internal_symbol:
+            symbol_to_use = internal_symbol
+        else:
+            # Fallback logic
+            if not self.provider_manager.provider_symbol_map:
+                # Map might not be loaded yet
+                pass 
+            symbol_to_use = message.symbol
+
+        await self._save_to_timeseries(
+            symbol=symbol_to_use,
+            timestamp=message.timestamp,
+            price=message.price,
+            volume=message.volume,
+            provider_code=message.provider_code
+        )
 
     async def _save_to_timeseries(
         self, symbol: str, timestamp: int, price: float, volume: float, provider_code: str
@@ -62,6 +127,9 @@ class LiveDataIngestion:
         # Start all provider connections
         await self.provider_manager.start_all_providers(symbols_by_provider)
 
+        # Start the worker task
+        self._worker_task = asyncio.create_task(self._process_queue())
+
         logger.info("✅ Multi-provider data ingestion started successfully")
 
         # Optionally start dynamic subscription sync (commented out by default)
@@ -73,6 +141,10 @@ class LiveDataIngestion:
         if self._sync_task:
             self._sync_task.cancel()
             logger.info("Stopped subscription sync task")
+
+        if self._worker_task:
+            self._worker_task.cancel()
+            logger.info("Stopped ingestion worker task")
 
         self.provider_manager.stop_all_providers()
         logger.info("Data ingestion stopped.")

@@ -25,14 +25,21 @@ class ProviderManager:
     """
     Manages multiple market data providers and routes symbols
     to the correct provider based on exchange mappings.
+
+    Added:
+    - provider_symbol_map: Cached mapping of provider_code -> provider_search_code -> internal instrument symbol
+      Useful to translate inbound provider-specific symbols back to internal canonical symbols.
     """
 
     def __init__(self, callback):
         self.callback = callback
         self.providers: Dict[str, BaseMarketDataProvider] = {}
         self.exchange_to_provider: Dict[int, str] = {}  # exchange_id -> provider_code
-        self.symbol_to_provider: Dict[str, str] = {}  # symbol -> provider_code
-        self.symbol_to_exchange: Dict[str, int] = {}  # symbol -> exchange_id
+        self.symbol_to_provider: Dict[str, str] = {}  # internal symbol (provider search symbol currently) -> provider_code
+        self.symbol_to_exchange: Dict[str, int] = {}  # internal symbol -> exchange_id
+        # New: provider_symbol_map caches provider specific search code -> internal instrument symbol
+        # Structure: {"YF": {"AAPL": "AAPL"}, "DHAN": {"RELIANCE-EQ": "RELIANCE"}}
+        self.provider_symbol_map: Dict[str, Dict[str, str]] = {}
         self._initialized = False
 
     async def initialize(self):
@@ -99,6 +106,10 @@ class ProviderManager:
         """
         Query database to get all instruments grouped by provider.
         Returns: {"YF": ["AAPL", "TSLA"], "DHAN": ["RELIANCE-EQ", "TCS-EQ"]}
+
+        Side effects:
+        - Populates symbol_to_provider & symbol_to_exchange for quick lookups.
+        - Populates provider_symbol_map with provider-specific search codes mapped back to internal instrument symbols.
         """
         symbols_by_provider: Dict[str, list[str]] = {}
 
@@ -107,9 +118,9 @@ class ProviderManager:
             result = await session.execute(
                 select(
                     Instrument.id,
-                    Instrument.symbol,
+                    Instrument.symbol,  # internal canonical symbol
                     Instrument.exchange_id,
-                    ProviderInstrumentMapping.provider_instrument_search_code,
+                    ProviderInstrumentMapping.provider_instrument_search_code,  # provider specific search code
                     Provider.code.label("provider_code"),
                 )
                 .join(
@@ -134,17 +145,24 @@ class ProviderManager:
 
             rows = result.all()
 
-            # Group by provider
             for row in rows:
                 provider_code = row.provider_code
-                symbol = row.provider_instrument_search_code
+                provider_search_code = row.provider_instrument_search_code
+                internal_symbol = row.symbol
 
                 if provider_code not in symbols_by_provider:
                     symbols_by_provider[provider_code] = []
+                if provider_code not in self.provider_symbol_map:
+                    self.provider_symbol_map[provider_code] = {}
 
-                symbols_by_provider[provider_code].append(symbol)
-                self.symbol_to_provider[symbol] = provider_code
-                self.symbol_to_exchange[symbol] = row.exchange_id
+                # Append provider specific search code to subscription list
+                symbols_by_provider[provider_code].append(provider_search_code)
+
+                # Cache mappings
+                self.symbol_to_provider[provider_search_code] = provider_code
+                self.symbol_to_exchange[provider_search_code] = row.exchange_id
+                # provider_symbol_map holds provider search code -> internal instrument symbol
+                self.provider_symbol_map[provider_code][provider_search_code] = internal_symbol
 
             # Log statistics
             logger.info(
@@ -154,6 +172,35 @@ class ProviderManager:
                 logger.info(f"  {provider_code}: {len(symbols)} symbols")
 
         return symbols_by_provider
+
+    async def get_provider_symbol_mapping(self) -> Dict[str, Dict[str, str]]:
+        """
+        Returns provider_symbol_map: provider_code -> provider_search_code -> internal instrument symbol.
+        Ensures cache is populated (loads symbols if empty).
+        Example: {"YF": {"AAPL": "AAPL", "TSLA": "TSLA"}, "DHAN": {"RELIANCE-EQ": "RELIANCE"}}
+        """
+        if not self.provider_symbol_map:
+            await self.get_symbols_by_provider()
+        return self.provider_symbol_map
+
+    async def resolve_internal_symbol(self, provider_code: str, provider_search_code: str) -> Optional[str]:
+        """
+        Resolve an internal instrument symbol from a provider code & provider search code.
+        Lazy-loads mapping if needed.
+        Returns None if not found.
+        """
+        if not self.provider_symbol_map:
+            await self.get_symbols_by_provider()
+        return self.provider_symbol_map.get(provider_code, {}).get(provider_search_code)
+
+    def get_internal_symbol_sync(self, provider_code: str, provider_search_code: str) -> Optional[str]:
+        """
+        Synchronous version of resolve_internal_symbol for hot paths (like data ingestion).
+        Assumes provider_symbol_map is already populated.
+        """
+        if not self.provider_symbol_map:
+            return None
+        return self.provider_symbol_map.get(provider_code, {}).get(provider_search_code)
 
     async def start_all_providers(self, symbols_by_provider: Dict[str, list[str]]):
         """Connect all providers with their respective symbols"""

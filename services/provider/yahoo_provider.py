@@ -23,7 +23,13 @@ class YahooFinanceProvider(BaseMarketDataProvider):
 
             self.is_connected = True
             logger.info(f"Yahoo Finance connected with {len(symbols)} symbols")
-            self.websocket_connection.listen(self.message_handler)
+            
+            # Run the listener in a separate thread to avoid blocking the main initialization flow
+            import threading
+            self._listen_thread = threading.Thread(target=self.websocket_connection.listen, args=(self.message_handler,))
+            self._listen_thread.daemon = True
+            self._listen_thread.start()
+            
         except Exception as e:
             self.is_connected = False
             logger.error(f"Error connecting Yahoo Finance WebSocket: {e}")
@@ -32,7 +38,7 @@ class YahooFinanceProvider(BaseMarketDataProvider):
     def message_handler(self, message: dict):
         """Handle incoming messages from Yahoo Finance WebSocket."""
         try:
-            print(f"Yahoo Finance message received: {message}")
+            # print(f"Yahoo Finance message received: {message}")
             self.callback(
                 DataIngestionFormat(
                     symbol=message["id"],

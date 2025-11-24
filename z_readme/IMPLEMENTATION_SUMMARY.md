@@ -1,333 +1,494 @@
-# 🎉 Multi-Provider Implementation Complete!
+# DataSaver Implementation Summary
 
-## ✅ What Was Implemented
-
-### 1. **Base Provider Interface** (`services/base_provider.py`)
-- Abstract base class defining the contract all providers must follow
-- Methods: `connect_websocket()`, `disconnect_websocket()`, `subscribe_symbols()`, `unsubscribe_symbols()`, `message_handler()`
-- Ensures all providers are interchangeable
-
-### 2. **Yahoo Finance Provider** (`services/yahoo_finance_connection.py`) - REFACTORED
-- Now inherits from `BaseMarketDataProvider`
-- Added dynamic `subscribe_symbols()` and `unsubscribe_symbols()` methods
-- Improved error handling and logging
-- Fully backward compatible with existing code
-
-### 3. **Dhan Provider** (`services/dhan_provider.py`) - NEW
-- Implements `BaseMarketDataProvider` interface
-- Uses `dhanhq==2.0.2` SDK
-- Normalizes Dhan message format to `DataIngestionFormat`
-- Handles Dhan-specific symbol format (e.g., "RELIANCE-EQ")
-- Placeholder credentials from environment variables
-
-### 4. **Provider Manager** (`services/provider_manager.py`) - NEW
-- Orchestrates multiple providers simultaneously
-- Routes symbols to correct provider based on exchange mappings
-- Loads configuration from database (`exchange_provider_mappings`)
-- Manages subscriptions across providers
-- Provides status monitoring for all providers
-
-### 5. **Live Data Ingestion** (`services/live_data_ingestion.py`) - REFACTORED
-- Replaced single provider with `ProviderManager`
-- Supports multiple providers simultaneously
-- Optional dynamic subscription management (commented out, ready to enable)
-- Enhanced logging with provider tracking
-
-### 6. **Configuration** (`config/settings.py`) - UPDATED
-- Added `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN` fields
-- Loads from `.env` file
-
-### 7. **Database Migration Scripts** - NEW
-- `data_migration/setup_providers.py` - Creates provider and exchange-provider mapping records
-- `data_migration/populate_instrument_mappings.py` - Maps instruments to provider-specific symbols
-
-### 8. **Documentation** (`MULTI_PROVIDER_SETUP.md`) - NEW
-- Complete setup guide
-- Architecture diagrams
-- Troubleshooting tips
-- Resource usage estimates
-
-### 9. **Dependencies** (`requirements.txt`) - UPDATED
-- Added `dhanhq==2.0.2`
+## ✅ IMPLEMENTATION COMPLETE
 
 ---
 
-## 📊 Architecture Overview
+## 📁 Files Created/Modified
+
+### 1. **ExchangeData.py** ✅
+**Location**: `services/data/ExchangeData.py`
+
+**Purpose**: Configuration class for exchange trading hours and data collection settings.
+
+**Features**:
+- Store exchange metadata (name, ID)
+- Define market hours (start_time, end_time in milliseconds)
+- Configure save interval (default: 5 minutes)
+- Helper methods to check market status
+- Optional API credentials support
+
+**Key Methods**:
+```python
+get_exchange_info()           # Get readable configuration
+is_market_open(time_ms)       # Check if market is open
+get_remaining_time_ms(time_ms) # Time until market close
+```
+
+---
+
+### 2. **data_saver.py** ✅
+**Location**: `services/data/data_saver.py`
+
+**Purpose**: Main service for periodic market data persistence from Redis to PostgreSQL.
+
+**Features**:
+- ✅ Periodic 5-minute saves to `price_history_intraday`
+- ✅ End-of-day aggregation to `price_history_daily`
+- ✅ Multi-exchange support with independent schedules
+- ✅ Automatic start/stop based on market hours
+- ✅ Graceful error handling and logging
+- ✅ Support for filtering by exchange_id or instrument_ids
+
+**Key Methods**:
+```python
+add_exchange(exchange_data)                    # Register exchange
+start_all_exchanges()                          # Begin periodic saves
+save_to_intraday_table(exchange_id, ...)      # Manual save
+aggregate_and_save_daily(exchange_data, date)  # Daily aggregation
+stop_all_exchanges()                           # Graceful shutdown
+wait_for_completion()                          # Wait for natural completion
+```
+
+---
+
+### 3. **example_usage.py** ✅
+**Location**: `services/data/example_usage.py`
+
+**Purpose**: Comprehensive examples for using DataSaver.
+
+**Includes**:
+- Production NSE/BSE examples
+- Testing with short time windows
+- Manual save examples
+- Interactive CLI for testing
+
+---
+
+### 4. **test_data_saver.py** ✅
+**Location**: `services/data/test_data_saver.py`
+
+**Purpose**: Automated tests and verification scripts.
+
+**Test Coverage**:
+- ExchangeData configuration
+- Manual save operations
+- Periodic save workflow
+- Error handling
+- Interactive test runner
+
+---
+
+### 5. **README_DATA_SAVER.md** ✅
+**Location**: `services/data/README_DATA_SAVER.md`
+
+**Purpose**: Complete documentation.
+
+**Contents**:
+- Architecture overview
+- Quick start guide
+- Detailed API reference
+- Example scenarios
+- Database schema
+- Troubleshooting guide
+- Best practices
+
+---
+
+## 🔄 Data Flow
+
+### Periodic Save Flow (Every 5 Minutes)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                  LiveDataIngestion                           │
-│                 (Main Coordinator)                           │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ↓
+│                   Market Hours (9:15 - 15:30)               │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ↓
+        ┌───────────────────────────────────────┐
+        │   Every 5 minutes (interval_minutes)   │
+        └───────────────────────────────────────┘
+                            │
+                            ↓
+        ┌───────────────────────────────────────┐
+        │  RedisTimeSeries.get_all_ohlcv_last_5m│
+        │  Returns: {symbol: {ts, o, h, l, c, v}}│
+        └───────────────────────────────────────┘
+                            │
+                            ↓
+        ┌───────────────────────────────────────┐
+        │  Map symbols → instrument_ids          │
+        │  Filter: blacklisted=False, etc.       │
+        └───────────────────────────────────────┘
+                            │
+                            ↓
+        ┌───────────────────────────────────────┐
+        │  INSERT INTO price_history_intraday    │
+        │  - instrument_id                       │
+        │  - timestamp (ms)                      │
+        │  - open, high, low, close              │
+        │  - volume                              │
+        │  - interval='5m'                       │
+        └───────────────────────────────────────┘
+```
+
+### End-of-Day Aggregation Flow
+
+```
 ┌─────────────────────────────────────────────────────────────┐
-│                  ProviderManager                             │
-│  • Loads exchange→provider mappings from DB                 │
-│  • Routes symbols to correct provider                       │
-│  • Manages subscriptions                                    │
-└──────────┬────────────┬─────────────────────────────────────┘
-           │            │
-           ↓            ↓
-    ┌──────────────┐  ┌──────────────┐
-    │ Yahoo Finance│  │     Dhan     │
-    │   Provider   │  │   Provider   │
-    │              │  │              │
-    │ NYSE, NASDAQ │  │   NSE, BSE   │
-    └──────────────┘  └──────────────┘
-           │                  │
-           └──────────────────┘
-                     │
-                     ↓
-          ┌──────────────────────┐
-          │  Redis TimeSeries    │
-          │  (Unified Storage)   │
-          └──────────────────────┘
-                     │
-                     ↓
-          ┌──────────────────────┐
-          │   DataBroadcast      │
-          │  (To Clients)        │
-          └──────────────────────┘
+│              Market Close (end_time reached)                │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ↓
+        ┌───────────────────────────────────────┐
+        │  Final save to price_history_intraday  │
+        └───────────────────────────────────────┘
+                            │
+                            ↓
+        ┌───────────────────────────────────────┐
+        │  Query price_history_intraday          │
+        │  WHERE timestamp BETWEEN day_start     │
+        │        AND day_end                     │
+        │  GROUP BY instrument_id                │
+        └───────────────────────────────────────┘
+                            │
+                            ↓
+        ┌───────────────────────────────────────┐
+        │  Aggregate per instrument:             │
+        │  - open = first open of day            │
+        │  - high = MAX(high)                    │
+        │  - low = MIN(low)                      │
+        │  - close = last close of day           │
+        │  - volume = SUM(volume)                │
+        └───────────────────────────────────────┘
+                            │
+                            ↓
+        ┌───────────────────────────────────────┐
+        │  INSERT INTO price_history_daily       │
+        │  - instrument_id                       │
+        │  - timestamp (start of day)            │
+        │  - open, high, low, close              │
+        │  - volume (total)                      │
+        └───────────────────────────────────────┘
 ```
 
 ---
 
-## 🚀 How to Use
+## 🚀 Quick Start
 
-### Step 1: Install Dependencies
-```bash
-pip install -r requirements.txt
-```
+### Basic Usage
 
-### Step 2: Configure Environment
-Add to `.env`:
-```env
-DHAN_CLIENT_ID=your_client_id_here
-DHAN_ACCESS_TOKEN=your_access_token_here
-```
-
-### Step 3: Setup Database
-```bash
-# Create provider records and exchange mappings
-python z_data_migration/setup_providers.py
-
-# Map instruments to provider-specific symbols
-python z_data_migration/populate_instrument_mappings.py
-```
-
-### Step 4: Start Application
-```bash
-python main.py
-```
-
----
-
-## 🔍 Key Features
-
-### ✅ Exchange-Based Routing
-- NSE/BSE instruments → Dhan provider automatically
-- NYSE/NASDAQ instruments → Yahoo Finance automatically
-- Configured via database, no code changes needed
-
-### ✅ Provider Abstraction
-- Easy to add new providers (just implement `BaseMarketDataProvider`)
-- Consistent interface across all providers
-- Type-safe with abstract base class
-
-### ✅ Dynamic Subscriptions (Optional)
-- Can enable auto-subscribe/unsubscribe based on client activity
-- Only fetches data for symbols clients are watching
-- Reduces bandwidth during off-hours
-
-### ✅ Failover Ready
-- Database supports `is_primary` flag for provider prioritization
-- Can easily add backup providers per exchange
-- Foundation for automatic failover (future enhancement)
-
-### ✅ Monitoring
-- `get_provider_status()` returns real-time status of all providers
-- Logs show which provider each data point came from
-- Can track connection health per provider
-
----
-
-## 📝 Database Schema Summary
-
-### 1. Providers
-```
-id | name           | code  | rate_limit | is_active
----|----------------|-------|------------|----------
-1  | Yahoo Finance  | YF    | 2000       | true
-2  | Dhan          | DHAN  | 1000       | true
-```
-
-### 2. Exchange Provider Mappings
-```
-provider_id | exchange_id | is_active | is_primary
-------------|-------------|-----------|------------
-2           | 7 (NSE)     | true      | true        # Dhan → NSE
-2           | 8 (BSE)     | true      | true        # Dhan → BSE
-1           | 2 (NYSE)    | true      | true        # Yahoo → NYSE
-1           | 1 (NASDAQ)  | true      | true        # Yahoo → NASDAQ
-```
-
-### 3. Provider Instrument Mappings
-```
-provider_id | instrument_id | provider_instrument_search_code
-------------|---------------|--------------------------------
-2           | 100           | RELIANCE-EQ    # Dhan format
-2           | 101           | TCS-EQ         # Dhan format
-1           | 50            | AAPL           # Yahoo format
-1           | 51            | TSLA           # Yahoo format
-```
-
----
-
-## 🎯 Data Flow Example
-
-### Indian Stock (RELIANCE on NSE)
-1. Database query finds: RELIANCE → NSE → Dhan provider
-2. `ProviderManager` routes to `DhanProvider`
-3. Dhan WebSocket sends: `{"security_id": "RELIANCE", "LTP": 2456.75, ...}`
-4. `DhanProvider.message_handler()` normalizes to:
-   ```python
-   DataIngestionFormat(
-       symbol="RELIANCE-EQ",
-       price=2456.75,
-       volume=125000,
-       timestamp=1700000000,
-       provider_code="DHAN"
-   )
-   ```
-5. Saved to Redis → Broadcast to clients
-
-### US Stock (AAPL on NASDAQ)
-1. Database query finds: AAPL → NASDAQ → Yahoo Finance provider
-2. `ProviderManager` routes to `YahooFinanceProvider`
-3. Yahoo WebSocket sends: `{"symbol": "AAPL", "price": 150.25, ...}`
-4. `YahooFinanceProvider.message_handler()` normalizes to:
-   ```python
-   DataIngestionFormat(
-       symbol="AAPL",
-       price=150.25,
-       volume=50000000,
-       timestamp=1700000000,
-       provider_code="YF"
-   )
-   ```
-5. Saved to Redis → Broadcast to clients
-
----
-
-## 🔧 Customization Points
-
-### Adding a New Provider
-1. Create `services/new_provider.py` inheriting from `BaseMarketDataProvider`
-2. Add to factory method in `provider_manager.py`
-3. Add to database with `setup_providers.py` script
-4. Map instruments with custom script
-
-### Changing Symbol Formats
-Edit `populate_instrument_mappings.py`:
 ```python
-# For Dhan
-dhan_symbol = f"{instrument.symbol}-EQ"  # Current
-dhan_symbol = f"NSE:{instrument.symbol}"  # Alternative
+import asyncio
+from datetime import datetime
+from services.data.data_saver import DataSaver
+from services.data.exchange_data import ExchangeData
+
+
+async def main():
+    # 1. Create exchange configuration
+    today = datetime.now()
+    start = today.replace(hour=9, minute=15, second=0, microsecond=0)
+    end = today.replace(hour=15, minute=30, second=0, microsecond=0)
+
+    nse = ExchangeData(
+        exchange_name="NSE",
+        exchange_id=1,
+        start_time=int(start.timestamp() * 1000),
+        end_time=int(end.timestamp() * 1000),
+        interval_minutes=5,
+    )
+
+    # 2. Initialize DataSaver
+    data_saver = DataSaver()
+    data_saver.add_exchange(nse)
+
+    # 3. Start periodic saves
+    await data_saver.start_all_exchanges()
+
+    # 4. Wait for completion
+    await data_saver.wait_for_completion()
+
+
+asyncio.run(main())
 ```
 
-### Enabling Dynamic Subscriptions
-In `live_data_ingestion.py`, uncomment:
+---
+
+## 📊 Database Tables
+
+### price_history_intraday
+
+Stores 5-minute OHLCV data throughout the trading day.
+
+```sql
+CREATE TABLE price_history_intraday (
+    id SERIAL PRIMARY KEY,
+    instrument_id INTEGER NOT NULL REFERENCES instruments(id),
+    timestamp BIGINT NOT NULL,  -- Unix timestamp in milliseconds
+    open FLOAT,
+    high FLOAT,
+    low FLOAT,
+    close FLOAT,
+    volume INTEGER,
+    interval VARCHAR(32),  -- '5m' for 5-minute intervals
+    price_not_found BOOLEAN DEFAULT FALSE,
+    -- ... other fields from BaseMixin
+);
+
+CREATE INDEX idx_intraday_instrument ON price_history_intraday(instrument_id);
+CREATE INDEX idx_intraday_timestamp ON price_history_intraday(timestamp);
+```
+
+### price_history_daily
+
+Stores aggregated daily OHLCV data.
+
+```sql
+CREATE TABLE price_history_daily (
+    id SERIAL PRIMARY KEY,
+    instrument_id INTEGER NOT NULL REFERENCES instruments(id),
+    timestamp BIGINT NOT NULL,  -- Start of day (midnight) in milliseconds
+    open FLOAT,                 -- First open of the day
+    high FLOAT,                 -- Highest high of the day
+    low FLOAT,                  -- Lowest low of the day
+    close FLOAT,                -- Last close of the day
+    volume INTEGER,             -- Total volume for the day
+    price_not_found BOOLEAN DEFAULT FALSE,
+    -- ... other fields from BaseMixin
+);
+
+CREATE INDEX idx_daily_instrument ON price_history_daily(instrument_id);
+CREATE INDEX idx_daily_timestamp ON price_history_daily(timestamp);
+```
+
+---
+
+## 🔍 Example Scenarios
+
+### Scenario 1: Single Exchange - Production
+
 ```python
-self._sync_task = asyncio.create_task(self.sync_subscriptions_with_clients())
+# NSE: 9:15 AM - 3:30 PM IST
+nse = ExchangeData(
+    exchange_name="NSE",
+    exchange_id=1,
+    start_time=...,
+    end_time=...,
+    interval_minutes=5,
+)
+
+data_saver = DataSaver()
+data_saver.add_exchange(nse)
+await data_saver.start_all_exchanges()
+await data_saver.wait_for_completion()
+```
+
+### Scenario 2: Multiple Exchanges
+
+```python
+# Different exchanges with different hours
+data_saver.add_exchange(nse_exchange)   # 9:15 - 15:30
+data_saver.add_exchange(bse_exchange)   # 9:15 - 15:30
+data_saver.add_exchange(us_exchange)    # Different timezone
+
+await data_saver.start_all_exchanges()  # All run independently
+```
+
+### Scenario 3: Manual Testing
+
+```python
+# Quick test with 1-minute intervals
+test_exchange = ExchangeData(
+    exchange_name="TEST",
+    exchange_id=1,
+    start_time=int((time.time() + 60) * 1000),    # Start in 1 minute
+    end_time=int((time.time() + 600) * 1000),     # End in 10 minutes
+    interval_minutes=1,  # Save every minute
+)
+```
+
+### Scenario 4: Manual Save (No Scheduling)
+
+```python
+# One-time save
+data_saver = DataSaver()
+count = await data_saver.save_to_intraday_table()
+print(f"Saved {count} records")
+
+# Daily aggregation (e.g., scheduled job)
+today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+date_ts = int(today.timestamp() * 1000)
+count = await data_saver.aggregate_and_save_daily(nse_exchange, date_ts)
 ```
 
 ---
 
-## 📊 Resource Usage
+## 🧪 Testing
 
-### During Market Hours (active subscriptions)
-- **2 providers**: ~20-40 MB RAM, 4-10% CPU, 10-30 KB/s network
+### Run Interactive Tests
 
-### During Off-Hours (idle connections)
-- **2 providers**: ~4-10 MB RAM, 0.2-0.4% CPU, 0.1-0.2 KB/s network
+```bash
+# Test all functionality
+python services/data/test_data_saver.py
 
-**Conclusion:** Minimal impact, safe to keep connections alive 24/7
+# Or use example script
+python services/data/example_usage.py
+```
 
----
+### Test Coverage
 
-## ✅ Testing Checklist
-
-- [ ] Run `setup_providers.py` successfully
-- [ ] Run `populate_instrument_mappings.py` successfully
-- [ ] Verify provider records in database
-- [ ] Verify exchange-provider mappings in database
-- [ ] Verify instrument mappings in database
-- [ ] Add Dhan credentials to `.env`
-- [ ] Start application and check logs for "Multi-provider data ingestion started"
-- [ ] Verify both providers connect successfully
-- [ ] Test with sample symbols from both exchanges
-- [ ] Monitor provider status via `get_provider_status()`
+✅ ExchangeData configuration  
+✅ Manual intraday saves  
+✅ Periodic scheduled saves  
+✅ Daily aggregation  
+✅ Multi-exchange support  
+✅ Error handling  
+✅ Graceful shutdown  
 
 ---
 
-## 🐛 Known Issues / Adjustments Needed
+## 📝 Key Features Implemented
 
-### 1. Dhan Message Format
-The `DhanProvider.message_handler()` uses **placeholder field names**. You must adjust based on actual Dhan API:
-- Check Dhan's actual WebSocket message structure
-- Update field names in `message_handler()` method
-- Test with real Dhan connection
+### 1. **Flexible Scheduling** ✅
+- Define custom start/end times per exchange
+- Configurable save intervals
+- Automatic waiting for market open
+- Automatic stop at market close
 
-### 2. Dhan Symbol Parsing
-The `_prepare_instruments()` method makes assumptions about symbol format:
-- Currently assumes "SYMBOL-EQ" format
-- May need adjustment based on your database structure
-- Add better parsing logic if needed
+### 2. **Robust Data Handling** ✅
+- Validates OHLCV completeness
+- Filters out invalid instruments
+- Handles missing data gracefully
+- Logs warnings for debugging
 
-### 3. Yahoo Finance `unsubscribe_all()` Method
-Warning about `unsubscribe_all()` method - this is a yfinance library API detail:
-- Should work if yfinance supports it
-- Can be replaced with individual unsubscribe calls if needed
+### 3. **Database Efficiency** ✅
+- Batch inserts with `add_all()`
+- Proper transaction handling
+- Rollback on errors
+- Connection pooling
 
----
+### 4. **Multi-Exchange Support** ✅
+- Independent tasks per exchange
+- Different trading hours
+- Separate stop flags
+- Parallel execution
 
-## 📞 Next Steps
+### 5. **Aggregation Logic** ✅
+- Correct OHLC calculations:
+  - Open: First open of day
+  - High: Maximum high
+  - Low: Minimum low
+  - Close: Last close
+  - Volume: Sum of all volumes
 
-1. **Test the implementation:**
-   - Run migration scripts
-   - Start application
-   - Monitor logs
-
-2. **Adjust Dhan provider:**
-   - Get actual Dhan WebSocket message format
-   - Update `message_handler()` accordingly
-   - Test with real credentials
-
-3. **Enable dynamic subscriptions** (optional):
-   - Uncomment the sync task
-   - Test subscribe/unsubscribe behavior
-
-4. **Add monitoring endpoint:**
-   - Create `/api/providers/status` endpoint
-   - Display provider health in admin dashboard
-
-5. **Add failover logic** (future):
-   - Detect provider failures
-   - Switch to backup provider
-   - Notify administrators
+### 6. **Error Handling** ✅
+- Try-catch blocks
+- Session rollback
+- Detailed logging
+- Exception propagation
 
 ---
 
-## 🎉 Success!
+## 🎯 What Gets Saved
 
-You now have a fully functional multi-provider market data system that:
-- ✅ Supports Yahoo Finance (US markets)
-- ✅ Supports Dhan (Indian markets)
-- ✅ Routes symbols automatically based on exchange
-- ✅ Can be extended with more providers easily
-- ✅ Has minimal resource overhead
-- ✅ Is production-ready (after Dhan API adjustments)
+### Every 5 Minutes (Intraday)
 
-**Happy Trading! 🚀📈**
+For each symbol in Redis TimeSeries:
+```python
+{
+    "instrument_id": 123,
+    "timestamp": 1700123400000,  # Current 5-min slot
+    "open": 150.25,
+    "high": 151.50,
+    "low": 149.75,
+    "close": 150.80,
+    "volume": 125000,
+    "interval": "5m",
+    "price_not_found": False
+}
+```
+
+### End of Day (Daily)
+
+For each instrument traded that day:
+```python
+{
+    "instrument_id": 123,
+    "timestamp": 1700092800000,  # Midnight (start of day)
+    "open": 148.50,              # First open
+    "high": 152.80,              # Max high
+    "low": 147.20,               # Min low
+    "close": 150.80,             # Last close
+    "volume": 5432000,           # Total volume
+    "price_not_found": False
+}
+```
+
+---
+
+## ⚙️ Configuration
+
+### Environment Variables
+
+Ensure these are set (via `config/settings.py`):
+- `DATABASE_URL`: PostgreSQL connection string
+- `REDIS_HOST`: Redis server host
+- `REDIS_PORT`: Redis server port
+
+### Database Setup
+
+Run Alembic migrations to create tables:
+```bash
+alembic upgrade head
+```
+
+Verify tables exist:
+```sql
+\dt price_history_intraday
+\dt price_history_daily
+```
+
+---
+
+## 📚 Additional Resources
+
+1. **README_DATA_SAVER.md**: Full documentation
+2. **example_usage.py**: Production examples
+3. **test_data_saver.py**: Testing suite
+4. **RedisTimeSeries**: See `services/redis_timeseries.py`
+
+---
+
+## ✅ Checklist
+
+- [x] ExchangeData class created
+- [x] DataSaver class implemented
+- [x] Periodic save functionality
+- [x] Daily aggregation
+- [x] Multi-exchange support
+- [x] Error handling
+- [x] Logging
+- [x] Type hints
+- [x] Documentation
+- [x] Examples
+- [x] Tests
+- [x] README
+
+---
+
+## 🎉 Ready to Use!
+
+The implementation is **complete** and **production-ready**. Follow the Quick Start guide or run the test suite to get started.
+
+For questions or issues, refer to:
+- **README_DATA_SAVER.md** for detailed documentation
+- **test_data_saver.py** for usage examples
+- Source code docstrings for API reference
+
+---
+
+**Created**: November 23, 2025  
+**Status**: ✅ Complete  
+**Version**: 1.0  
 

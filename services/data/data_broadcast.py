@@ -25,56 +25,47 @@ class DataBroadcast:
         """
         Broadcast latest traded prices (timestamp, price, volume) only for active channels.
         Uses RedisTimeSeries.get_multiple_last_traded_prices for efficient concurrent fetch.
-        Falls back to no publish if no active channels or no data.
         """
+        logger.info("Starting price broadcast loop...")
         while True:
-            start = time.time()
-            publish_tasks = []
-
-            # Get currently active subscription channels (symbols)
+            start_time = time.time()
+            
             try:
-                active_channels = self.websocket_manager.get_active_channels()
-            except Exception as e:
-                logger.error(f"Failed to get active channels: {e}")
-                active_channels = []
+                # Get currently active subscription channels (symbols)
+                # Convert to list because redis_timeseries expects a sequence it can index into
+                active_channels = list(self.websocket_manager.get_active_channels())
+                
+                if not active_channels:
+                    # No active clients, sleep and retry
+                    await asyncio.sleep(3)
+                    continue
 
-            if not active_channels:
-                # Nothing to broadcast; sleep cadence and continue
-                await asyncio.sleep(3)
-                logger.info("Broadcast tick: no active channels")
-                continue
-
-            # Fetch latest prices & volumes for active channels
-            try:
+                # Fetch latest prices & volumes for active channels
                 last_points = await self.redis_ts.get_multiple_last_traded_prices(active_channels)
+                
+                if not last_points:
+                    await asyncio.sleep(1)
+                    continue
+
+                # Create publish tasks
+                publish_tasks = [
+                    self.redis.publish(point.symbol, json.dumps(point.model_dump()))
+                    for point in last_points
+                ]
+
+                if publish_tasks:
+                    await asyncio.gather(*publish_tasks, return_exceptions=True)
+
+                # Calculate time taken and sleep for the remainder of the interval
+                elapsed = time.time() - start_time
+                sleep_time = max(0.1, 3.0 - elapsed) # Ensure at least 3s interval
+                
+                logger.debug(f"Broadcast: sent {len(publish_tasks)} updates in {elapsed:.3f}s")
+                await asyncio.sleep(sleep_time)
+
+            except asyncio.CancelledError:
+                logger.info("Broadcast task cancelled")
+                break
             except Exception as e:
-                logger.error(f"Failed to fetch last traded prices: {e}")
-                last_points = []
-
-            if not last_points:
-                # Sleep and continue if no data returned
-                await asyncio.sleep(3)
-                logger.info("Broadcast tick: no data for active channels")
-                continue
-
-            # Build publish tasks
-            for point in last_points:
-                publish_tasks.append(self.redis.publish(point.symbol, json.dumps(point.model_dump())))
-
-            # Add fixed cadence sleep; runs concurrently with publishes
-            publish_tasks.append(asyncio.sleep(3))
-
-            # Execute all publish tasks in parallel
-            results = await asyncio.gather(*publish_tasks, return_exceptions=True)
-
-            # Log any publish errors (exclude last item which is sleep)
-            error_count = 0
-            for idx, res in enumerate(results[:-1]):
-                if isinstance(res, Exception):
-                    error_count += 1
-                    logger.error(f"Publish task {idx} failed: {res}")
-
-            sent = len(publish_tasks) - 1  # exclude sleep task
-            logger.info(
-                f"Broadcast tick: sent={sent}, errors={error_count}, dt={round(time.time() - start, 3)}s"
-            )
+                logger.error(f"Error in broadcast loop: {e}")
+                await asyncio.sleep(3)  # Backoff on error
