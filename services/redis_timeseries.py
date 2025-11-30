@@ -91,37 +91,24 @@ class RedisTimeSeries:
         # This avoids checking existence or calling create on every single tick.
         try:
             async with r.pipeline() as pipe:
-                pipe.ts().add(price_key, timestamp, float(price))
-                pipe.ts().add(vol_key, timestamp, float(volume))
+                pipe.ts().add(price_key, timestamp, float(price), on_duplicate='last')
+                pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate='last')
                 await pipe.execute()
         except ResponseError as e:
-            if "key does not exist" in str(e).lower():
+            err_str = str(e).lower()
+            if "key does not exist" in err_str:
                 await self.create_timeseries(key)
                 # Retry add
                 async with r.pipeline() as pipe:
-                    pipe.ts().add(price_key, timestamp, float(price))
-                    pipe.ts().add(vol_key, timestamp, float(volume))
+                    pipe.ts().add(price_key, timestamp, float(price), on_duplicate='last')
+                    pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate='last')
                     await pipe.execute()
+            elif "timestamp cannot be older" in err_str:
+                # Ignore out-of-order data that is older than the latest sample
+                # This happens if data arrives late or out of sequence
+                pass
             else:
                 raise
-
-    async def get_from_timeseries(self, key: str) -> List[List]:
-        """Back-compat helper: returns AVG over last 5 minutes for the price series in a single bucket."""
-        now = int(time.time() * 1000)
-        # Align to current 5-minute slot
-        aligned_now = self._align_to_interval_slot(now, interval_minutes=5)
-        from_ts = aligned_now - 5 * 60 * 1000
-        to_ts = aligned_now
-        r = self._get_client()
-        
-        return await r.ts().range(
-            f"{key}:price",
-            from_ts,
-            to_ts,
-            aggregation_type="avg",
-            bucket_size_msec=5 * 60 * 1000,
-            align=to_ts,
-        )
 
     async def get_ohlcv_last_5m(self, key: str) -> Optional[Dict[str, float]]:
         """Return the OHLCV for the last 5 minutes as a single bucket, including the ongoing candle."""
@@ -495,6 +482,27 @@ class RedisTimeSeries:
             except Exception as fallback_error:
                 # If both methods fail, return empty list
                 return []
+
+    async def set_daily_stats(self, key: str, stats: Dict[str, float]) -> None:
+        """
+        Set daily statistics (e.g., previous close) for a symbol in a Redis Hash.
+        Key: <symbol>:stats
+        """
+        r = self._get_client()
+        stats_key = f"{key}:stats"
+        # Set with expiration (e.g., 24 hours) to avoid stale data if symbol becomes inactive
+        async with r.pipeline() as pipe:
+            pipe.hset(stats_key, mapping=stats)
+            pipe.expire(stats_key, 24 * 60 * 60) # 24 hours
+            await pipe.execute()
+
+    async def get_daily_stats(self, key: str) -> Dict[str, float]:
+        """
+        Get daily statistics for a symbol.
+        """
+        r = self._get_client()
+        stats_key = f"{key}:stats"
+        return await r.hgetall(stats_key)
 
 
 redis_ts = None

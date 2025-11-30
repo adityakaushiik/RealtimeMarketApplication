@@ -1,18 +1,28 @@
 import asyncio
 
+import redis
+
 from config.logger import logger
+from config.redis_config import get_redis
+# from services.data.data_broadcast import get_data_broadcast
 from services.provider.provider_manager import ProviderManager
 from services.redis_timeseries import get_redis_timeseries
 from services.websocket_manager import get_websocket_manager
+from utils.binary_conversions import pack_snapshot, pack_update, example_update_data
 from utils.common_constants import DataIngestionFormat
 
 
 class LiveDataIngestion:
     def __init__(self):
         self._loop = None
-        self.redis_timeseries = get_redis_timeseries()
         self.queue = asyncio.Queue()
         self._worker_task = None
+
+        self.redis_timeseries = get_redis_timeseries()
+        # self.data_broadcast = get_data_broadcast()
+
+        self.websocket_manager = get_websocket_manager()
+        self.redis = get_redis()
 
         # NEW: Use ProviderManager instead of single provider
         self.provider_manager = ProviderManager(callback=self.handle_market_data)
@@ -25,7 +35,7 @@ class LiveDataIngestion:
         """
         try:
             # Fast path: push to queue immediately
-            # We resolve the symbol in the worker to keep this callback as fast as possible
+            # Resolve the symbol in the worker to keep this callback as fast as possible
             if self._loop and self._loop.is_running():
                 self.queue.put_nowait(message)
         except Exception as e:
@@ -38,20 +48,20 @@ class LiveDataIngestion:
         """
         logger.info("Starting data ingestion worker...")
         batch_size = 50  # Process up to 50 items at a time
-        
+
         while True:
             try:
                 # Fetch first item (blocking wait)
                 message = await self.queue.get()
                 batch = [message]
-                
+
                 # Try to fetch more items immediately if available (up to batch_size)
                 try:
                     for _ in range(batch_size - 1):
                         batch.append(self.queue.get_nowait())
                 except asyncio.QueueEmpty:
                     pass
-                
+
                 # Process the batch
                 for msg in batch:
                     try:
@@ -60,7 +70,7 @@ class LiveDataIngestion:
                         logger.error(f"Error processing message: {e}")
                     finally:
                         self.queue.task_done()
-                        
+
             except asyncio.CancelledError:
                 logger.info("Data ingestion worker cancelled")
                 break
@@ -70,30 +80,45 @@ class LiveDataIngestion:
 
     async def _process_message(self, message: DataIngestionFormat):
         """Process a single message and save to Redis."""
+
         # Resolve internal instrument symbol using the sync method
         internal_symbol = self.provider_manager.get_internal_symbol_sync(
             message.provider_code, message.symbol
         )
-        
+
         if internal_symbol:
             symbol_to_use = internal_symbol
         else:
             # Fallback logic
             if not self.provider_manager.provider_symbol_map:
                 # Map might not be loaded yet
-                pass 
+                pass
             symbol_to_use = message.symbol
 
-        await self._save_to_timeseries(
-            symbol=symbol_to_use,
-            timestamp=message.timestamp,
-            price=message.price,
-            volume=message.volume,
-            provider_code=message.provider_code
-        )
+        tasks = [
+            # Save to timeseries
+            self._save_to_timeseries(
+                symbol=symbol_to_use,
+                timestamp=message.timestamp,
+                price=message.price,
+                volume=message.volume,
+                provider_code=message.provider_code
+            ),
+
+            # Broadcast to clients
+            self._broadcast_message(
+                symbol=symbol_to_use,
+                timestamp=message.timestamp,
+                price=message.price,
+                volume=message.volume,
+                provider_code=message.provider_code
+            )
+        ]
+
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _save_to_timeseries(
-        self, symbol: str, timestamp: int, price: float, volume: float, provider_code: str
+            self, symbol: str, timestamp: int, price: float, volume: float, provider_code: str
     ):
         """Save data to timeseries (now includes provider_code for tracking)."""
         try:
@@ -102,7 +127,29 @@ class LiveDataIngestion:
             )
             logger.debug(f"Saved {symbol} from {provider_code}: ${price}")
         except Exception as e:
-            logger.error(f"Error saving to timeseries for {symbol}: {e}")
+            logger.error(f"Error saving to timeseries for {symbol}: {e!r}")
+
+    async def _broadcast_message(
+            self, symbol: str, timestamp: int, price: float, volume: float, provider_code: str
+    ):
+
+        # No active clients for this symbol, skip broadcasting
+        if symbol not in self.websocket_manager.get_active_channels():
+            return
+
+        try:
+            # Broadcast via Redis Pub/Sub
+            await self.redis.publish(symbol, pack_update(
+                {
+                    "symbol": symbol,
+                    "timestamp": timestamp,
+                    "price": price,
+                    "volume": int(volume)
+                }
+            ))
+            logger.debug(f"Broadcasted {symbol} from {provider_code}: ${price}")
+        except Exception as e:
+            logger.error(f"Error broadcasting message for {symbol}: {e!r}")
 
     async def start_ingestion(self):
         """Start data ingestion from all configured providers"""

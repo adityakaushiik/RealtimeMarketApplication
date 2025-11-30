@@ -10,14 +10,22 @@ class UserRoles(Enum):
 
 class WebSocketMessageType(Enum):
     # Message Types from clients to server
-    SUBSCRIBE = "subscribe"
-    UNSUBSCRIBE = "unsubscribe"
+    SUBSCRIBE = 1
+    UNSUBSCRIBE = 2
 
     # Message Updates from server to clients
-    LIVE_UPDATE = "live_update"
-    CHART_DATA = "chart_data"
-    INFO = "info"
-    ERROR = "error"
+    SNAPSHOT = 10
+    UPDATE = 11
+
+    # Log Levels
+    INFO = 100
+    ERROR = 101
+
+
+class SupportedIntervals(Enum):
+    FIVE_MINUTES = '5m'
+    ONE_DAY = '1day'
+
 
 class DataBroadcastFormat(BaseModelPy):
     timestamp: int
@@ -27,5 +35,3 @@ class DataBroadcastFormat(BaseModelPy):
 
 class DataIngestionFormat(DataBroadcastFormat):
     provider_code: str
-
-

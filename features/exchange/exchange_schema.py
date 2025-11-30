@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import Optional
 
 from models.base_model_py import BaseModelPy
 
@@ -6,9 +6,9 @@ from models.base_model_py import BaseModelPy
 class ExchangeBase(BaseModelPy):
     name: str
     code: str
-    timezone: Union[str, None] = None
-    country: Union[str, None] = None
-    currency: Union[str, None] = None
+    timezone: Optional[str] = None
+    country: Optional[str] = None
+    currency: Optional[str] = None
 
 
 class ExchangeCreate(ExchangeBase):
@@ -16,11 +16,11 @@ class ExchangeCreate(ExchangeBase):
 
 
 class ExchangeUpdate(BaseModelPy):
-    name: Union[str, None] = None
-    code: Union[str, None] = None
-    timezone: Union[str, None] = None
-    country: Union[str, None] = None
-    currency: Union[str, None] = None
+    name: Optional[str] = None
+    code: Optional[str] = None
+    timezone: Optional[str] = None
+    country: Optional[str] = None
+    currency: Optional[str] = None
 
 
 class ExchangeInDb(ExchangeBase):
@@ -35,8 +35,8 @@ class ExchangeProviderMappingCreate(BaseModelPy):
 
 
 class ExchangeProviderMappingUpdate(BaseModelPy):
-    is_active: Union[bool, None] = None
-    is_primary: Union[bool, None] = None
+    is_active: Optional[bool] = None
+    is_primary: Optional[bool] = None
 
 
 class ExchangeProviderMappingInDb(BaseModelPy):

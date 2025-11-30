@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Boolean, Float, ForeignKey, Integer, String
+from sqlalchemy import BigInteger, Boolean, Float, ForeignKey, Integer, String, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
+
+from datetime import datetime
 
 from .base import Base
 from .mixins import BaseMixin
@@ -15,7 +17,7 @@ class PriceHistoryIntraday(Base, BaseMixin):
         ForeignKey("instruments.id"), index=True, nullable=False
     )
 
-    timestamp: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    datetime: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     open: Mapped[float | None] = mapped_column(Float, nullable=True)
     high: Mapped[float | None] = mapped_column(Float, nullable=True)
     low: Mapped[float | None] = mapped_column(Float, nullable=True)

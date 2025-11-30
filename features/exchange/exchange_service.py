@@ -2,12 +2,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Exchange, ExchangeProviderMapping
-from features.exchange.exchange_schema import ExchangeCreate, ExchangeUpdate, ExchangeInDb, ExchangeProviderMappingCreate, ExchangeProviderMappingUpdate, ExchangeProviderMappingInDb
+from features.exchange.exchange_schema import ExchangeCreate, ExchangeUpdate, ExchangeInDb, \
+    ExchangeProviderMappingCreate, ExchangeProviderMappingUpdate, ExchangeProviderMappingInDb
+from services.data.exchange_data import ExchangeData
 
 
 async def create_exchange(
-    session: AsyncSession,
-    exchange_data: ExchangeCreate,
+        session: AsyncSession,
+        exchange_data: ExchangeCreate,
 ):
     """Create a new exchange"""
     new_exchange = Exchange(
@@ -31,8 +33,8 @@ async def create_exchange(
 
 
 async def get_exchange_by_id(
-    session: AsyncSession,
-    exchange_id: int,
+        session: AsyncSession,
+        exchange_id: int,
 ):
     """Get exchange by ID"""
     result = await session.execute(select(Exchange).where(Exchange.id == exchange_id))
@@ -50,8 +52,8 @@ async def get_exchange_by_id(
 
 
 async def get_exchange_by_code(
-    session: AsyncSession,
-    code: str,
+        session: AsyncSession,
+        code: str,
 ):
     """Get exchange by code"""
     result = await session.execute(select(Exchange).where(Exchange.code == code))
@@ -69,10 +71,10 @@ async def get_exchange_by_code(
 
 
 async def get_all_exchanges(
-    session: AsyncSession,
+        session: AsyncSession,
 ) -> list[ExchangeInDb]:
     """Get all exchanges"""
-    result = await session.execute(select(Exchange))
+    result = await session.execute(select(Exchange).where(Exchange.is_active == True))
     exchanges = result.scalars().all()
     return [
         ExchangeInDb(
@@ -87,10 +89,30 @@ async def get_all_exchanges(
     ]
 
 
+async def get_all_active_exchanges(
+        session: AsyncSession,
+) -> list[ExchangeData]:
+    """Get all active exchanges as ExchangeData objects"""
+    result = await session.execute(select(Exchange).where(
+        Exchange.is_active == True
+    ))
+    exchanges = result.scalars().all()
+    return [
+        ExchangeData(
+            exchange_name=exchange.name,
+            exchange_id=exchange.id,
+            market_open_time_hhmm=exchange.market_open_time,
+            market_close_time_hhmm=exchange.market_close_time,
+            timezone_str=exchange.timezone,
+        )
+        for exchange in exchanges
+    ]
+
+
 async def update_exchange(
-    session: AsyncSession,
-    exchange_id: int,
-    exchange_data: ExchangeUpdate,
+        session: AsyncSession,
+        exchange_id: int,
+        exchange_data: ExchangeUpdate,
 ):
     """Update an exchange"""
     result = await session.execute(select(Exchange).where(Exchange.id == exchange_id))
@@ -115,8 +137,8 @@ async def update_exchange(
 
 
 async def delete_exchange(
-    session: AsyncSession,
-    exchange_id: int,
+        session: AsyncSession,
+        exchange_id: int,
 ) -> bool:
     """Delete an exchange"""
     result = await session.execute(select(Exchange).where(Exchange.id == exchange_id))
@@ -132,8 +154,8 @@ async def delete_exchange(
 # ExchangeProviderMapping functions
 
 async def create_exchange_provider_mapping(
-    session: AsyncSession,
-    mapping_data: ExchangeProviderMappingCreate,
+        session: AsyncSession,
+        mapping_data: ExchangeProviderMappingCreate,
 ) -> ExchangeProviderMappingInDb:
     """Create a new exchange-provider mapping"""
     new_mapping = ExchangeProviderMapping(
@@ -154,8 +176,8 @@ async def create_exchange_provider_mapping(
 
 
 async def get_mappings_for_exchange(
-    session: AsyncSession,
-    exchange_id: int,
+        session: AsyncSession,
+        exchange_id: int,
 ) -> list[ExchangeProviderMappingInDb]:
     """Get all provider mappings for an exchange"""
     result = await session.execute(
@@ -174,8 +196,8 @@ async def get_mappings_for_exchange(
 
 
 async def get_mappings_for_provider(
-    session: AsyncSession,
-    provider_id: int,
+        session: AsyncSession,
+        provider_id: int,
 ) -> list[ExchangeProviderMappingInDb]:
     """Get all exchange mappings for a provider"""
     result = await session.execute(
@@ -194,10 +216,10 @@ async def get_mappings_for_provider(
 
 
 async def update_exchange_provider_mapping(
-    session: AsyncSession,
-    provider_id: int,
-    exchange_id: int,
-    update_data: ExchangeProviderMappingUpdate,
+        session: AsyncSession,
+        provider_id: int,
+        exchange_id: int,
+        update_data: ExchangeProviderMappingUpdate,
 ) -> ExchangeProviderMappingInDb | None:
     """Update an exchange-provider mapping"""
     result = await session.execute(
@@ -225,9 +247,9 @@ async def update_exchange_provider_mapping(
 
 
 async def delete_exchange_provider_mapping(
-    session: AsyncSession,
-    provider_id: int,
-    exchange_id: int,
+        session: AsyncSession,
+        provider_id: int,
+        exchange_id: int,
 ) -> bool:
     """Delete an exchange-provider mapping"""
     result = await session.execute(

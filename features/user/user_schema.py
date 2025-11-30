@@ -1,12 +1,14 @@
+from typing import Optional
+
 from models.base_model_py import BaseModelPy
 
 
 class UserBase(BaseModelPy):
     email: str
-    fname: str | None = None
-    lname: str | None = None
-    username: str | None = None
-    profile_picture_url: str | None = None
+    fname: Optional[str] = None
+    lname: Optional[str] = None
+    username: Optional[str] = None
+    profile_picture_url: Optional[str] = None
 
 
 class UserWithPassword(UserBase):
@@ -18,16 +20,16 @@ class UserCreate(UserWithPassword):
 
 
 class UserUpdate(BaseModelPy):
-    email: str | None = None
-    fname: str | None = None
-    lname: str | None = None
-    username: str | None = None
-    profile_picture_url: str | None = None
-    blacklisted: bool | None = None
-    role_id: int | None = None
+    email: Optional[str] = None
+    fname: Optional[str] = None
+    lname: Optional[str] = None
+    username: Optional[str] = None
+    profile_picture_url: Optional[str] = None
+    blacklisted: Optional[bool] = None
+    role_id: Optional[int] = None
 
 
 class UserInDb(UserBase):
     id: int
     blacklisted: bool
-    role_id: int | None = None
+    role_id: Optional[int] = None

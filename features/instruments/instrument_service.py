@@ -18,8 +18,8 @@ from features.instruments.instrument_schema import (
 # Instrument CRUD
 
 async def create_instrument(
-    session: AsyncSession,
-    instrument_data: InstrumentCreate,
+        session: AsyncSession,
+        instrument_data: InstrumentCreate,
 ) -> InstrumentInDb:
     """Create a new instrument"""
     new_instrument = Instrument(
@@ -47,8 +47,8 @@ async def create_instrument(
 
 
 async def get_instrument_by_id(
-    session: AsyncSession,
-    instrument_id: int,
+        session: AsyncSession,
+        instrument_id: int,
 ) -> InstrumentInDb | None:
     """Get instrument by ID"""
     result = await session.execute(select(Instrument).where(Instrument.id == instrument_id))
@@ -67,8 +67,30 @@ async def get_instrument_by_id(
     return None
 
 
+async def get_instrument_by_symbol(
+        session: AsyncSession,
+        symbol: str,
+) -> InstrumentInDb | None:
+    """Get instrument by symbol"""
+
+    result = await session.execute(select(Instrument).where(Instrument.symbol == symbol))
+    instrument = result.scalar_one_or_none()
+    if instrument:
+        return InstrumentInDb(
+            id=instrument.id,
+            symbol=instrument.symbol,
+            name=instrument.name,
+            exchange_id=instrument.exchange_id,
+            instrument_type_id=instrument.instrument_type_id,
+            sector_id=instrument.sector_id,
+            blacklisted=instrument.blacklisted,
+            delisted=instrument.delisted,
+        )
+    return None
+
+
 async def get_all_instruments(
-    session: AsyncSession,
+        session: AsyncSession,
 ) -> list[InstrumentInDb]:
     """Get all instruments"""
     result = await session.execute(select(Instrument))
@@ -89,9 +111,9 @@ async def get_all_instruments(
 
 
 async def update_instrument(
-    session: AsyncSession,
-    instrument_id: int,
-    instrument_data: InstrumentUpdate,
+        session: AsyncSession,
+        instrument_id: int,
+        instrument_data: InstrumentUpdate,
 ) -> InstrumentInDb | None:
     """Update an instrument"""
     result = await session.execute(select(Instrument).where(Instrument.id == instrument_id))
@@ -118,8 +140,8 @@ async def update_instrument(
 
 
 async def delete_instrument(
-    session: AsyncSession,
-    instrument_id: int,
+        session: AsyncSession,
+        instrument_id: int,
 ) -> bool:
     """Delete an instrument"""
     result = await session.execute(select(Instrument).where(Instrument.id == instrument_id))
@@ -135,8 +157,8 @@ async def delete_instrument(
 # InstrumentType CRUD
 
 async def create_instrument_type(
-    session: AsyncSession,
-    type_data: InstrumentTypeCreate,
+        session: AsyncSession,
+        type_data: InstrumentTypeCreate,
 ) -> InstrumentTypeInDb:
     """Create a new instrument type"""
     new_type = InstrumentType(
@@ -160,8 +182,8 @@ async def create_instrument_type(
 
 
 async def get_instrument_type_by_id(
-    session: AsyncSession,
-    type_id: int,
+        session: AsyncSession,
+        type_id: int,
 ) -> InstrumentTypeInDb | None:
     """Get instrument type by ID"""
     result = await session.execute(select(InstrumentType).where(InstrumentType.id == type_id))
@@ -179,7 +201,7 @@ async def get_instrument_type_by_id(
 
 
 async def get_all_instrument_types(
-    session: AsyncSession,
+        session: AsyncSession,
 ) -> list[InstrumentTypeInDb]:
     """Get all instrument types"""
     result = await session.execute(select(InstrumentType))
@@ -198,9 +220,9 @@ async def get_all_instrument_types(
 
 
 async def update_instrument_type(
-    session: AsyncSession,
-    type_id: int,
-    type_data: InstrumentTypeUpdate,
+        session: AsyncSession,
+        type_id: int,
+        type_data: InstrumentTypeUpdate,
 ) -> InstrumentTypeInDb | None:
     """Update an instrument type"""
     result = await session.execute(select(InstrumentType).where(InstrumentType.id == type_id))
@@ -225,8 +247,8 @@ async def update_instrument_type(
 
 
 async def delete_instrument_type(
-    session: AsyncSession,
-    type_id: int,
+        session: AsyncSession,
+        type_id: int,
 ) -> bool:
     """Delete an instrument type"""
     result = await session.execute(select(InstrumentType).where(InstrumentType.id == type_id))
@@ -242,8 +264,8 @@ async def delete_instrument_type(
 # Sector CRUD
 
 async def create_sector(
-    session: AsyncSession,
-    sector_data: SectorCreate,
+        session: AsyncSession,
+        sector_data: SectorCreate,
 ) -> SectorInDb:
     """Create a new sector"""
     new_sector = Sector(
@@ -261,8 +283,8 @@ async def create_sector(
 
 
 async def get_sector_by_id(
-    session: AsyncSession,
-    sector_id: int,
+        session: AsyncSession,
+        sector_id: int,
 ) -> SectorInDb | None:
     """Get sector by ID"""
     result = await session.execute(select(Sector).where(Sector.id == sector_id))
@@ -277,7 +299,7 @@ async def get_sector_by_id(
 
 
 async def get_all_sectors(
-    session: AsyncSession,
+        session: AsyncSession,
 ) -> list[SectorInDb]:
     """Get all sectors"""
     result = await session.execute(select(Sector))
@@ -293,9 +315,9 @@ async def get_all_sectors(
 
 
 async def update_sector(
-    session: AsyncSession,
-    sector_id: int,
-    sector_data: SectorUpdate,
+        session: AsyncSession,
+        sector_id: int,
+        sector_data: SectorUpdate,
 ) -> SectorInDb | None:
     """Update a sector"""
     result = await session.execute(select(Sector).where(Sector.id == sector_id))
@@ -317,8 +339,8 @@ async def update_sector(
 
 
 async def delete_sector(
-    session: AsyncSession,
-    sector_id: int,
+        session: AsyncSession,
+        sector_id: int,
 ) -> bool:
     """Delete a sector"""
     result = await session.execute(select(Sector).where(Sector.id == sector_id))

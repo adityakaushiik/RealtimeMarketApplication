@@ -1,3 +1,5 @@
+from typing import Optional
+
 from models.base_model_py import BaseModelPy
 
 
@@ -6,7 +8,7 @@ class InstrumentBase(BaseModelPy):
     name: str
     exchange_id: int
     instrument_type_id: int
-    sector_id: int | None = None
+    sector_id: Optional[int] = None
     blacklisted: bool = False
     delisted: bool = False
 
@@ -16,13 +18,13 @@ class InstrumentCreate(InstrumentBase):
 
 
 class InstrumentUpdate(BaseModelPy):
-    symbol: str | None = None
-    name: str | None = None
-    exchange_id: int | None = None
-    instrument_type_id: int | None = None
-    sector_id: int | None = None
-    blacklisted: bool | None = None
-    delisted: bool | None = None
+    symbol: Optional[str] = None
+    name: Optional[str] = None
+    exchange_id: Optional[int] = None
+    instrument_type_id: Optional[int] = None
+    sector_id: Optional[int] = None
+    blacklisted: Optional[bool] = None
+    delisted: Optional[bool] = None
 
 
 class InstrumentInDb(InstrumentBase):
@@ -32,9 +34,9 @@ class InstrumentInDb(InstrumentBase):
 class InstrumentTypeBase(BaseModelPy):
     code: str
     name: str
-    description: str | None = None
-    category: str | None = None
-    display_order: int | None = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    display_order: Optional[int] = None
 
 
 class InstrumentTypeCreate(InstrumentTypeBase):
@@ -42,11 +44,11 @@ class InstrumentTypeCreate(InstrumentTypeBase):
 
 
 class InstrumentTypeUpdate(BaseModelPy):
-    code: str | None = None
-    name: str | None = None
-    description: str | None = None
-    category: str | None = None
-    display_order: int | None = None
+    code: Optional[str] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    display_order: Optional[int] = None
 
 
 class InstrumentTypeInDb(InstrumentTypeBase):
@@ -55,7 +57,7 @@ class InstrumentTypeInDb(InstrumentTypeBase):
 
 class SectorBase(BaseModelPy):
     name: str
-    description: str | None = None
+    description: Optional[str] = None
 
 
 class SectorCreate(SectorBase):
@@ -63,8 +65,8 @@ class SectorCreate(SectorBase):
 
 
 class SectorUpdate(BaseModelPy):
-    name: str | None = None
-    description: str | None = None
+    name: Optional[str] = None
+    description: Optional[str] = None
 
 
 class SectorInDb(SectorBase):

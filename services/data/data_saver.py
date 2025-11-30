@@ -120,7 +120,7 @@ class DataSaver:
                     # Create intraday record
                     intraday_record = PriceHistoryIntraday(
                         instrument_id=instrument_id,
-                        timestamp=int(ohlcv["ts"]),
+                        datetime=datetime.fromtimestamp(int(ohlcv["ts"]) / 1000),
                         open=ohlcv["open"],
                         high=ohlcv["high"],
                         low=ohlcv["low"],
@@ -228,9 +228,10 @@ class DataSaver:
         instrument_ids = list(set(update[0] for update in daily_updates))
 
         # Fetch existing records in one query
+        date_dt = datetime.fromtimestamp(date_timestamp / 1000)
         query = select(PriceHistoryDaily).where(
             PriceHistoryDaily.instrument_id.in_(instrument_ids),
-            PriceHistoryDaily.timestamp == date_timestamp
+            PriceHistoryDaily.datetime == date_dt
         )
         result = await session.execute(query)
         existing_records = {row.instrument_id: row for row in result.scalars().all()}
@@ -252,7 +253,7 @@ class DataSaver:
                 # Create new daily record
                 new_daily = PriceHistoryDaily(
                     instrument_id=instrument_id,
-                    timestamp=date_timestamp,
+                    datetime=datetime.fromtimestamp(date_timestamp / 1000),
                     open=ohlcv["open"],
                     high=ohlcv["high"],
                     low=ohlcv["low"],

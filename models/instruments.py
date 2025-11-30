@@ -34,16 +34,22 @@ class Instrument(Base, BaseMixin):
     instrument_type_id: Mapped[int] = mapped_column(
         ForeignKey("instrument_types.id"), nullable=False, index=True
     )
+
     sector_id: Mapped[int | None] = mapped_column(
         ForeignKey("sectors.id"), nullable=True, index=True
     )
 
     # Minimal relationships
     exchange: Mapped["Exchange"] = relationship(back_populates="instruments")
+
     instrument_type: Mapped["InstrumentType"] = relationship(
         back_populates="instruments"
     )
     sector: Mapped["Sector | None"] = relationship(back_populates="instruments")
+
+    provider_mappings: Mapped[list["ProviderInstrumentMapping"]] = relationship(
+        back_populates="instrument", cascade="all, delete-orphan"
+    )
 
     # intraday_prices: Mapped[list["PriceHistoryIntraday"]] = relationship(
     #     back_populates="instrument", cascade="all, delete-orphan"
@@ -51,7 +57,3 @@ class Instrument(Base, BaseMixin):
     # daily_prices: Mapped[list["PriceHistoryDaily"]] = relationship(
     #     back_populates="instrument", cascade="all, delete-orphan"
     # )
-
-    provider_mappings: Mapped[list["ProviderInstrumentMapping"]] = relationship(
-        back_populates="instrument", cascade="all, delete-orphan"
-    )

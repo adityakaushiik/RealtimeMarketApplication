@@ -25,21 +25,9 @@ def get_redis():
         if redis_client is None:
             redis_url = _build_redis_url_from_env()
             print(redis_url)
-            redis_client = async_redis.from_url(redis_url, decode_responses=True)
+            redis_client = async_redis.from_url(redis_url, decode_responses=False)
             print(f"Created redis client for {redis_url} (decode_responses=True)")
         return redis_client
     except Exception as e:
         print(f"Redis connection error: {e}")
         return None
-
-
-async def ping_redis():
-    """Async helper to verify connectivity. Returns True if ping succeeds, False otherwise."""
-    r = get_redis()
-    if r is None:
-        return False
-    try:
-        return await r.ping()
-    except Exception as e:
-        print(f"Redis ping failed: {e}")
-        return False
