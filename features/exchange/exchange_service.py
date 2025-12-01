@@ -18,6 +18,10 @@ async def create_exchange(
         timezone=exchange_data.timezone,
         country=exchange_data.country,
         currency=exchange_data.currency,
+        pre_market_open_time=exchange_data.pre_market_open_time,
+        market_open_time=exchange_data.market_open_time,
+        market_close_time=exchange_data.market_close_time,
+        post_market_close_time=exchange_data.post_market_close_time,
     )
     session.add(new_exchange)
     await session.commit()
@@ -29,6 +33,10 @@ async def create_exchange(
         timezone=new_exchange.timezone,
         country=new_exchange.country,
         currency=new_exchange.currency,
+        pre_market_open_time=new_exchange.pre_market_open_time,
+        market_open_time=new_exchange.market_open_time,
+        market_close_time=new_exchange.market_close_time,
+        post_market_close_time=new_exchange.post_market_close_time,
     )
 
 
@@ -101,8 +109,8 @@ async def get_all_active_exchanges(
         ExchangeData(
             exchange_name=exchange.name,
             exchange_id=exchange.id,
-            market_open_time_hhmm=exchange.market_open_time,
-            market_close_time_hhmm=exchange.market_close_time,
+            market_open_time=exchange.market_open_time,
+            market_close_time=exchange.market_close_time,
             timezone_str=exchange.timezone,
         )
         for exchange in exchanges
@@ -133,6 +141,10 @@ async def update_exchange(
         timezone=exchange.timezone,
         country=exchange.country,
         currency=exchange.currency,
+        pre_market_open_time=exchange.pre_market_open_time,
+        market_open_time=exchange.market_open_time,
+        market_close_time=exchange.market_close_time,
+        post_market_close_time=exchange.post_market_close_time,
     )
 
 

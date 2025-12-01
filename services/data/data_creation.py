@@ -1,10 +1,16 @@
 import asyncio
+from datetime import datetime, timedelta
 from typing import List, Optional
+import pytz
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.logger import logger
 from services.data.exchange_data import ExchangeData
+from models.instruments import Instrument
+from models.price_history_intraday import PriceHistoryIntraday
+from models.price_history_daily import PriceHistoryDaily
 
 
 class DataCreationService:
@@ -22,38 +28,83 @@ class DataCreationService:
         """List the names of all exchanges being monitored."""
         return [exchange.exchange_name for exchange in self.exchanges]
 
-    async def start_data_creation(self) -> None:
+    async def start_data_creation(self, offset_days: int = 0) -> None:
         """
         Create Data Records for the future for all monitored exchanges.
         this includes record for intraday and daily data.
+        
+        Args:
+            offset_days: Number of days to offset from today (default: 0)
         """
+        # Run tasks sequentially to avoid sharing the same session concurrently
+        for exchange in self.exchanges:
+            await self._create_data_records_for_exchange(exchange, offset_days)
 
-        tasks = [
-            self._create_data_records_for_exchange(exchange)
-            for exchange in self.exchanges
-        ]
-
-        # Start all tasks concurrently
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    async def _create_data_records_for_exchange(self, exchange:ExchangeData, start_time = None, end_time = None) -> None:
+    async def _create_data_records_for_exchange(self, exchange: ExchangeData, offset_days: int = 0) -> None:
         """Create data records for a specific exchange."""
         try:
+            # Calculate target date and times
+            tz = pytz.timezone(exchange.timezone_str)
+            now = datetime.now(tz)
+            target_date = now.date() + timedelta(days=offset_days)
+            
+            # Calculate start and end times for the target date
+            start_dt = tz.localize(datetime.combine(target_date, exchange.market_open_time))
+            end_dt = tz.localize(datetime.combine(target_date, exchange.market_close_time))
+            
+            logger.info(f"Creating data records for {exchange.exchange_name} on {target_date} (Offset: {offset_days})")
 
-            ## Also add logic to put previous close into consideration while creating data records
+            # Fetch active instruments for this exchange
+            stmt = select(Instrument).where(
+                Instrument.exchange_id == exchange.exchange_id, 
+                Instrument.is_active == True
+            )
+            result = await self.session.execute(stmt)
+            instruments = result.scalars().all()
+            
+            if not instruments:
+                logger.warning(f"No active instruments found for {exchange.exchange_name}")
+                return
 
-            five_minute_datetime_for_exchange = []
+            # Generate 5-minute intervals
+            five_minute_datetimes = []
+            current_dt = start_dt
+            while current_dt <= end_dt:
+                five_minute_datetimes.append(current_dt)
+                current_dt += timedelta(minutes=exchange.interval_minutes)
 
-            # Create 5-minute intervals from start_time to end_time
-            current_time = exchange.start_time if start_time is None else start_time
-            end_time = exchange.end_time if end_time is None else end_time
+            intraday_records = []
+            daily_records = []
 
-            while current_time <= end_time:
-                five_minute_datetime_for_exchange.append(current_time)
-                current_time += exchange.interval_minutes * 60 * 1000  # Convert minutes to milliseconds
+            for instrument in instruments:
+                # Create Daily Record (placeholder)
+                daily_record = PriceHistoryDaily(
+                    instrument_id=instrument.id,
+                    datetime=start_dt, # Using market open time as the timestamp for the day
+                    price_not_found=True # Mark as not found initially
+                )
+                daily_records.append(daily_record)
+                
+                # Create Intraday Records (placeholders)
+                for dt in five_minute_datetimes:
+                    intraday_record = PriceHistoryIntraday(
+                        instrument_id=instrument.id,
+                        datetime=dt,
+                        price_not_found=True # Mark as not found initially
+                    )
+                    intraday_records.append(intraday_record)
 
+            # Bulk insert records
+            if daily_records:
+                self.session.add_all(daily_records)
+            
+            if intraday_records:
+                self.session.add_all(intraday_records)
+            
+            await self.session.commit()
 
-            logger.info(f"Created {len(five_minute_datetime_for_exchange)} data records for {exchange.exchange_name}")
+            logger.info(f"Successfully created {len(daily_records)} daily and {len(intraday_records)} intraday records for {exchange.exchange_name} on {target_date}")
 
         except Exception as e:
             logger.error(f"Error creating data records for {exchange.exchange_name}: {e!r}")
+            await self.session.rollback()

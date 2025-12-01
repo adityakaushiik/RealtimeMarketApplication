@@ -1,4 +1,5 @@
 from typing import Optional
+from datetime import time
 
 from models.base_model_py import BaseModelPy
 
@@ -9,6 +10,10 @@ class ExchangeBase(BaseModelPy):
     timezone: Optional[str] = None
     country: Optional[str] = None
     currency: Optional[str] = None
+    pre_market_open_time: Optional[time] = None
+    market_open_time: Optional[time] = None
+    market_close_time: Optional[time] = None
+    post_market_close_time: Optional[time] = None
 
 
 class ExchangeCreate(ExchangeBase):
@@ -21,6 +26,10 @@ class ExchangeUpdate(BaseModelPy):
     timezone: Optional[str] = None
     country: Optional[str] = None
     currency: Optional[str] = None
+    pre_market_open_time: Optional[time] = None
+    market_open_time: Optional[time] = None
+    market_close_time: Optional[time] = None
+    post_market_close_time: Optional[time] = None
 
 
 class ExchangeInDb(ExchangeBase):

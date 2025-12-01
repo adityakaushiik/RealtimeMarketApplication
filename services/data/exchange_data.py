@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, time
 import pytz
 
 
@@ -9,8 +9,8 @@ class ExchangeData:
     Attributes:
         exchange_name: Name of the exchange (e.g., 'NSE', 'BSE')
         exchange_id: Database ID of the exchange
-        market_open_time_hhmm: Market open time in HHMM format (e.g., 915 for 9:15 AM)
-        market_close_time_hhmm: Market close time in HHMM format (e.g., 1530 for 3:30 PM)
+        market_open_time: Market open time as datetime.time object
+        market_close_time: Market close time as datetime.time object
         timezone_str: Timezone string (e.g., 'Asia/Kolkata')
         interval_minutes: Interval in minutes for data collection (default: 5)
         start_time: Computed start time for data collection (timestamp in milliseconds)
@@ -21,40 +21,37 @@ class ExchangeData:
         self,
         exchange_name: str,
         exchange_id: int,
-        market_open_time_hhmm: int,
-        market_close_time_hhmm: int,
+        market_open_time: time,
+        market_close_time: time,
         timezone_str: str,
         interval_minutes: int = 5,
     ):
         self.exchange_name = exchange_name
         self.exchange_id = exchange_id
-        self.market_open_time_hhmm = market_open_time_hhmm
-        self.market_close_time_hhmm = market_close_time_hhmm
+        self.market_open_time = market_open_time
+        self.market_close_time = market_close_time
         self.timezone_str = timezone_str
         self.interval_minutes = interval_minutes
 
         # Compute start_time and end_time for today
-        self.start_time = self._compute_timestamp_for_today(market_open_time_hhmm)
-        self.end_time = self._compute_timestamp_for_today(market_close_time_hhmm)
+        self.start_time = self._compute_timestamp_for_today(market_open_time)
+        self.end_time = self._compute_timestamp_for_today(market_close_time)
 
-    def _compute_timestamp_for_today(self, hhmm: int) -> int:
-        """Compute timestamp in milliseconds for today's given HHMM in the exchange's timezone."""
+    def _compute_timestamp_for_today(self, time_obj: time) -> int:
+        """Compute timestamp in milliseconds for today's given time in the exchange's timezone."""
         tz = pytz.timezone(self.timezone_str)
         now = datetime.now(tz)
         today = now.date()
 
-        hour = hhmm // 100
-        minute = hhmm % 100
-
-        dt = tz.localize(datetime.combine(today, datetime.min.time().replace(hour=hour, minute=minute)))
+        dt = tz.localize(datetime.combine(today, time_obj))
         return int(dt.timestamp() * 1000)
 
     def get_exchange_info(self):
         return {
             "exchange_name": self.exchange_name,
             "exchange_id": self.exchange_id,
-            "market_open_time_hhmm": self.market_open_time_hhmm,
-            "market_close_time_hhmm": self.market_close_time_hhmm,
+            "market_open_time": self.market_open_time.strftime("%H:%M:%S"),
+            "market_close_time": self.market_close_time.strftime("%H:%M:%S"),
             "timezone": self.timezone_str,
             "start_time": self.start_time,
             "end_time": self.end_time,

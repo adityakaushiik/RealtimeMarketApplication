@@ -57,6 +57,7 @@ async def populate_database_by_exchange(
 
 @populate_database_route.post("/create_price_history_records_for_future")
 async def create_price_history_records_for_future(
+        offset_days: int = 0,
         session: AsyncSession = Depends(get_db_session),
         user_claims: dict = Depends(require_auth([UserRoles.ADMIN]))
 ):
@@ -68,9 +69,9 @@ async def create_price_history_records_for_future(
             exchange_data=exchange
         )
 
-    await data_creation.start_data_creation()
+    await data_creation.start_data_creation(offset_days=offset_days)
 
     return {
         "status": HTTP_200_OK,
-        "message": f"Price history records creation started for futures exchanges",
+        "message": f"Price history records creation started for futures exchanges with offset {offset_days} days",
     }
