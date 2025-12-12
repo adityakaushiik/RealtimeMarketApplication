@@ -153,7 +153,9 @@ async def get_mappings_for_provider(
 ) -> list[ProviderInstrumentMappingInDb]:
     """Get all instrument mappings for a provider"""
     result = await session.execute(
-        select(ProviderInstrumentMapping).where(ProviderInstrumentMapping.provider_id == provider_id)
+        select(ProviderInstrumentMapping).where(
+            ProviderInstrumentMapping.provider_id == provider_id
+        )
     )
     mappings = result.scalars().all()
     return [
@@ -172,7 +174,9 @@ async def get_mappings_for_instrument(
 ) -> list[ProviderInstrumentMappingInDb]:
     """Get all provider mappings for an instrument"""
     result = await session.execute(
-        select(ProviderInstrumentMapping).where(ProviderInstrumentMapping.instrument_id == instrument_id)
+        select(ProviderInstrumentMapping).where(
+            ProviderInstrumentMapping.instrument_id == instrument_id
+        )
     )
     mappings = result.scalars().all()
     return [
@@ -187,15 +191,13 @@ async def get_mappings_for_instrument(
 
 async def update_provider_instrument_mapping(
     session: AsyncSession,
-    provider_id: int,
-    instrument_id: int,
-    update_data: ProviderInstrumentMappingUpdate,
+    update_data: ProviderInstrumentMappingCreate,
 ) -> ProviderInstrumentMappingInDb | None:
     """Update a provider-instrument mapping"""
     result = await session.execute(
         select(ProviderInstrumentMapping).where(
-            (ProviderInstrumentMapping.provider_id == provider_id) &
-            (ProviderInstrumentMapping.instrument_id == instrument_id)
+            (ProviderInstrumentMapping.provider_id == update_data.provider_id)
+            & (ProviderInstrumentMapping.instrument_id == update_data.instrument_id)
         )
     )
     mapping = result.scalar_one_or_none()
@@ -223,8 +225,8 @@ async def delete_provider_instrument_mapping(
     """Delete a provider-instrument mapping"""
     result = await session.execute(
         select(ProviderInstrumentMapping).where(
-            (ProviderInstrumentMapping.provider_id == provider_id) &
-            (ProviderInstrumentMapping.instrument_id == instrument_id)
+            (ProviderInstrumentMapping.provider_id == provider_id)
+            & (ProviderInstrumentMapping.instrument_id == instrument_id)
         )
     )
     mapping = result.scalar_one_or_none()

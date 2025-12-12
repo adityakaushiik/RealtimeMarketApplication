@@ -2,8 +2,11 @@
 Base provider interface for all market data providers.
 All providers (Yahoo Finance, Dhan, etc.) must implement this interface.
 """
+
 from abc import ABC, abstractmethod
-from typing import Callable, Optional, Set
+from typing import Callable, Optional, Set, List
+
+from models import Instrument, PriceHistoryIntraday, PriceHistoryDaily
 
 
 class BaseMarketDataProvider(ABC):
@@ -69,6 +72,30 @@ class BaseMarketDataProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    def get_intraday_prices(
+        self, instruments: List[Instrument]
+    ) -> dict[str, list[PriceHistoryIntraday]]:
+        """
+        Fetch intraday price history for given instruments.
+
+        Args:
+            instruments: List of Instrument objects to fetch data for
+        """
+        pass
+
+    @abstractmethod
+    def get_daily_prices(
+        self, instruments: List[Instrument]
+    ) -> dict[str, list[PriceHistoryDaily]]:
+        """
+        Fetch daily price history for given instruments.
+
+        Args:
+            instruments: List of Instrument objects to fetch data for
+        """
+        pass
+
     def get_status(self) -> dict:
         """Get current status of this provider"""
         return {
@@ -77,4 +104,3 @@ class BaseMarketDataProvider(ABC):
             "subscribed_count": len(self.subscribed_symbols),
             "symbols": list(self.subscribed_symbols),
         }
-

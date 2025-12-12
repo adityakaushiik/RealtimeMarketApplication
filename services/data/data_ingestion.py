@@ -4,6 +4,7 @@ import redis
 
 from config.logger import logger
 from config.redis_config import get_redis
+
 # from services.data.data_broadcast import get_data_broadcast
 from services.provider.provider_manager import ProviderManager
 from services.redis_timeseries import get_redis_timeseries
@@ -102,23 +103,27 @@ class LiveDataIngestion:
                 timestamp=message.timestamp,
                 price=message.price,
                 volume=message.volume,
-                provider_code=message.provider_code
+                provider_code=message.provider_code,
             ),
-
             # Broadcast to clients
             self._broadcast_message(
                 symbol=symbol_to_use,
                 timestamp=message.timestamp,
                 price=message.price,
                 volume=message.volume,
-                provider_code=message.provider_code
-            )
+                provider_code=message.provider_code,
+            ),
         ]
 
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _save_to_timeseries(
-            self, symbol: str, timestamp: int, price: float, volume: float, provider_code: str
+        self,
+        symbol: str,
+        timestamp: int,
+        price: float,
+        volume: float,
+        provider_code: str,
     ):
         """Save data to timeseries (now includes provider_code for tracking)."""
         try:
@@ -130,23 +135,30 @@ class LiveDataIngestion:
             logger.error(f"Error saving to timeseries for {symbol}: {e!r}")
 
     async def _broadcast_message(
-            self, symbol: str, timestamp: int, price: float, volume: float, provider_code: str
+        self,
+        symbol: str,
+        timestamp: int,
+        price: float,
+        volume: float,
+        provider_code: str,
     ):
-
         # No active clients for this symbol, skip broadcasting
         if symbol not in self.websocket_manager.get_active_channels():
             return
 
         try:
             # Broadcast via Redis Pub/Sub
-            await self.redis.publish(symbol, pack_update(
-                {
-                    "symbol": symbol,
-                    "timestamp": timestamp,
-                    "price": price,
-                    "volume": int(volume)
-                }
-            ))
+            await self.redis.publish(
+                symbol,
+                pack_update(
+                    {
+                        "symbol": symbol,
+                        "timestamp": timestamp,
+                        "price": price,
+                        "volume": int(volume),
+                    }
+                ),
+            )
             logger.debug(f"Broadcasted {symbol} from {provider_code}: ${price}")
         except Exception as e:
             logger.error(f"Error broadcasting message for {symbol}: {e!r}")
@@ -168,7 +180,9 @@ class LiveDataIngestion:
         symbols_by_provider = await self.provider_manager.get_symbols_by_provider()
 
         if not symbols_by_provider:
-            logger.warning("⚠️  No symbols found to subscribe to. Check database configuration.")
+            logger.warning(
+                "⚠️  No symbols found to subscribe to. Check database configuration."
+            )
             return
 
         # Start all provider connections
@@ -233,7 +247,9 @@ class LiveDataIngestion:
                     logger.info(f"📈 Subscribed to {len(to_subscribe)} new symbols")
 
                 if to_unsubscribe:
-                    await self.provider_manager.unsubscribe_from_symbols(list(to_unsubscribe))
+                    await self.provider_manager.unsubscribe_from_symbols(
+                        list(to_unsubscribe)
+                    )
                     logger.info(f"📉 Unsubscribed from {len(to_unsubscribe)} symbols")
 
             except asyncio.CancelledError:

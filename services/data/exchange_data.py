@@ -24,26 +24,46 @@ class ExchangeData:
         market_open_time: time,
         market_close_time: time,
         timezone_str: str,
+        pre_market_open_time: time = None,
+        post_market_close_time: time = None,
         interval_minutes: int = 5,
     ):
         self.exchange_name = exchange_name
         self.exchange_id = exchange_id
         self.market_open_time = market_open_time
         self.market_close_time = market_close_time
+        self.pre_market_open_time = pre_market_open_time
+        self.post_market_close_time = post_market_close_time
         self.timezone_str = timezone_str
         self.interval_minutes = interval_minutes
 
-        # Compute start_time and end_time for today
-        self.start_time = self._compute_timestamp_for_today(market_open_time)
-        self.end_time = self._compute_timestamp_for_today(market_close_time)
+        # Initialize start_time and end_time for today
+        self.update_timestamps_for_date(
+            datetime.now(pytz.timezone(timezone_str)).date()
+        )
 
-    def _compute_timestamp_for_today(self, time_obj: time) -> int:
-        """Compute timestamp in milliseconds for today's given time in the exchange's timezone."""
+    def update_timestamps_for_date(self, date_obj) -> None:
+        """Update start_time and end_time for a specific date."""
+        # Use effective start/end times including pre/post market sessions
+        effective_start_time = self.market_open_time
+        if self.pre_market_open_time:
+            effective_start_time = min(self.market_open_time, self.pre_market_open_time)
+
+        effective_end_time = self.market_close_time
+        if self.post_market_close_time:
+            effective_end_time = max(
+                self.market_close_time, self.post_market_close_time
+            )
+
+        self.start_time = self._compute_timestamp(date_obj, effective_start_time)
+        self.end_time = self._compute_timestamp(date_obj, effective_end_time)
+
+    def _compute_timestamp(self, date_obj, time_obj: time) -> int:
+        """Compute timestamp in milliseconds for a given date and time in the exchange's timezone."""
+        if time_obj is None:
+            return 0
         tz = pytz.timezone(self.timezone_str)
-        now = datetime.now(tz)
-        today = now.date()
-
-        dt = tz.localize(datetime.combine(today, time_obj))
+        dt = tz.localize(datetime.combine(date_obj, time_obj))
         return int(dt.timestamp() * 1000)
 
     def get_exchange_info(self):
@@ -52,11 +72,21 @@ class ExchangeData:
             "exchange_id": self.exchange_id,
             "market_open_time": self.market_open_time.strftime("%H:%M:%S"),
             "market_close_time": self.market_close_time.strftime("%H:%M:%S"),
+            "pre_market_open_time": self.pre_market_open_time.strftime("%H:%M:%S")
+            if self.pre_market_open_time
+            else None,
+            "post_market_close_time": self.post_market_close_time.strftime("%H:%M:%S")
+            if self.post_market_close_time
+            else None,
             "timezone": self.timezone_str,
             "start_time": self.start_time,
             "end_time": self.end_time,
-            "start_time_readable": datetime.fromtimestamp(self.start_time / 1000).strftime("%Y-%m-%d %H:%M:%S"),
-            "end_time_readable": datetime.fromtimestamp(self.end_time / 1000).strftime("%Y-%m-%d %H:%M:%S"),
+            "start_time_readable": datetime.fromtimestamp(
+                self.start_time / 1000
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+            "end_time_readable": datetime.fromtimestamp(self.end_time / 1000).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
             "interval_minutes": self.interval_minutes,
         }
 

@@ -5,6 +5,7 @@ Run this script to populate provider and exchange-provider mappings.
 Usage:
     python z_data_migration/setup_providers.py
 """
+
 import asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,9 +26,7 @@ async def setup_providers():
         logger.info("Starting provider setup...")
 
         # 1. Create or update Yahoo Finance provider
-        result = await session.execute(
-            select(Provider).where(Provider.code == "YF")
-        )
+        result = await session.execute(select(Provider).where(Provider.code == "YF"))
         yf_provider = result.scalar_one_or_none()
 
         if not yf_provider:
@@ -36,7 +35,7 @@ async def setup_providers():
                 code="YF",
                 rate_limit=2000,  # requests per minute
                 credentials={},
-                is_active=True
+                is_active=True,
             )
             session.add(yf_provider)
             logger.info("✅ Created Yahoo Finance provider")
@@ -44,9 +43,7 @@ async def setup_providers():
             logger.info("ℹ️  Yahoo Finance provider already exists")
 
         # 2. Create or update Dhan provider
-        result = await session.execute(
-            select(Provider).where(Provider.code == "DHAN")
-        )
+        result = await session.execute(select(Provider).where(Provider.code == "DHAN"))
         dhan_provider = result.scalar_one_or_none()
 
         if not dhan_provider:
@@ -55,7 +52,7 @@ async def setup_providers():
                 code="DHAN",
                 rate_limit=1000,  # requests per minute (adjust based on Dhan's limits)
                 credentials={},  # Will be loaded from env variables
-                is_active=True
+                is_active=True,
             )
             session.add(dhan_provider)
             logger.info("✅ Created Dhan provider")
@@ -79,7 +76,7 @@ async def setup_providers():
                 result = await session.execute(
                     select(ExchangeProviderMapping).where(
                         ExchangeProviderMapping.provider_id == dhan_provider.id,
-                        ExchangeProviderMapping.exchange_id == exchange.id
+                        ExchangeProviderMapping.exchange_id == exchange.id,
                     )
                 )
                 existing_mapping = result.scalar_one_or_none()
@@ -89,7 +86,7 @@ async def setup_providers():
                         provider_id=dhan_provider.id,
                         exchange_id=exchange.id,
                         is_active=True,
-                        is_primary=True
+                        is_primary=True,
                     )
                     session.add(mapping)
                     logger.info(f"✅ Mapped {exchange_code} → Dhan (primary)")
@@ -111,7 +108,7 @@ async def setup_providers():
                 result = await session.execute(
                     select(ExchangeProviderMapping).where(
                         ExchangeProviderMapping.provider_id == yf_provider.id,
-                        ExchangeProviderMapping.exchange_id == exchange.id
+                        ExchangeProviderMapping.exchange_id == exchange.id,
                     )
                 )
                 existing_mapping = result.scalar_one_or_none()
@@ -121,12 +118,14 @@ async def setup_providers():
                         provider_id=yf_provider.id,
                         exchange_id=exchange.id,
                         is_active=True,
-                        is_primary=True
+                        is_primary=True,
                     )
                     session.add(mapping)
                     logger.info(f"✅ Mapped {exchange_code} → Yahoo Finance (primary)")
                 else:
-                    logger.info(f"ℹ️  Mapping {exchange_code} → Yahoo Finance already exists")
+                    logger.info(
+                        f"ℹ️  Mapping {exchange_code} → Yahoo Finance already exists"
+                    )
             else:
                 logger.warning(f"⚠️  Exchange {exchange_code} not found in database")
 
@@ -134,9 +133,9 @@ async def setup_providers():
         logger.info("🎉 Provider setup completed successfully!")
 
         # 5. Display summary
-        logger.info("\n" + "="*60)
+        logger.info("\n" + "=" * 60)
         logger.info("PROVIDER CONFIGURATION SUMMARY")
-        logger.info("="*60)
+        logger.info("=" * 60)
 
         # Query all mappings
         result = await session.execute(
@@ -145,9 +144,12 @@ async def setup_providers():
                 Provider.name,
                 Provider.code,
                 ExchangeProviderMapping.is_primary,
-                ExchangeProviderMapping.is_active
+                ExchangeProviderMapping.is_active,
             )
-            .join(ExchangeProviderMapping, Exchange.id == ExchangeProviderMapping.exchange_id)
+            .join(
+                ExchangeProviderMapping,
+                Exchange.id == ExchangeProviderMapping.exchange_id,
+            )
             .join(Provider, Provider.id == ExchangeProviderMapping.provider_id)
             .where(ExchangeProviderMapping.is_active == True)
             .order_by(Exchange.code)
@@ -156,9 +158,11 @@ async def setup_providers():
         mappings = result.all()
         for mapping in mappings:
             primary_label = "PRIMARY" if mapping.is_primary else "BACKUP"
-            logger.info(f"{mapping.code:10} → {mapping.name:20} ({mapping.code_1}) [{primary_label}]")
+            logger.info(
+                f"{mapping.code:10} → {mapping.name:20} ({mapping.code_1}) [{primary_label}]"
+            )
 
-        logger.info("="*60)
+        logger.info("=" * 60)
 
 
 async def verify_setup():
@@ -166,12 +170,14 @@ async def verify_setup():
     engine = get_database_engine()
 
     async with AsyncSession(engine) as session:
-        logger.info("\n" + "="*60)
+        logger.info("\n" + "=" * 60)
         logger.info("VERIFICATION")
-        logger.info("="*60)
+        logger.info("=" * 60)
 
         # Count providers
-        result = await session.execute(select(Provider).where(Provider.is_active == True))
+        result = await session.execute(
+            select(Provider).where(Provider.is_active == True)
+        )
         providers = result.scalars().all()
         logger.info(f"Active Providers: {len(providers)}")
         for provider in providers:
@@ -179,21 +185,24 @@ async def verify_setup():
 
         # Count mappings
         result = await session.execute(
-            select(ExchangeProviderMapping).where(ExchangeProviderMapping.is_active == True)
+            select(ExchangeProviderMapping).where(
+                ExchangeProviderMapping.is_active == True
+            )
         )
         mappings = result.scalars().all()
         logger.info(f"\nActive Exchange-Provider Mappings: {len(mappings)}")
 
-        logger.info("="*60)
+        logger.info("=" * 60)
 
 
 if __name__ == "__main__":
     logger.info("🚀 Starting multi-provider database setup...")
     asyncio.run(setup_providers())
     asyncio.run(verify_setup())
-    logger.info("\n✅ Setup complete! You can now start the application with multi-provider support.")
+    logger.info(
+        "\n✅ Setup complete! You can now start the application with multi-provider support."
+    )
     logger.info("\nNext steps:")
     logger.info("1. Add provider_instrument_mappings for your instruments")
     logger.info("2. Set DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN in your .env file")
     logger.info("3. Start your application")
-

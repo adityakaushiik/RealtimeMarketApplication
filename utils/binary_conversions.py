@@ -9,7 +9,7 @@ snapshot_format = Struct(
     "low" / Float32b,
     "close" / Float32b,
     "prev_close" / Float32b,
-    "volume" / Int64ub
+    "volume" / Int64ub,
 )
 
 example_snapshot_data = {
@@ -20,7 +20,7 @@ example_snapshot_data = {
     "low": 149.0,
     "close": 151.5,
     "prev_close": 149.5,
-    "volume": 1234567890
+    "volume": 1234567890,
 }
 
 # Update: symbol, timestamp, price (float), volume
@@ -28,7 +28,7 @@ update_format = Struct(
     "symbol" / CString("utf8"),
     "timestamp" / Int64ub,
     "price" / Float32b,
-    "volume" / Int64ub
+    "volume" / Int64ub,
 )
 
 # Update example
@@ -36,7 +36,7 @@ example_update_data = {
     "symbol": "AAPL",
     "timestamp": 1732601000,
     "price": 151.8,
-    "volume": 987654321
+    "volume": 987654321,
 }
 
 

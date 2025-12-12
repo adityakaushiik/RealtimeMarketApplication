@@ -16,7 +16,7 @@ class WebSocketManager:
     def subscribe(self, websocket: WebSocket, channel: str):
         if websocket in self.active_connections:
             self.active_connections[websocket].add(channel)
-            
+
             if channel not in self.channel_subscribers:
                 self.channel_subscribers[channel] = set()
             self.channel_subscribers[channel].add(websocket)
@@ -30,9 +30,12 @@ class WebSocketManager:
             del self.active_connections[websocket]
 
     def unsubscribe(self, websocket: WebSocket, channel: str):
-        if websocket in self.active_connections and channel in self.active_connections[websocket]:
+        if (
+            websocket in self.active_connections
+            and channel in self.active_connections[websocket]
+        ):
             self.active_connections[websocket].discard(channel)
-            
+
             if channel in self.channel_subscribers:
                 self.channel_subscribers[channel].discard(websocket)
                 if not self.channel_subscribers[channel]:

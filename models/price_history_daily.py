@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, DateTime
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, DateTime, BigInteger
 from sqlalchemy.orm import Mapped, mapped_column
 from datetime import datetime
 
@@ -23,7 +23,7 @@ class PriceHistoryDaily(Base, BaseMixin):
     close: Mapped[float | None] = mapped_column(Float, nullable=True)
     previous_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     adj_close: Mapped[float | None] = mapped_column(Float, nullable=True)
-    volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     deliver_percentage: Mapped[float | None] = mapped_column(Float, nullable=True)
     price_not_found: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"

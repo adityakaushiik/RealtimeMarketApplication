@@ -28,7 +28,9 @@ class RedisTimeSeries:
             self._redis = get_redis()
         return self._redis
 
-    def _align_to_interval_slot(self, timestamp_ms: int, interval_minutes: int = 5, ceiling: bool = False) -> int:
+    def _align_to_interval_slot(
+        self, timestamp_ms: int, interval_minutes: int = 5, ceiling: bool = False
+    ) -> int:
         """
         Align a timestamp to the nearest interval slot boundary.
 
@@ -58,7 +60,7 @@ class RedisTimeSeries:
         r = self._get_client()
         price_key = f"{key}:price"
         vol_key = f"{key}:volume"
-        
+
         # Use pipeline to create both keys in one go
         async with r.pipeline() as pipe:
             try:
@@ -81,7 +83,7 @@ class RedisTimeSeries:
                     raise
 
     async def add_to_timeseries(
-            self, key: str, timestamp: float, price: float, volume: float = 0.0
+        self, key: str, timestamp: float, price: float, volume: float = 0.0
     ) -> None:
         r = self._get_client()
         price_key = f"{key}:price"
@@ -91,8 +93,8 @@ class RedisTimeSeries:
         # This avoids checking existence or calling create on every single tick.
         try:
             async with r.pipeline() as pipe:
-                pipe.ts().add(price_key, timestamp, float(price), on_duplicate='last')
-                pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate='last')
+                pipe.ts().add(price_key, timestamp, float(price), on_duplicate="last")
+                pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate="last")
                 await pipe.execute()
         except ResponseError as e:
             err_str = str(e).lower()
@@ -100,8 +102,12 @@ class RedisTimeSeries:
                 await self.create_timeseries(key)
                 # Retry add
                 async with r.pipeline() as pipe:
-                    pipe.ts().add(price_key, timestamp, float(price), on_duplicate='last')
-                    pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate='last')
+                    pipe.ts().add(
+                        price_key, timestamp, float(price), on_duplicate="last"
+                    )
+                    pipe.ts().add(
+                        vol_key, timestamp, float(volume), on_duplicate="last"
+                    )
                     await pipe.execute()
             elif "timestamp cannot be older" in err_str:
                 # Ignore out-of-order data that is older than the latest sample
@@ -114,8 +120,12 @@ class RedisTimeSeries:
         """Return the OHLCV for the last 5 minutes as a single bucket, including the ongoing candle."""
         now = int(time.time() * 1000)
         # Align to next 5-minute slot (ceiling) to include ongoing candle
-        aligned_now = self._align_to_interval_slot(now, interval_minutes=5, ceiling=True)
-        return await self.get_ohlcv_window(key, window_minutes=5, align_to_ts=aligned_now)
+        aligned_now = self._align_to_interval_slot(
+            now, interval_minutes=5, ceiling=True
+        )
+        return await self.get_ohlcv_window(
+            key, window_minutes=5, align_to_ts=aligned_now
+        )
 
     async def get_last_traded_price(self, key: str) -> Optional[DataBroadcastFormat]:
         """Return the last traded price, timestamp, and volume for the given key.
@@ -134,9 +144,7 @@ class RedisTimeSeries:
         try:
             # Fetch price and volume in parallel using TS.GET
             price_result, vol_result = await asyncio.gather(
-                r.ts().get(price_key),
-                r.ts().get(vol_key),
-                return_exceptions=True
+                r.ts().get(price_key), r.ts().get(vol_key), return_exceptions=True
             )
 
             # Handle price result
@@ -150,23 +158,28 @@ class RedisTimeSeries:
 
             # Handle volume result (may not exist or have errors)
             volume = 0.0
-            if not isinstance(vol_result, Exception) and vol_result and len(vol_result) >= 2:
+            if (
+                not isinstance(vol_result, Exception)
+                and vol_result
+                and len(vol_result) >= 2
+            ):
                 volume = float(vol_result[1])
 
             return DataBroadcastFormat(
-                timestamp=timestamp,
-                symbol=key,
-                price=price,
-                volume=volume
+                timestamp=timestamp, symbol=key, price=price, volume=volume
             )
 
         except ResponseError as e:
             # Handle case where key doesn't exist
-            if "key does not exist" in str(e).lower() or "TSDB: the key does not exist" in str(e):
+            if "key does not exist" in str(
+                e
+            ).lower() or "TSDB: the key does not exist" in str(e):
                 return None
             raise
 
-    async def get_multiple_last_traded_prices(self, keys: List[str]) -> List[DataBroadcastFormat]:
+    async def get_multiple_last_traded_prices(
+        self, keys: List[str]
+    ) -> List[DataBroadcastFormat]:
         """Return last traded price, timestamp, and volume for multiple symbols.
 
         Performs concurrent TS.GET operations for each symbol's price and volume series.
@@ -188,14 +201,14 @@ class RedisTimeSeries:
             for k in keys:
                 pipe.ts().get(f"{k}:price")
                 pipe.ts().get(f"{k}:volume")
-            
+
             # Execute all commands in one batch
             # Results will be [price1, vol1, price2, vol2, ...]
             # raise_on_error=False ensures that if one key is missing, the whole pipeline doesn't fail
             results = await pipe.execute(raise_on_error=False)
 
         broadcast_data: List[DataBroadcastFormat] = []
-        
+
         # Iterate through results in pairs (price, volume)
         for i in range(0, len(results), 2):
             key = keys[i // 2]
@@ -205,20 +218,20 @@ class RedisTimeSeries:
             # Skip if price retrieval failed or invalid
             if isinstance(p_res, Exception) or not p_res or len(p_res) < 2:
                 continue
-            
+
             try:
                 ts = int(p_res[0])
                 price_val = float(p_res[1])
             except Exception:
                 continue
-                
+
             volume_val = 0.0
             if not isinstance(v_res, Exception) and v_res and len(v_res) >= 2:
                 try:
                     volume_val = float(v_res[1])
                 except Exception:
                     volume_val = 0.0
-            
+
             broadcast_data.append(
                 DataBroadcastFormat(
                     timestamp=ts,
@@ -227,25 +240,30 @@ class RedisTimeSeries:
                     volume=volume_val,
                 )
             )
-            
+
         return broadcast_data
 
     async def get_ohlcv_window(
-            self,
-            key: str,
-            window_minutes: int,
-            align_to_ts: Optional[int] = None,
+        self,
+        key: str,
+        window_minutes: int,
+        align_to_ts: Optional[int] = None,
+        bucket_minutes: Optional[int] = None,
     ) -> Optional[Dict[str, float]]:
         """Return OHLCV for the last window_minutes as a single bucket aligned to align_to_ts (default now)."""
         if align_to_ts is None:
             align_to_ts = int(time.time() * 1000)
+
+        if bucket_minutes is None:
+            bucket_minutes = window_minutes
+
         to_ts = align_to_ts
         from_ts = to_ts - window_minutes * 60 * 1000
-        bucket = window_minutes * 60 * 1000
+
         ohlcv_data = await self.get_ohlcv_series(
             key,
             window_minutes=window_minutes,
-            bucket_minutes=window_minutes,
+            bucket_minutes=bucket_minutes,
             align_to_ts=to_ts,
         )
         if not ohlcv_data or not ohlcv_data.get("timestamp"):
@@ -262,11 +280,11 @@ class RedisTimeSeries:
         }
 
     async def get_ohlcv_series(
-            self,
-            key: str,
-            window_minutes: int = 15,
-            bucket_minutes: int = 5,
-            align_to_ts: Optional[int] = None,
+        self,
+        key: str,
+        window_minutes: int = 15,
+        bucket_minutes: int = 5,
+        align_to_ts: Optional[int] = None,
     ) -> Dict[str, List[float]]:
         """
         Return OHLCV buckets for the previous window_minutes, aggregated in bucket_minutes buckets.
@@ -295,7 +313,9 @@ class RedisTimeSeries:
             align_to_ts = int(time.time() * 1000)
 
         # Align to the NEXT bucket interval slot (ceiling) to include the ongoing candle
-        aligned_ts = self._align_to_interval_slot(align_to_ts, interval_minutes=bucket_minutes, ceiling=True)
+        aligned_ts = self._align_to_interval_slot(
+            align_to_ts, interval_minutes=bucket_minutes, ceiling=True
+        )
         to_ts = aligned_ts
         from_ts = to_ts - window_minutes * 60 * 1000
         bucket = bucket_minutes * 60 * 1000
@@ -306,6 +326,7 @@ class RedisTimeSeries:
 
         try:
             # Query aggregations for the same buckets (aligned to the end time) in parallel
+            # logger.debug(f"TS.RANGE {price_key} {from_ts} {to_ts} bucket={bucket} align={to_ts}")
             first, last, high, low, vol = await asyncio.gather(
                 r.ts().range(
                     price_key,
@@ -350,7 +371,9 @@ class RedisTimeSeries:
             )
         except ResponseError as e:
             # Handle case where key might have been deleted or expired
-            if "key does not exist" in str(e).lower() or "TSDB: the key does not exist" in str(e):
+            if "key does not exist" in str(
+                e
+            ).lower() or "TSDB: the key does not exist" in str(e):
                 return {
                     "timestamp": [],
                     "open": [],
@@ -360,6 +383,9 @@ class RedisTimeSeries:
                     "volume": [],
                 }
             raise
+
+        # if not first:
+        #    logger.debug(f"Empty result for {price_key} range {from_ts}-{to_ts}")
 
         # Convert lists like [[ts, val], ...] into a dict keyed by ts
         def to_map(lst):
@@ -420,7 +446,9 @@ class RedisTimeSeries:
             "volume": volumes,
         }
 
-    async def get_all_ohlcv_last_5m(self, keys: List[str], interval_minutes: int = 5) -> Dict[str, Optional[Dict[str, float]]]:
+    async def get_all_ohlcv_last_5m(
+        self, keys: List[str], interval_minutes: int = 5
+    ) -> Dict[str, Optional[Dict[str, float]]]:
         """Return OHLCV for the last N minutes for multiple symbols.
 
         Args:
@@ -437,10 +465,14 @@ class RedisTimeSeries:
         # Use get_ohlcv_window to support custom intervals
         now = int(time.time() * 1000)
         # Align to the interval slot (e.g., 1-min, 5-min, or 15-min)
-        aligned_now = self._align_to_interval_slot(now, interval_minutes=interval_minutes, ceiling=True)
+        aligned_now = self._align_to_interval_slot(
+            now, interval_minutes=interval_minutes, ceiling=True
+        )
 
         tasks = [
-            self.get_ohlcv_window(key, window_minutes=interval_minutes, align_to_ts=aligned_now)
+            self.get_ohlcv_window(
+                key, window_minutes=interval_minutes, align_to_ts=aligned_now
+            )
             for key in keys
         ]
         ohlcv_list = await asyncio.gather(*tasks)
@@ -452,36 +484,42 @@ class RedisTimeSeries:
         """Return all symbol keys that have price time series in Redis."""
 
         r = self._get_client()
+        keys = []
 
         # Use TS.QUERYINDEX to find all keys with label ts=price
         try:
             # TS.QUERYINDEX returns a list of keys matching the filter
             price_keys = await r.ts().queryindex(["ts=price"])
 
-            # Extract symbol names by removing the ":price" suffix
-            keys = []
-            for key in price_keys:
-                # Handle both string and bytes
-                key_str = key.decode('utf-8') if isinstance(key, bytes) else str(key)
-                if key_str.endswith(":price"):
-                    symbol = key_str[:-6]  # Remove ":price" suffix
-                    keys.append(symbol)
-
-            return keys
+            if price_keys:
+                for key in price_keys:
+                    # Handle both string and bytes
+                    key_str = (
+                        key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                    )
+                    if key_str.endswith(":price"):
+                        symbol = key_str[:-6]  # Remove ":price" suffix
+                        keys.append(symbol)
         except Exception as e:
-            # Fallback to KEYS pattern matching if TS.QUERYINDEX fails
+            # Log error but continue to fallback
+            pass
+
+        # Fallback to KEYS pattern matching if TS.QUERYINDEX returned nothing or failed
+        if not keys:
             try:
                 price_keys = await r.keys("*:price")
-                keys = []
                 for key in price_keys:
-                    key_str = key.decode('utf-8') if isinstance(key, bytes) else str(key)
+                    key_str = (
+                        key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                    )
                     if key_str.endswith(":price"):
                         symbol = key_str[:-6]
                         keys.append(symbol)
-                return keys
             except Exception as fallback_error:
                 # If both methods fail, return empty list
                 return []
+
+        return keys
 
     async def set_daily_stats(self, key: str, stats: Dict[str, float]) -> None:
         """
@@ -493,7 +531,7 @@ class RedisTimeSeries:
         # Set with expiration (e.g., 24 hours) to avoid stale data if symbol becomes inactive
         async with r.pipeline() as pipe:
             pipe.hset(stats_key, mapping=stats)
-            pipe.expire(stats_key, 24 * 60 * 60) # 24 hours
+            pipe.expire(stats_key, 24 * 60 * 60)  # 24 hours
             await pipe.execute()
 
     async def get_daily_stats(self, key: str) -> Dict[str, float]:

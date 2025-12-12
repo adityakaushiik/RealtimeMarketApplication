@@ -2,11 +2,15 @@
 Dhan market data provider implementation.
 Connects to Dhan's WebSocket API for real-time market data.
 """
+
 import time
+from typing import List
+
 from dhanhq import marketfeed
 
 from config.logger import logger
 from config.settings import get_settings
+from models import Instrument, PriceHistoryDaily, PriceHistoryIntraday
 from services.provider.base_provider import BaseMarketDataProvider
 from utils.common_constants import DataIngestionFormat
 
@@ -19,11 +23,17 @@ class DhanProvider(BaseMarketDataProvider):
 
         # Get credentials from settings or parameters
         settings = get_settings()
-        self.client_id = client_id or getattr(settings, 'DHAN_CLIENT_ID', 'PLACEHOLDER_CLIENT_ID')
-        self.access_token = access_token or getattr(settings, 'DHAN_ACCESS_TOKEN', 'PLACEHOLDER_ACCESS_TOKEN')
+        self.client_id = client_id or getattr(
+            settings, "DHAN_CLIENT_ID", "PLACEHOLDER_CLIENT_ID"
+        )
+        self.access_token = access_token or getattr(
+            settings, "DHAN_ACCESS_TOKEN", "PLACEHOLDER_ACCESS_TOKEN"
+        )
 
         if not self.callback:
-            raise ValueError("Callback function must be provided for handling messages.")
+            raise ValueError(
+                "Callback function must be provided for handling messages."
+            )
 
     def connect_websocket(self, symbols: list[str]):
         """Connect to Dhan WebSocket for live data."""
@@ -32,7 +42,7 @@ class DhanProvider(BaseMarketDataProvider):
             self.websocket_connection = marketfeed.DhanFeed(
                 client_id=self.client_id,
                 access_token=self.access_token,
-                instruments=self._prepare_instruments(symbols)
+                instruments=self._prepare_instruments(symbols),
             )
 
             # Set up message handlers
@@ -160,9 +170,9 @@ class DhanProvider(BaseMarketDataProvider):
             try:
                 instruments = self._prepare_instruments(symbols)
                 # Dhan SDK method to add instruments (adjust based on actual API)
-                if hasattr(self.websocket_connection, 'subscribe'):
+                if hasattr(self.websocket_connection, "subscribe"):
                     self.websocket_connection.subscribe(instruments)
-                elif hasattr(self.websocket_connection, 'add_instruments'):
+                elif hasattr(self.websocket_connection, "add_instruments"):
                     self.websocket_connection.add_instruments(instruments)
 
                 self.subscribed_symbols.update(symbols)
@@ -176,9 +186,9 @@ class DhanProvider(BaseMarketDataProvider):
             try:
                 instruments = self._prepare_instruments(symbols)
                 # Dhan SDK method to remove instruments (adjust based on actual API)
-                if hasattr(self.websocket_connection, 'unsubscribe'):
+                if hasattr(self.websocket_connection, "unsubscribe"):
                     self.websocket_connection.unsubscribe(instruments)
-                elif hasattr(self.websocket_connection, 'remove_instruments'):
+                elif hasattr(self.websocket_connection, "remove_instruments"):
                     self.websocket_connection.remove_instruments(instruments)
 
                 self.subscribed_symbols.difference_update(symbols)
@@ -200,3 +210,12 @@ class DhanProvider(BaseMarketDataProvider):
         """Callback when error occurs"""
         logger.error(f"Dhan WebSocket error: {error}")
 
+    def get_intraday_prices(
+        self, instruments: List[Instrument]
+    ) -> dict[str, list[PriceHistoryIntraday]]:
+        pass
+
+    def get_daily_prices(
+        self, instruments: List[Instrument]
+    ) -> dict[str, list[PriceHistoryDaily]]:
+        pass

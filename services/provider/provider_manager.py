@@ -2,6 +2,7 @@
 Provider Manager - Orchestrates multiple market data providers.
 Routes symbols to appropriate providers based on exchange mappings from database.
 """
+
 import asyncio
 from typing import Dict, Optional
 
@@ -35,7 +36,9 @@ class ProviderManager:
         self.callback = callback
         self.providers: Dict[str, BaseMarketDataProvider] = {}
         self.exchange_to_provider: Dict[int, str] = {}  # exchange_id -> provider_code
-        self.symbol_to_provider: Dict[str, str] = {}  # internal symbol (provider search symbol currently) -> provider_code
+        self.symbol_to_provider: Dict[
+            str, str
+        ] = {}  # internal symbol (provider search symbol currently) -> provider_code
         self.symbol_to_exchange: Dict[str, int] = {}  # internal symbol -> exchange_id
         # New: provider_symbol_map caches provider specific search code -> internal instrument symbol
         # Structure: {"YF": {"AAPL": "AAPL"}, "DHAN": {"RELIANCE-EQ": "RELIANCE"}}
@@ -86,9 +89,7 @@ class ProviderManager:
                 logger.info(f"Initialized provider: {provider_code}")
 
         self._initialized = True
-        logger.info(
-            f"ProviderManager initialized with {len(self.providers)} providers"
-        )
+        logger.info(f"ProviderManager initialized with {len(self.providers)} providers")
 
     def _create_provider_instance(
         self, provider_code: str
@@ -99,8 +100,12 @@ class ProviderManager:
         elif provider_code == "DHAN":
             return DhanProvider(callback=self.callback)
         else:
-            logger.error(f"Unknown provider code: {provider_code} - skipping initialization")
-            raise ValueError(f"Unknown provider code: {provider_code}. Please add it to the factory method.")
+            logger.error(
+                f"Unknown provider code: {provider_code} - skipping initialization"
+            )
+            raise ValueError(
+                f"Unknown provider code: {provider_code}. Please add it to the factory method."
+            )
 
     async def get_symbols_by_provider(self) -> Dict[str, list[str]]:
         """
@@ -162,7 +167,9 @@ class ProviderManager:
                 self.symbol_to_provider[provider_search_code] = provider_code
                 self.symbol_to_exchange[provider_search_code] = row.exchange_id
                 # provider_symbol_map holds provider search code -> internal instrument symbol
-                self.provider_symbol_map[provider_code][provider_search_code] = internal_symbol
+                self.provider_symbol_map[provider_code][provider_search_code] = (
+                    internal_symbol
+                )
 
             # Log statistics
             logger.info(
@@ -183,7 +190,9 @@ class ProviderManager:
             await self.get_symbols_by_provider()
         return self.provider_symbol_map
 
-    async def resolve_internal_symbol(self, provider_code: str, provider_search_code: str) -> Optional[str]:
+    async def resolve_internal_symbol(
+        self, provider_code: str, provider_search_code: str
+    ) -> Optional[str]:
         """
         Resolve an internal instrument symbol from a provider code & provider search code.
         Lazy-loads mapping if needed.
@@ -193,7 +202,9 @@ class ProviderManager:
             await self.get_symbols_by_provider()
         return self.provider_symbol_map.get(provider_code, {}).get(provider_search_code)
 
-    def get_internal_symbol_sync(self, provider_code: str, provider_search_code: str) -> Optional[str]:
+    def get_internal_symbol_sync(
+        self, provider_code: str, provider_search_code: str
+    ) -> Optional[str]:
         """
         Synchronous version of resolve_internal_symbol for hot paths (like data ingestion).
         Assumes provider_symbol_map is already populated.
@@ -211,9 +222,7 @@ class ProviderManager:
         tasks = []
         for provider_code, symbols in symbols_by_provider.items():
             if provider_code in self.providers and self.providers[provider_code]:
-                logger.info(
-                    f"Connecting {provider_code} with {len(symbols)} symbols"
-                )
+                logger.info(f"Connecting {provider_code} with {len(symbols)} symbols")
                 # Run in threadpool since WebSocket connections may block
                 task = run_in_threadpool(
                     self.providers[provider_code].connect_websocket, symbols
@@ -290,9 +299,7 @@ class ProviderManager:
         for provider_code, provider_symbols in symbols_by_provider.items():
             if provider_code in self.providers and self.providers[provider_code]:
                 try:
-                    self.providers[provider_code].unsubscribe_symbols(
-                        provider_symbols
-                    )
+                    self.providers[provider_code].unsubscribe_symbols(provider_symbols)
                     logger.info(
                         f"Unsubscribed from {len(provider_symbols)} symbols on {provider_code}"
                     )
@@ -321,4 +328,3 @@ class ProviderManager:
     def is_initialized(self) -> bool:
         """Check if provider manager is initialized"""
         return self._initialized
-

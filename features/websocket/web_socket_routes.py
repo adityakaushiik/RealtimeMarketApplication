@@ -18,7 +18,7 @@ websocket_route = APIRouter(prefix="", tags=["socket"])
 async def websocket_endpoint(
     websocket: WebSocket,
     websocket_manager: WebSocketManager = Depends(get_websocket_manager),
-    redis_ts: RedisTimeSeries = Depends(get_redis_timeseries)
+    redis_ts: RedisTimeSeries = Depends(get_redis_timeseries),
 ):
     """Main WebSocket endpoint for clients to subscribe/unsubscribe to stocks."""
     await websocket.accept()
@@ -34,7 +34,7 @@ async def websocket_endpoint(
 
             if message_type == WebSocketMessageType.SUBSCRIBE.value and channel:
                 websocket_manager.subscribe(websocket, channel)
-                
+
                 # Send subscription confirmation
                 await websocket.send_json(
                     {
@@ -42,7 +42,7 @@ async def websocket_endpoint(
                         "message": f"Subscribed to {channel}",
                     }
                 )
-                
+
                 # # Fetch and send daily stats (e.g. prev_close)
                 # try:
                 #     # 1. Try Redis Cache

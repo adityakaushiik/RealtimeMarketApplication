@@ -14,7 +14,10 @@ from features.marketdata.marketdata_schema import (
     PriceHistoryDailyCreate,
     PriceHistoryDailyInDb,
 )
-from features.marketdata.marketdata_service import get_price_history_daily, get_price_history_intraday
+from features.marketdata.marketdata_service import (
+    get_price_history_daily,
+    get_price_history_intraday,
+)
 from models import PriceHistoryIntraday
 from services.redis_timeseries import RedisTimeSeries, get_redis_timeseries
 from utils.common_constants import SupportedIntervals
@@ -51,9 +54,9 @@ marketdata_router = APIRouter(
 
 @marketdata_router.get("/daily/{symbol}")
 async def get_info_and_price_daily(
-        symbol: str,
-        user_claims: dict = Depends(require_auth()),
-        session: AsyncSession = Depends(get_db_session),
+    symbol: str,
+    user_claims: dict = Depends(require_auth()),
+    session: AsyncSession = Depends(get_db_session),
 ):
     # Check if symbol is valid
     instrument: InstrumentInDb = await get_instrument_by_symbol(session, symbol)
@@ -150,15 +153,18 @@ async def get_info_and_price_daily(
 
     # For now we are just returning all daily data from DB
     # You should return data before or equal to current timing
-    price_history = await get_price_history_daily(session=session, instrument_id=instrument.id)
+    price_history = await get_price_history_daily(
+        session=session, instrument_id=instrument.id
+    )
 
     return price_history
 
+
 @marketdata_router.get("/intraday/{symbol}")
 async def get_info_and_price_intraday(
-        symbol: str,
-        user_claims: dict = Depends(require_auth()),
-        session: AsyncSession = Depends(get_db_session),
+    symbol: str,
+    user_claims: dict = Depends(require_auth()),
+    session: AsyncSession = Depends(get_db_session),
 ):
     # Check if symbol is valid
     instrument: InstrumentInDb = await get_instrument_by_symbol(session, symbol)
@@ -167,8 +173,7 @@ async def get_info_and_price_intraday(
 
     try:
         price_history = await get_price_history_intraday(
-            session=session,
-            instrument_id=instrument.id
+            session=session, instrument_id=instrument.id
         )
         return price_history
     except Exception as e:
@@ -177,18 +182,14 @@ async def get_info_and_price_intraday(
 
 @marketdata_router.get("/prev_close/{exchange_code}")
 async def get_previous_closes(
-        exchange_code: str,
-        user_claims: dict = Depends(require_auth()),
-        session: AsyncSession = Depends(get_db_session),
+    exchange_code: str,
+    user_claims: dict = Depends(require_auth()),
+    session: AsyncSession = Depends(get_db_session),
 ):
     try:
         prev_closes = await marketdata_service.get_previous_closes_by_exchange(
-            session=session,
-            exchange_code=exchange_code
+            session=session, exchange_code=exchange_code
         )
-        return {
-            "exchange_code": exchange_code,
-            "data": prev_closes
-        }
+        return {"exchange_code": exchange_code, "data": prev_closes}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

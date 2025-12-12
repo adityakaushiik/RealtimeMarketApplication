@@ -16,7 +16,7 @@ load_dotenv()
 config = context.config
 
 # Override sqlalchemy.url from environment variable
-config.set_main_option('sqlalchemy.url', os.getenv('DATABASE_URL'))
+config.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -53,7 +53,8 @@ target_metadata = Base.metadata
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
 
-os.getenv('.env')
+os.getenv(".env")
+
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.

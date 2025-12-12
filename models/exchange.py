@@ -30,11 +30,9 @@ class Exchange(Base, BaseMixin):
     market_close_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     post_market_close_time: Mapped[time | None] = mapped_column(Time, nullable=True)
 
-
     is_open_24_hours: Mapped[bool] = mapped_column(
         Integer, nullable=False, server_default="0"
     )
-
 
     # Minimal relationships
     instruments: Mapped[list["Instrument"]] = relationship(back_populates="exchange")

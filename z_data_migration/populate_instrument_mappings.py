@@ -5,18 +5,14 @@ This creates mappings between instruments and provider-specific symbol codes.
 Usage:
     python z_data_migration/populate_instrument_mappings.py
 """
+
 import asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.database_config import get_database_engine
 from config.logger import logger
-from models import (
-    Provider,
-    Exchange,
-    Instrument,
-    ProviderInstrumentMapping
-)
+from models import Provider, Exchange, Instrument, ProviderInstrumentMapping
 
 
 async def populate_dhan_mappings():
@@ -34,9 +30,7 @@ async def populate_dhan_mappings():
         logger.info("Populating Dhan instrument mappings...")
 
         # Get Dhan provider
-        result = await session.execute(
-            select(Provider).where(Provider.code == "DHAN")
-        )
+        result = await session.execute(select(Provider).where(Provider.code == "DHAN"))
         dhan_provider = result.scalar_one_or_none()
 
         if not dhan_provider:
@@ -55,12 +49,11 @@ async def populate_dhan_mappings():
 
         # Get all active instruments from Indian exchanges
         result = await session.execute(
-            select(Instrument)
-            .where(
+            select(Instrument).where(
                 Instrument.exchange_id.in_([ex.id for ex in indian_exchanges.values()]),
                 Instrument.is_active == True,
                 Instrument.blacklisted == False,
-                Instrument.delisted == False
+                Instrument.delisted == False,
             )
         )
         instruments = result.scalars().all()
@@ -75,7 +68,7 @@ async def populate_dhan_mappings():
             result = await session.execute(
                 select(ProviderInstrumentMapping).where(
                     ProviderInstrumentMapping.provider_id == dhan_provider.id,
-                    ProviderInstrumentMapping.instrument_id == instrument.id
+                    ProviderInstrumentMapping.instrument_id == instrument.id,
                 )
             )
             existing = result.scalar_one_or_none()
@@ -93,7 +86,7 @@ async def populate_dhan_mappings():
             mapping = ProviderInstrumentMapping(
                 provider_id=dhan_provider.id,
                 instrument_id=instrument.id,
-                provider_instrument_search_code=dhan_symbol
+                provider_instrument_search_code=dhan_symbol,
             )
             session.add(mapping)
             added_count += 1
@@ -121,13 +114,13 @@ async def populate_yahoo_mappings():
         logger.info("Populating Yahoo Finance instrument mappings...")
 
         # Get Yahoo Finance provider
-        result = await session.execute(
-            select(Provider).where(Provider.code == "YF")
-        )
+        result = await session.execute(select(Provider).where(Provider.code == "YF"))
         yf_provider = result.scalar_one_or_none()
 
         if not yf_provider:
-            logger.error("❌ Yahoo Finance provider not found. Run setup_providers.py first.")
+            logger.error(
+                "❌ Yahoo Finance provider not found. Run setup_providers.py first."
+            )
             return
 
         # Get US exchanges
@@ -142,12 +135,11 @@ async def populate_yahoo_mappings():
 
         # Get all active instruments from US exchanges
         result = await session.execute(
-            select(Instrument)
-            .where(
+            select(Instrument).where(
                 Instrument.exchange_id.in_([ex.id for ex in us_exchanges.values()]),
                 Instrument.is_active == True,
                 Instrument.blacklisted == False,
-                Instrument.delisted == False
+                Instrument.delisted == False,
             )
         )
         instruments = result.scalars().all()
@@ -162,7 +154,7 @@ async def populate_yahoo_mappings():
             result = await session.execute(
                 select(ProviderInstrumentMapping).where(
                     ProviderInstrumentMapping.provider_id == yf_provider.id,
-                    ProviderInstrumentMapping.instrument_id == instrument.id
+                    ProviderInstrumentMapping.instrument_id == instrument.id,
                 )
             )
             existing = result.scalar_one_or_none()
@@ -178,7 +170,7 @@ async def populate_yahoo_mappings():
             mapping = ProviderInstrumentMapping(
                 provider_id=yf_provider.id,
                 instrument_id=instrument.id,
-                provider_instrument_search_code=yf_symbol
+                provider_instrument_search_code=yf_symbol,
             )
             session.add(mapping)
             added_count += 1
@@ -197,9 +189,9 @@ async def verify_mappings():
     engine = get_database_engine()
 
     async with AsyncSession(engine) as session:
-        logger.info("\n" + "="*60)
+        logger.info("\n" + "=" * 60)
         logger.info("INSTRUMENT MAPPINGS VERIFICATION")
-        logger.info("="*60)
+        logger.info("=" * 60)
 
         result = await session.execute(
             select(
@@ -207,9 +199,12 @@ async def verify_mappings():
                 Provider.code,
                 Instrument.symbol.label("instrument_symbol"),
                 ProviderInstrumentMapping.provider_instrument_search_code,
-                Exchange.code.label("exchange_code")
+                Exchange.code.label("exchange_code"),
             )
-            .join(ProviderInstrumentMapping, Provider.id == ProviderInstrumentMapping.provider_id)
+            .join(
+                ProviderInstrumentMapping,
+                Provider.id == ProviderInstrumentMapping.provider_id,
+            )
             .join(Instrument, Instrument.id == ProviderInstrumentMapping.instrument_id)
             .join(Exchange, Exchange.id == Instrument.exchange_id)
             .limit(10)  # Show first 10 examples
@@ -230,7 +225,10 @@ async def verify_mappings():
                 Provider.name,
                 Provider.code,
             )
-            .join(ProviderInstrumentMapping, Provider.id == ProviderInstrumentMapping.provider_id)
+            .join(
+                ProviderInstrumentMapping,
+                Provider.id == ProviderInstrumentMapping.provider_id,
+            )
             .group_by(Provider.id, Provider.name, Provider.code)
         )
 
@@ -245,7 +243,7 @@ async def verify_mappings():
             count = len(result.scalars().all())
             logger.info(f"  {provider_code}: {count} mappings")
 
-        logger.info("="*60)
+        logger.info("=" * 60)
 
 
 if __name__ == "__main__":
@@ -257,5 +255,6 @@ if __name__ == "__main__":
 
     logger.info("\n✅ Instrument mappings setup complete!")
     logger.info("\nYour application is now ready for multi-provider support.")
-    logger.info("Start the application to begin receiving data from multiple providers.")
-
+    logger.info(
+        "Start the application to begin receiving data from multiple providers."
+    )

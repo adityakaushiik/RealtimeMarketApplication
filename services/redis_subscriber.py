@@ -63,7 +63,7 @@ async def redis_subscriber():
     finally:
         # Match psubscribe with punsubscribe; then close cleanly
         try:
-            await pubsub.punsubscribe("stocks:*")
+            await pubsub.punsubscribe("*")
         except Exception as e:
             logger.warning(f"punsubscribe failed: {e}")
         try:
@@ -94,7 +94,7 @@ async def _broadcast_to_clients(channel: str, data: Union[str, bytes]) -> None:
 
     # Get subscribers efficiently (O(1))
     subscribers = websocket_manager.get_subscribers(channel)
-    
+
     if not subscribers:
         # No debug log here to avoid spamming logs for channels with no listeners
         return

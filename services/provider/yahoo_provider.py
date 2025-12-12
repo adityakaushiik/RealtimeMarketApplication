@@ -1,6 +1,9 @@
+from typing import List
+
 import yfinance as yf
 
 from config.logger import logger
+from models import Instrument, PriceHistoryDaily, PriceHistoryIntraday
 from services.provider.base_provider import BaseMarketDataProvider
 from utils.common_constants import DataIngestionFormat
 
@@ -23,13 +26,16 @@ class YahooFinanceProvider(BaseMarketDataProvider):
 
             self.is_connected = True
             logger.info(f"Yahoo Finance connected with {len(symbols)} symbols")
-            
+
             # Run the listener in a separate thread to avoid blocking the main initialization flow
             import threading
-            self._listen_thread = threading.Thread(target=self.websocket_connection.listen, args=(self.message_handler,))
+
+            self._listen_thread = threading.Thread(
+                target=self.websocket_connection.listen, args=(self.message_handler,)
+            )
             self._listen_thread.daemon = True
             self._listen_thread.start()
-            
+
         except Exception as e:
             self.is_connected = False
             logger.error(f"Error connecting Yahoo Finance WebSocket: {e}")
@@ -83,5 +89,12 @@ class YahooFinanceProvider(BaseMarketDataProvider):
             except Exception as e:
                 logger.error(f"Error unsubscribing from Yahoo Finance symbols: {e}")
 
-    # Intraday Data Fetching will be implemented here in future
-    # Daily Data Fetching will be implemented here in future
+    def get_intraday_prices(
+        self, instruments: List[Instrument]
+    ) -> dict[str, list[PriceHistoryIntraday]]:
+        pass
+
+    def get_daily_prices(
+        self, instruments: List[Instrument]
+    ) -> dict[str, list[PriceHistoryDaily]]:
+        pass

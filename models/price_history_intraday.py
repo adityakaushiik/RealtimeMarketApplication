@@ -24,10 +24,9 @@ class PriceHistoryIntraday(Base, BaseMixin):
     close: Mapped[float | None] = mapped_column(Float, nullable=True)
     previous_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     adj_close: Mapped[float | None] = mapped_column(Float, nullable=True)
-    volume: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     deliver_percentage: Mapped[float | None] = mapped_column(Float, nullable=True)
     price_not_found: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
     interval: Mapped[str | None] = mapped_column(String(32), nullable=True)
-

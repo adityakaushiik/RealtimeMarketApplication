@@ -2,14 +2,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Exchange, ExchangeProviderMapping
-from features.exchange.exchange_schema import ExchangeCreate, ExchangeUpdate, ExchangeInDb, \
-    ExchangeProviderMappingCreate, ExchangeProviderMappingUpdate, ExchangeProviderMappingInDb
+from features.exchange.exchange_schema import (
+    ExchangeCreate,
+    ExchangeUpdate,
+    ExchangeInDb,
+    ExchangeProviderMappingCreate,
+    ExchangeProviderMappingUpdate,
+    ExchangeProviderMappingInDb,
+)
 from services.data.exchange_data import ExchangeData
 
 
 async def create_exchange(
-        session: AsyncSession,
-        exchange_data: ExchangeCreate,
+    session: AsyncSession,
+    exchange_data: ExchangeCreate,
 ):
     """Create a new exchange"""
     new_exchange = Exchange(
@@ -41,8 +47,8 @@ async def create_exchange(
 
 
 async def get_exchange_by_id(
-        session: AsyncSession,
-        exchange_id: int,
+    session: AsyncSession,
+    exchange_id: int,
 ):
     """Get exchange by ID"""
     result = await session.execute(select(Exchange).where(Exchange.id == exchange_id))
@@ -60,8 +66,8 @@ async def get_exchange_by_id(
 
 
 async def get_exchange_by_code(
-        session: AsyncSession,
-        code: str,
+    session: AsyncSession,
+    code: str,
 ):
     """Get exchange by code"""
     result = await session.execute(select(Exchange).where(Exchange.code == code))
@@ -79,7 +85,7 @@ async def get_exchange_by_code(
 
 
 async def get_all_exchanges(
-        session: AsyncSession,
+    session: AsyncSession,
 ) -> list[ExchangeInDb]:
     """Get all exchanges"""
     result = await session.execute(select(Exchange).where(Exchange.is_active == True))
@@ -98,12 +104,10 @@ async def get_all_exchanges(
 
 
 async def get_all_active_exchanges(
-        session: AsyncSession,
+    session: AsyncSession,
 ) -> list[ExchangeData]:
     """Get all active exchanges as ExchangeData objects"""
-    result = await session.execute(select(Exchange).where(
-        Exchange.is_active == True
-    ))
+    result = await session.execute(select(Exchange).where(Exchange.is_active == True))
     exchanges = result.scalars().all()
     return [
         ExchangeData(
@@ -111,6 +115,8 @@ async def get_all_active_exchanges(
             exchange_id=exchange.id,
             market_open_time=exchange.market_open_time,
             market_close_time=exchange.market_close_time,
+            pre_market_open_time=exchange.pre_market_open_time,
+            post_market_close_time=exchange.post_market_close_time,
             timezone_str=exchange.timezone,
         )
         for exchange in exchanges
@@ -118,9 +124,9 @@ async def get_all_active_exchanges(
 
 
 async def update_exchange(
-        session: AsyncSession,
-        exchange_id: int,
-        exchange_data: ExchangeUpdate,
+    session: AsyncSession,
+    exchange_id: int,
+    exchange_data: ExchangeUpdate,
 ):
     """Update an exchange"""
     result = await session.execute(select(Exchange).where(Exchange.id == exchange_id))
@@ -149,8 +155,8 @@ async def update_exchange(
 
 
 async def delete_exchange(
-        session: AsyncSession,
-        exchange_id: int,
+    session: AsyncSession,
+    exchange_id: int,
 ) -> bool:
     """Delete an exchange"""
     result = await session.execute(select(Exchange).where(Exchange.id == exchange_id))
@@ -165,9 +171,10 @@ async def delete_exchange(
 
 # ExchangeProviderMapping functions
 
+
 async def create_exchange_provider_mapping(
-        session: AsyncSession,
-        mapping_data: ExchangeProviderMappingCreate,
+    session: AsyncSession,
+    mapping_data: ExchangeProviderMappingCreate,
 ) -> ExchangeProviderMappingInDb:
     """Create a new exchange-provider mapping"""
     new_mapping = ExchangeProviderMapping(
@@ -188,12 +195,14 @@ async def create_exchange_provider_mapping(
 
 
 async def get_mappings_for_exchange(
-        session: AsyncSession,
-        exchange_id: int,
+    session: AsyncSession,
+    exchange_id: int,
 ) -> list[ExchangeProviderMappingInDb]:
     """Get all provider mappings for an exchange"""
     result = await session.execute(
-        select(ExchangeProviderMapping).where(ExchangeProviderMapping.exchange_id == exchange_id)
+        select(ExchangeProviderMapping).where(
+            ExchangeProviderMapping.exchange_id == exchange_id
+        )
     )
     mappings = result.scalars().all()
     return [
@@ -208,12 +217,14 @@ async def get_mappings_for_exchange(
 
 
 async def get_mappings_for_provider(
-        session: AsyncSession,
-        provider_id: int,
+    session: AsyncSession,
+    provider_id: int,
 ) -> list[ExchangeProviderMappingInDb]:
     """Get all exchange mappings for a provider"""
     result = await session.execute(
-        select(ExchangeProviderMapping).where(ExchangeProviderMapping.provider_id == provider_id)
+        select(ExchangeProviderMapping).where(
+            ExchangeProviderMapping.provider_id == provider_id
+        )
     )
     mappings = result.scalars().all()
     return [
@@ -228,16 +239,16 @@ async def get_mappings_for_provider(
 
 
 async def update_exchange_provider_mapping(
-        session: AsyncSession,
-        provider_id: int,
-        exchange_id: int,
-        update_data: ExchangeProviderMappingUpdate,
+    session: AsyncSession,
+    provider_id: int,
+    exchange_id: int,
+    update_data: ExchangeProviderMappingUpdate,
 ) -> ExchangeProviderMappingInDb | None:
     """Update an exchange-provider mapping"""
     result = await session.execute(
         select(ExchangeProviderMapping).where(
-            (ExchangeProviderMapping.provider_id == provider_id) &
-            (ExchangeProviderMapping.exchange_id == exchange_id)
+            (ExchangeProviderMapping.provider_id == provider_id)
+            & (ExchangeProviderMapping.exchange_id == exchange_id)
         )
     )
     mapping = result.scalar_one_or_none()
@@ -259,15 +270,15 @@ async def update_exchange_provider_mapping(
 
 
 async def delete_exchange_provider_mapping(
-        session: AsyncSession,
-        provider_id: int,
-        exchange_id: int,
+    session: AsyncSession,
+    provider_id: int,
+    exchange_id: int,
 ) -> bool:
     """Delete an exchange-provider mapping"""
     result = await session.execute(
         select(ExchangeProviderMapping).where(
-            (ExchangeProviderMapping.provider_id == provider_id) &
-            (ExchangeProviderMapping.exchange_id == exchange_id)
+            (ExchangeProviderMapping.provider_id == provider_id)
+            & (ExchangeProviderMapping.exchange_id == exchange_id)
         )
     )
     mapping = result.scalar_one_or_none()

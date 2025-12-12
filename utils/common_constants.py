@@ -23,8 +23,8 @@ class WebSocketMessageType(Enum):
 
 
 class SupportedIntervals(Enum):
-    FIVE_MINUTES = '5m'
-    ONE_DAY = '1day'
+    FIVE_MINUTES = "5m"
+    ONE_DAY = "1day"
 
 
 class DataBroadcastFormat(BaseModelPy):
@@ -32,6 +32,7 @@ class DataBroadcastFormat(BaseModelPy):
     symbol: str
     price: float
     volume: float
+
 
 class DataIngestionFormat(DataBroadcastFormat):
     provider_code: str

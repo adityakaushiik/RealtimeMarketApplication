@@ -19,8 +19,8 @@ from models import PriceHistoryIntraday, PriceHistoryDaily, Instrument
 
 # PriceHistoryIntraday CRUD
 async def create_price_history_intraday(
-        session: AsyncSession,
-        data: PriceHistoryIntradayCreate,
+    session: AsyncSession,
+    data: PriceHistoryIntradayCreate,
 ) -> PriceHistoryIntradayInDb:
     """Create a new intraday price history"""
     new_record = PriceHistoryIntraday(
@@ -58,12 +58,14 @@ async def create_price_history_intraday(
 
 
 async def update_price_history_intraday(
-        session: AsyncSession,
-        record_id: int,
-        data: PriceHistoryIntradayUpdate,
+    session: AsyncSession,
+    record_id: int,
+    data: PriceHistoryIntradayUpdate,
 ) -> PriceHistoryIntradayInDb | None:
     """Update an intraday price history"""
-    result = await session.execute(select(PriceHistoryIntraday).where(PriceHistoryIntraday.id == record_id))
+    result = await session.execute(
+        select(PriceHistoryIntraday).where(PriceHistoryIntraday.id == record_id)
+    )
     record = result.scalar_one_or_none()
     if not record:
         return None
@@ -92,11 +94,13 @@ async def update_price_history_intraday(
 
 
 async def delete_price_history_intraday(
-        session: AsyncSession,
-        record_id: int,
+    session: AsyncSession,
+    record_id: int,
 ) -> bool:
     """Delete an intraday price history"""
-    result = await session.execute(select(PriceHistoryIntraday).where(PriceHistoryIntraday.id == record_id))
+    result = await session.execute(
+        select(PriceHistoryIntraday).where(PriceHistoryIntraday.id == record_id)
+    )
     record = result.scalar_one_or_none()
     if not record:
         return False
@@ -108,9 +112,10 @@ async def delete_price_history_intraday(
 
 # PriceHistoryDaily CRUD
 
+
 async def create_price_history_daily(
-        session: AsyncSession,
-        data: PriceHistoryDailyCreate,
+    session: AsyncSession,
+    data: PriceHistoryDailyCreate,
 ) -> PriceHistoryDailyInDb:
     """Create a new daily price history"""
     new_record = PriceHistoryDaily(
@@ -146,12 +151,14 @@ async def create_price_history_daily(
 
 
 async def update_price_history_daily(
-        session: AsyncSession,
-        record_id: int,
-        data: PriceHistoryDailyUpdate,
+    session: AsyncSession,
+    record_id: int,
+    data: PriceHistoryDailyUpdate,
 ) -> PriceHistoryDailyInDb | None:
     """Update a daily price history"""
-    result = await session.execute(select(PriceHistoryDaily).where(PriceHistoryDaily.id == record_id))
+    result = await session.execute(
+        select(PriceHistoryDaily).where(PriceHistoryDaily.id == record_id)
+    )
     record = result.scalar_one_or_none()
     if not record:
         return None
@@ -179,11 +186,13 @@ async def update_price_history_daily(
 
 
 async def delete_price_history_daily(
-        session: AsyncSession,
-        record_id: int,
+    session: AsyncSession,
+    record_id: int,
 ) -> bool:
     """Delete a daily price history"""
-    result = await session.execute(select(PriceHistoryDaily).where(PriceHistoryDaily.id == record_id))
+    result = await session.execute(
+        select(PriceHistoryDaily).where(PriceHistoryDaily.id == record_id)
+    )
     record = result.scalar_one_or_none()
     if not record:
         return False
@@ -194,16 +203,16 @@ async def delete_price_history_daily(
 
 
 async def get_previous_close_price(
-        session: AsyncSession,
-        instrument_id: int,
-        date: datetime.datetime,
+    session: AsyncSession,
+    instrument_id: int,
+    date: datetime.datetime,
 ) -> float | None:
     """Get the previous close price for a given instrument and date"""
     result = await session.execute(
         select(PriceHistoryDaily)
         .where(
-            (PriceHistoryDaily.instrument_id == instrument_id) &
-            (PriceHistoryDaily.datetime < date)
+            (PriceHistoryDaily.instrument_id == instrument_id)
+            & (PriceHistoryDaily.datetime < date)
         )
         .order_by(PriceHistoryDaily.datetime.desc())
         .limit(1)
@@ -215,20 +224,21 @@ async def get_previous_close_price(
 
 
 async def get_price_history_intraday(
-        session: AsyncSession,
-        instrument_id: int,
-        interval: str = "5m",
-        timeframe_in_days: int = 7,
-        start_date: Optional[int] = None,
-        end_date: Optional[int] = None,
+    session: AsyncSession,
+    instrument_id: int,
+    interval: str = "5m",
+    timeframe_in_days: int = 7,
+    start_date: Optional[int] = None,
+    end_date: Optional[int] = None,
 ) -> list[PriceHistoryIntradayInDb]:
     """Get intraday price history for a given instrument"""
     current_time_utc = datetime.datetime.now(datetime.UTC)
     result = await session.execute(
         select(PriceHistoryIntraday)
         .where(
-            (PriceHistoryIntraday.instrument_id == instrument_id) &
-            (PriceHistoryIntraday.interval == interval) &
+            (PriceHistoryIntraday.instrument_id == instrument_id)
+            &
+            # (PriceHistoryIntraday.interval == interval) &
             (PriceHistoryIntraday.datetime <= current_time_utc)
         )
         .order_by(PriceHistoryIntraday.datetime.desc())
@@ -256,18 +266,20 @@ async def get_price_history_intraday(
 
 
 async def get_price_history_daily(
-        session: AsyncSession,
-        instrument_id: int,
-        start_date: Optional[int] = None,
-        end_date: Optional[int] = None,
+    session: AsyncSession,
+    instrument_id: int,
+    start_date: Optional[int] = None,
+    end_date: Optional[int] = None,
 ) -> list[PriceHistoryDailyInDb]:
-
     """Get daily price history for a given instrument"""
     current_time_utc = datetime.datetime.now(datetime.UTC)
 
     result = await session.execute(
         select(PriceHistoryDaily)
-        .where(PriceHistoryDaily.instrument_id == instrument_id and PriceHistoryDaily.datetime <= current_time_utc)
+        .where(
+            PriceHistoryDaily.instrument_id == instrument_id
+            and PriceHistoryDaily.datetime <= current_time_utc
+        )
         .order_by(PriceHistoryDaily.datetime.desc())
     )
 
@@ -291,10 +303,7 @@ async def get_price_history_daily(
     ]
 
 
-async def get_previous_closes_by_exchange(
-        session: AsyncSession,
-        exchange_code: str
-):
+async def get_previous_closes_by_exchange(session: AsyncSession, exchange_code: str):
     """Get previous close prices for all instruments in a given exchange"""
     exchange = await get_exchange_by_code(session, exchange_code)
     if not exchange:
@@ -304,7 +313,9 @@ async def get_previous_closes_by_exchange(
         select(PriceHistoryDaily, Instrument)
         .join(Instrument, PriceHistoryDaily.instrument_id == Instrument.id)
         .where(
-            Instrument.exchange_id == exchange.id and PriceHistoryDaily.datetime < datetime.datetime.now())
+            Instrument.exchange_id == exchange.id
+            and PriceHistoryDaily.datetime < datetime.datetime.now()
+        )
         .order_by(PriceHistoryDaily.instrument_id, PriceHistoryDaily.datetime.desc())
     )
     records = result.all()
@@ -313,10 +324,7 @@ async def get_previous_closes_by_exchange(
     seen_instruments = set()
     for price_history, instrument in records:
         if instrument.symbol not in seen_instruments:
-            result.append({
-                "instrument": instrument,
-                "price_history": price_history
-            })
+            result.append({"instrument": instrument, "price_history": price_history})
             seen_instruments.add(instrument.symbol)
 
     return result
