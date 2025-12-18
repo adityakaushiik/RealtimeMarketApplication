@@ -43,37 +43,6 @@ async def websocket_endpoint(
                     }
                 )
 
-                # # Fetch and send daily stats (e.g. prev_close)
-                # try:
-                #     # 1. Try Redis Cache
-                #     stats = await redis_ts.get_daily_stats(channel)
-                #
-                #     # 2. If miss, fetch from DB and cache
-                #     if not stats:
-                #         engine = get_database_engine()
-                #         async with AsyncSession(engine) as session:
-                #             instrument = await get_instrument_by_symbol(session, channel)
-                #             if instrument:
-                #                 # Get latest daily record
-                #                 daily_records = await get_price_history_daily(session, instrument.id)
-                #                 if daily_records:
-                #                     # The latest record in DB is usually the previous day's close
-                #                     # (assuming today's isn't written until EOD or we handle it elsewhere)
-                #                     prev_close = daily_records[0].close
-                #                     stats = {"prev_close": prev_close}
-                #                     await redis_ts.set_daily_stats(channel, stats)
-                #
-                #     if stats:
-                #         await websocket.send_json(
-                #             {
-                #                 "message_type": WebSocketMessageType.INFO.value,
-                #                 "symbol": channel,
-                #                 "stats": stats
-                #             }
-                #         )
-                # except Exception as e:
-                #     print(f"Error fetching stats for {channel}: {e}")
-
             elif message_type == WebSocketMessageType.UNSUBSCRIBE.value and channel:
                 websocket_manager.unsubscribe(websocket, channel)
                 await websocket.send_json(

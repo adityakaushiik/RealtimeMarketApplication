@@ -1,5 +1,8 @@
+import asyncio
+from datetime import timezone
 from typing import List
 
+import pandas as pd
 import yfinance as yf
 
 from config.logger import logger
@@ -89,12 +92,166 @@ class YahooFinanceProvider(BaseMarketDataProvider):
             except Exception as e:
                 logger.error(f"Error unsubscribing from Yahoo Finance symbols: {e}")
 
-    def get_intraday_prices(
+    async def get_intraday_prices(
         self, instruments: List[Instrument]
     ) -> dict[str, list[PriceHistoryIntraday]]:
-        pass
+        """
+        Fetch intraday prices (5m interval) for the last 5 days.
+        """
+        if not instruments:
+            return {}
 
-    def get_daily_prices(
+        symbols = [i.symbol for i in instruments]
+        logger.info(f"Fetching intraday prices from YF for {len(symbols)} symbols")
+
+        try:
+            # Run blocking yfinance download in a thread
+            # period="5d" is the max for 5m interval in yfinance free tier usually
+            df = await asyncio.to_thread(
+                yf.download,
+                tickers=symbols,
+                period="5d",
+                interval="5m",
+                group_by="ticker",
+                threads=True,
+                progress=False,
+                auto_adjust=False,
+            )
+
+            if df.empty:
+                logger.warning("YF returned empty dataframe for intraday prices")
+                return {}
+
+            result = {}
+
+            # Handle single symbol vs multiple symbols structure
+            if len(symbols) == 1:
+                symbol = symbols[0]
+                # If single symbol, columns are just Open, High, etc.
+                # We wrap it to treat uniformly
+                result[symbol] = self._parse_intraday_dataframe(df, symbol)
+            else:
+                # Multi-index columns: (Ticker, OHLCV)
+                for symbol in symbols:
+                    try:
+                        # Check if symbol is in columns (top level)
+                        if symbol in df.columns:
+                            symbol_df = df[symbol].dropna()
+                            result[symbol] = self._parse_intraday_dataframe(symbol_df, symbol)
+                    except Exception as e:
+                        logger.error(f"Error parsing intraday data for {symbol}: {e}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error fetching intraday prices from YF: {e}")
+            return {}
+
+    def _parse_intraday_dataframe(self, df: pd.DataFrame, symbol: str) -> List[PriceHistoryIntraday]:
+        records = []
+        for index, row in df.iterrows():
+            try:
+                # index is Timestamp
+                dt = index.to_pydatetime()
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone(timezone.utc)
+                else:
+                    dt = dt.replace(tzinfo=timezone.utc)
+
+                records.append(
+                    PriceHistoryIntraday(
+                        instrument_id=0, # Placeholder, will be set by caller
+                        datetime=dt,
+                        open=float(row["Open"]),
+                        high=float(row["High"]),
+                        low=float(row["Low"]),
+                        close=float(row["Close"]),
+                        volume=int(row["Volume"]),
+                        interval="5m",
+                        resolve_required=False
+                    )
+                )
+            except Exception as e:
+                continue
+        return records
+
+    async def get_daily_prices(
         self, instruments: List[Instrument]
     ) -> dict[str, list[PriceHistoryDaily]]:
-        pass
+        """
+        Fetch daily prices for the last 1 year.
+        """
+        if not instruments:
+            return {}
+
+        symbols = [i.symbol for i in instruments]
+        logger.info(f"Fetching daily prices from YF for {len(symbols)} symbols")
+
+        try:
+            # Run blocking yfinance download in a thread
+            df = await asyncio.to_thread(
+                yf.download,
+                tickers=symbols,
+                period="1y",
+                interval="1d",
+                group_by="ticker",
+                threads=True,
+                progress=False,
+                actions=True, # To get Dividends and Splits if needed
+                auto_adjust=False,
+            )
+
+            if df.empty:
+                logger.warning("YF returned empty dataframe for daily prices")
+                return {}
+
+            result = {}
+
+            if len(symbols) == 1:
+                symbol = symbols[0]
+                result[symbol] = self._parse_daily_dataframe(df, symbol)
+            else:
+                for symbol in symbols:
+                    try:
+                        if symbol in df.columns:
+                            symbol_df = df[symbol].dropna()
+                            result[symbol] = self._parse_daily_dataframe(symbol_df, symbol)
+                    except Exception as e:
+                        logger.error(f"Error parsing daily data for {symbol}: {e}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error fetching daily prices from YF: {e}")
+            return {}
+
+    def _parse_daily_dataframe(self, df: pd.DataFrame, symbol: str) -> List[PriceHistoryDaily]:
+        records = []
+        for index, row in df.iterrows():
+            try:
+                dt = index.to_pydatetime()
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone(timezone.utc)
+                else:
+                    dt = dt.replace(tzinfo=timezone.utc)
+
+                # Handle potential missing columns
+                adj_close = float(row["Adj Close"]) if "Adj Close" in row else None
+
+                records.append(
+                    PriceHistoryDaily(
+                        instrument_id=0, # Placeholder
+                        datetime=dt,
+                        open=float(row["Open"]),
+                        high=float(row["High"]),
+                        low=float(row["Low"]),
+                        close=float(row["Close"]),
+                        adj_close=adj_close,
+                        volume=int(row["Volume"]),
+                        resolve_required=False
+                    )
+                )
+            except Exception as e:
+                continue
+        return records
+

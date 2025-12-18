@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Provider, ProviderInstrumentMapping
+from models import Provider, ProviderInstrumentMapping, Instrument
 from features.provider.provider_schema import (
     ProviderCreate,
     ProviderUpdate,
@@ -138,6 +138,15 @@ async def create_provider_instrument_mapping(
         provider_instrument_search_code=mapping_data.provider_instrument_search_code,
     )
     session.add(new_mapping)
+
+    # Activate instrument
+    stmt = select(Instrument).where(Instrument.id == mapping_data.instrument_id)
+    result = await session.execute(stmt)
+    instrument = result.scalar_one_or_none()
+    if instrument:
+        instrument.is_active = True
+        session.add(instrument)
+
     await session.commit()
     await session.refresh(new_mapping)
     return ProviderInstrumentMappingInDb(
@@ -236,3 +245,24 @@ async def delete_provider_instrument_mapping(
     await session.delete(mapping)
     await session.commit()
     return True
+
+
+async def get_provider_mappings_by_instrument_id(
+    session: AsyncSession,
+    instrument_id: int,
+) -> list[ProviderInstrumentMappingInDb]:
+    """Get all provider mappings for a specific instrument"""
+    result = await session.execute(
+        select(ProviderInstrumentMapping).where(
+            ProviderInstrumentMapping.instrument_id == instrument_id
+        )
+    )
+    mappings = result.scalars().all()
+    return [
+        ProviderInstrumentMappingInDb(
+            provider_id=m.provider_id,
+            instrument_id=m.instrument_id,
+            provider_instrument_search_code=m.provider_instrument_search_code,
+        )
+        for m in mappings
+    ]

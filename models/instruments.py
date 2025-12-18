@@ -16,11 +16,9 @@ from .mixins import BaseMixin
 class Instrument(Base, BaseMixin):
     __tablename__ = "instruments"
 
-    ## mapped_column is used now instead of Column
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     symbol: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-
     exchange_id: Mapped[int] = mapped_column(
         ForeignKey("exchanges.id"), nullable=False, index=True
     )
@@ -28,6 +26,9 @@ class Instrument(Base, BaseMixin):
         Boolean, server_default="false", nullable=False
     )
     delisted: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
+    should_record_data: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
 
@@ -38,6 +39,10 @@ class Instrument(Base, BaseMixin):
     sector_id: Mapped[int | None] = mapped_column(
         ForeignKey("sectors.id"), nullable=True, index=True
     )
+
+    # industry_id: Mapped[int | None] = mapped_column(
+    #     ForeignKey("industries.id"), nullable=True, index=True
+    # )
 
     # Minimal relationships
     exchange: Mapped["Exchange"] = relationship(back_populates="instruments")
@@ -50,10 +55,3 @@ class Instrument(Base, BaseMixin):
     provider_mappings: Mapped[list["ProviderInstrumentMapping"]] = relationship(
         back_populates="instrument", cascade="all, delete-orphan"
     )
-
-    # intraday_prices: Mapped[list["PriceHistoryIntraday"]] = relationship(
-    #     back_populates="instrument", cascade="all, delete-orphan"
-    # )
-    # daily_prices: Mapped[list["PriceHistoryDaily"]] = relationship(
-    #     back_populates="instrument", cascade="all, delete-orphan"
-    # )

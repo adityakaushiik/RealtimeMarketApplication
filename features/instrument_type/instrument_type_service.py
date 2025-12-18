@@ -1,12 +1,12 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+import json
 
 from features.instrument_type.instrument_type_schema import InstrumentTypeCreate, InstrumentTypeInDb, \
     InstrumentTypeUpdate
 from models import InstrumentType
-
-
-# InstrumentType CRUD
+from config.redis_config import get_redis
+from config.logger import logger
 
 
 async def create_instrument_type(
@@ -24,6 +24,15 @@ async def create_instrument_type(
     session.add(new_type)
     await session.commit()
     await session.refresh(new_type)
+
+    # Invalidate cache
+    redis = get_redis()
+    if redis:
+        try:
+            await redis.delete("instrument_type:all")
+        except Exception as e:
+            logger.error(f"Error invalidating instrument_type cache: {e}")
+
     return InstrumentTypeInDb(
         id=new_type.id,
         code=new_type.code,
@@ -59,9 +68,22 @@ async def get_all_instrument_types(
         session: AsyncSession,
 ) -> list[InstrumentTypeInDb]:
     """Get all instrument types"""
+    redis = get_redis()
+    cache_key = "instrument_type:all"
+
+    if redis:
+        try:
+            cached_data = await redis.get(cache_key)
+            if cached_data:
+                data = json.loads(cached_data)
+                return [InstrumentTypeInDb(**item) for item in data]
+        except Exception as e:
+            logger.error(f"Error reading all instrument types from Redis: {e}")
+
     result = await session.execute(select(InstrumentType))
     types = result.scalars().all()
-    return [
+
+    response = [
         InstrumentTypeInDb(
             id=t.id,
             code=t.code,
@@ -72,6 +94,15 @@ async def get_all_instrument_types(
         )
         for t in types
     ]
+
+    if redis and response:
+        try:
+            json_data = json.dumps([item.model_dump(mode='json') for item in response])
+            await redis.set(cache_key, json_data, ex=86400)
+        except Exception as e:
+            logger.error(f"Error caching all instrument types to Redis: {e}")
+
+    return response
 
 
 async def update_instrument_type(
@@ -93,6 +124,15 @@ async def update_instrument_type(
 
     await session.commit()
     await session.refresh(type_obj)
+
+    # Invalidate cache
+    redis = get_redis()
+    if redis:
+        try:
+            await redis.delete("instrument_type:all")
+        except Exception as e:
+            logger.error(f"Error invalidating instrument_type cache: {e}")
+
     return InstrumentTypeInDb(
         id=type_obj.id,
         code=type_obj.code,
@@ -117,4 +157,13 @@ async def delete_instrument_type(
 
     await session.delete(type_obj)
     await session.commit()
+
+    # Invalidate cache
+    redis = get_redis()
+    if redis:
+        try:
+            await redis.delete("instrument_type:all")
+        except Exception as e:
+            logger.error(f"Error invalidating instrument_type cache: {e}")
+
     return True

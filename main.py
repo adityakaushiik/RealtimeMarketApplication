@@ -8,21 +8,31 @@ from starlette.middleware.cors import CORSMiddleware
 from config.database_config import close_database_engine, get_db_session
 from config.logger import logger
 from features.auth.auth_routes import auth_router
-from features.instrument_type.instrument_type_routes import instrument_type_router
+from features.exchange import exchange_service
+from features.exchange.exchange_schema import ExchangeInDb
+from features.exchange.exchange_service import get_exchange_by_code
+from features.instrument_type import instrument_type_service
+from features.instrument_type.instrument_type_routes import instrument_type_router, get_instrument_type
+from features.instruments import instrument_service
 from features.instruments.instrument_routes import instrument_router
 from features.exchange.exchange_routes import exchange_router
+from features.instruments.instrument_schema import InstrumentCreate
 from features.populate_database.populate_database_router import populate_database_route
 from features.provider.provider_routes import provider_router
 from features.sector.sector_routes import sector_router
 from features.websocket.web_socket_routes import websocket_route
 from features.marketdata.marketdata_routes import marketdata_router  # added
-from services.data.data_ingestion import LiveDataIngestion
+from services.data.data_ingestion import LiveDataIngestion, get_provider_manager
 from services.data.data_saver import DataSaver
+from services.data.data_resolver import DataResolver
 from services.data.exchange_data import ExchangeData
+from services.provider.provider_manager import ProviderManager
 from services.redis_subscriber import redis_subscriber
-from models import Exchange
+from models import Exchange, Instrument, ProviderInstrumentMapping, PriceHistoryDaily
 
 import sentry_sdk
+
+from utils.parse_file import parse_csv_file
 
 sentry_sdk.init(
     dsn="https://87837fe7f05ab475836caf4864a1c150@o4510497758576640.ingest.us.sentry.io/4510497760673792",
@@ -55,7 +65,15 @@ async def lifespan(app: FastAPI):
 
     logger.info("Task - 1. Starting Live Data Ingestion...")
     live_data_ingestion = LiveDataIngestion()
+    
+    # Initialize provider manager explicitly to ensure mappings are ready for DataResolver
+    await live_data_ingestion.provider_manager.initialize()
+    
     asyncio.create_task(live_data_ingestion.start_ingestion())
+
+    logger.info("Task - 1.1. Checking for data gaps...")
+    data_resolver = DataResolver(live_data_ingestion.provider_manager)
+    asyncio.create_task(data_resolver.check_and_fill_gaps())
 
     # Start Subscriber
     logger.info("Task - 2. Starting Redis subscriber...")
@@ -85,9 +103,46 @@ async def lifespan(app: FastAPI):
                     timezone_str=exchange.timezone,
                 )
                 data_saver.add_exchange(exchange_data)
+
+    # Save every 5 minute for testing
     await data_saver.start_all_exchanges(
         interval_minutes=5
-    )  # Save every 5 minute for testing
+    )
+
+
+    # provider_manager : ProviderManager = get_provider_manager()
+    # async for session in get_db_session():
+    #     existing_instruments = await session.execute(select(Instrument).where(
+    #         Instrument.is_active == True,
+    #         Instrument.should_record_data == True,
+    #         Instrument.exchange_id == 7  # NSE
+    #     ))
+    #     existing_instruments = existing_instruments.scalars().all()
+    #
+    #     bulk_data = []
+    #     for instrument in existing_instruments:
+    #         data = await provider_manager.get_daily_prices(instrument=instrument)
+    #
+    #         for price in data:
+    #             price : PriceHistoryDaily
+    #             bulk_data.append(PriceHistoryDaily(
+    #                 instrument_id=price.instrument_id,
+    #                 datetime=price.datetime,
+    #                 open=price.open,
+    #                 high=price.high,
+    #                 low=price.low,
+    #                 close=price.close,
+    #                 volume=price.volume,
+    #                 is_active=price.is_active,
+    #                 resolve_required=False,
+    #                 dividend=price.dividend,
+    #                 split=price.split,
+    #             ))
+    #
+    #     session.add_all(bulk_data)
+    #     await session.commit()
+    #     logger.info(f"Inserted {len(bulk_data)} daily price records.")
+
 
     # async for session in get_db_session():
     #     data_creation_service = DataCreationService(session)

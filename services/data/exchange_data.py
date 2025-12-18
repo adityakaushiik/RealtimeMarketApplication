@@ -1,4 +1,4 @@
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 import pytz
 
 
@@ -82,9 +82,9 @@ class ExchangeData:
             "start_time": self.start_time,
             "end_time": self.end_time,
             "start_time_readable": datetime.fromtimestamp(
-                self.start_time / 1000
+                self.start_time / 1000, tz=timezone.utc
             ).strftime("%Y-%m-%d %H:%M:%S"),
-            "end_time_readable": datetime.fromtimestamp(self.end_time / 1000).strftime(
+            "end_time_readable": datetime.fromtimestamp(self.end_time / 1000, tz=timezone.utc).strftime(
                 "%Y-%m-%d %H:%M:%S"
             ),
             "interval_minutes": self.interval_minutes,

@@ -75,6 +75,7 @@ class DataCreationService:
             stmt = select(Instrument).where(
                 Instrument.exchange_id == exchange.exchange_id,
                 Instrument.is_active == True,
+                Instrument.should_record_data == True,
             )
             result = await self.session.execute(stmt)
             instruments = result.scalars().all()
@@ -136,7 +137,7 @@ class DataCreationService:
                     daily_record = PriceHistoryDaily(
                         instrument_id=instrument.id,
                         datetime=daily_record_dt,
-                        price_not_found=True,
+                        resolve_required=True,
                     )
                     daily_records.append(daily_record)
 
@@ -146,7 +147,7 @@ class DataCreationService:
                         intraday_record = PriceHistoryIntraday(
                             instrument_id=instrument.id,
                             datetime=dt,
-                            price_not_found=True,
+                            resolve_required=True,
                         )
                         intraday_records.append(intraday_record)
 

@@ -15,7 +15,7 @@ class PriceHistoryIntradayBase(BaseModelPy):
     adj_close: Optional[float] = None
     volume: Optional[int] = None
     deliver_percentage: Optional[float] = None
-    price_not_found: bool = False
+    resolve_required: bool = False
     interval: Optional[str] = None
 
 
@@ -34,7 +34,7 @@ class PriceHistoryIntradayUpdate(BaseModelPy):
     adj_close: Optional[float] = None
     volume: Optional[int] = None
     deliver_percentage: Optional[float] = None
-    price_not_found: Optional[bool] = None
+    resolve_required: Optional[bool] = None
     interval: Optional[str] = None
 
 
@@ -53,7 +53,7 @@ class PriceHistoryDailyBase(BaseModelPy):
     adj_close: Optional[float] = None
     volume: Optional[int] = None
     deliver_percentage: Optional[float] = None
-    price_not_found: bool = False
+    resolve_required: bool = False
 
 
 class PriceHistoryDailyCreate(PriceHistoryDailyBase):
@@ -71,8 +71,14 @@ class PriceHistoryDailyUpdate(BaseModelPy):
     adj_close: Optional[float] = None
     volume: Optional[int] = None
     deliver_percentage: Optional[float] = None
-    price_not_found: Optional[bool] = None
+    resolve_required: Optional[bool] = None
 
 
 class PriceHistoryDailyInDb(PriceHistoryDailyBase):
     id: int
+
+
+class InstrumentPreviousClose(BaseModelPy):
+    symbol: str
+    price: Optional[float]
+    timestamp: datetime

@@ -146,3 +146,18 @@ async def update_provider_instrument_mapping(
             detail="Provider-Instrument mapping not found",
         )
     return updated_mapping
+
+
+@provider_router.get(
+    "/mapping/instrument/{instrument_id}",
+    response_model=list[ProviderInstrumentMappingInDb],
+)
+async def get_instrument_provider_mappings(
+    instrument_id: int,
+    user_claims: dict = Depends(require_auth()),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Get all provider mappings for a specific instrument"""
+    return await provider_service.get_provider_mappings_by_instrument_id(
+        session, instrument_id
+    )

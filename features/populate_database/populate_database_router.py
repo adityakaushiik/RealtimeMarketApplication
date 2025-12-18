@@ -61,7 +61,6 @@ async def populate_database_by_exchange(
         "message": f"Database populated for exchange {exchange_code}",
     }
 
-
 @populate_database_route.post("/create_price_history_records_for_future")
 async def create_price_history_records_for_future(
     offset_days: int = 0,

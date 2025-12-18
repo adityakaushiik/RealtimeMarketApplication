@@ -11,6 +11,9 @@ from features.exchange.exchange_schema import (
     ExchangeProviderMappingInDb,
 )
 from services.data.exchange_data import ExchangeData
+import json
+from config.redis_config import get_redis
+from config.logger import logger
 
 
 async def create_exchange(
@@ -51,17 +54,43 @@ async def get_exchange_by_id(
     exchange_id: int,
 ):
     """Get exchange by ID"""
+    redis = get_redis()
+    cache_key = f"exchange:id:{exchange_id}"
+
+    if redis:
+        try:
+            cached_data = await redis.get(cache_key)
+            if cached_data:
+                data = json.loads(cached_data)
+                return ExchangeInDb(**data)
+        except Exception as e:
+            logger.error(f"Error reading exchange from Redis: {e}")
+
     result = await session.execute(select(Exchange).where(Exchange.id == exchange_id))
     exchange = result.scalar_one_or_none()
     if exchange:
-        return ExchangeInDb(
+        exchange_db = ExchangeInDb(
             id=exchange.id,
             name=exchange.name,
             code=exchange.code,
             timezone=exchange.timezone,
             country=exchange.country,
             currency=exchange.currency,
+            pre_market_open_time=exchange.pre_market_open_time,
+            market_open_time=exchange.market_open_time,
+            market_close_time=exchange.market_close_time,
+            post_market_close_time=exchange.post_market_close_time,
         )
+
+        if redis:
+            try:
+                await redis.set(cache_key, exchange_db.model_dump_json(), ex=86400)
+                # Also cache by code
+                await redis.set(f"exchange:code:{exchange.code}", exchange_db.model_dump_json(), ex=86400)
+            except Exception as e:
+                logger.error(f"Error caching exchange to Redis: {e}")
+
+        return exchange_db
     return None
 
 
@@ -70,17 +99,43 @@ async def get_exchange_by_code(
     code: str,
 ):
     """Get exchange by code"""
+    redis = get_redis()
+    cache_key = f"exchange:code:{code}"
+
+    if redis:
+        try:
+            cached_data = await redis.get(cache_key)
+            if cached_data:
+                data = json.loads(cached_data)
+                return ExchangeInDb(**data)
+        except Exception as e:
+            logger.error(f"Error reading exchange from Redis: {e}")
+
     result = await session.execute(select(Exchange).where(Exchange.code == code))
     exchange = result.scalar_one_or_none()
     if exchange:
-        return ExchangeInDb(
+        exchange_db = ExchangeInDb(
             id=exchange.id,
             name=exchange.name,
             code=exchange.code,
             timezone=exchange.timezone,
             country=exchange.country,
             currency=exchange.currency,
+            pre_market_open_time=exchange.pre_market_open_time,
+            market_open_time=exchange.market_open_time,
+            market_close_time=exchange.market_close_time,
+            post_market_close_time=exchange.post_market_close_time,
         )
+
+        if redis:
+            try:
+                await redis.set(cache_key, exchange_db.model_dump_json(), ex=86400)
+                # Also cache by ID
+                await redis.set(f"exchange:id:{exchange.id}", exchange_db.model_dump_json(), ex=86400)
+            except Exception as e:
+                logger.error(f"Error caching exchange to Redis: {e}")
+
+        return exchange_db
     return None
 
 
@@ -88,9 +143,22 @@ async def get_all_exchanges(
     session: AsyncSession,
 ) -> list[ExchangeInDb]:
     """Get all exchanges"""
+    redis = get_redis()
+    cache_key = "exchange:all"
+
+    if redis:
+        try:
+            cached_data = await redis.get(cache_key)
+            if cached_data:
+                data = json.loads(cached_data)
+                return [ExchangeInDb(**item) for item in data]
+        except Exception as e:
+            logger.error(f"Error reading all exchanges from Redis: {e}")
+
     result = await session.execute(select(Exchange).where(Exchange.is_active == True))
     exchanges = result.scalars().all()
-    return [
+
+    response = [
         ExchangeInDb(
             id=exchange.id,
             name=exchange.name,
@@ -98,18 +166,46 @@ async def get_all_exchanges(
             timezone=exchange.timezone,
             country=exchange.country,
             currency=exchange.currency,
+            pre_market_open_time=exchange.pre_market_open_time,
+            market_open_time=exchange.market_open_time,
+            market_close_time=exchange.market_close_time,
+            post_market_close_time=exchange.post_market_close_time,
         )
         for exchange in exchanges
     ]
+
+    if redis and response:
+        try:
+            json_data = json.dumps([item.model_dump(mode='json') for item in response])
+            await redis.set(cache_key, json_data, ex=86400)
+        except Exception as e:
+            logger.error(f"Error caching all exchanges to Redis: {e}")
+
+    return response
 
 
 async def get_all_active_exchanges(
     session: AsyncSession,
 ) -> list[ExchangeData]:
     """Get all active exchanges as ExchangeData objects"""
+    redis = get_redis()
+    cache_key = "exchange:active:all"
+
+    if redis:
+        try:
+            cached_data = await redis.get(cache_key)
+            if cached_data:
+                data = json.loads(cached_data)
+                # ExchangeData is a Pydantic model (or dataclass?)
+                # It's a Pydantic model in services/data/exchange_data.py usually
+                return [ExchangeData(**item) for item in data]
+        except Exception as e:
+            logger.error(f"Error reading active exchanges from Redis: {e}")
+
     result = await session.execute(select(Exchange).where(Exchange.is_active == True))
     exchanges = result.scalars().all()
-    return [
+
+    response = [
         ExchangeData(
             exchange_name=exchange.name,
             exchange_id=exchange.id,
@@ -121,6 +217,15 @@ async def get_all_active_exchanges(
         )
         for exchange in exchanges
     ]
+
+    if redis and response:
+        try:
+            json_data = json.dumps([item.model_dump(mode='json') for item in response])
+            await redis.set(cache_key, json_data, ex=86400)
+        except Exception as e:
+            logger.error(f"Error caching active exchanges to Redis: {e}")
+
+    return response
 
 
 async def update_exchange(
@@ -140,6 +245,18 @@ async def update_exchange(
 
     await session.commit()
     await session.refresh(exchange)
+
+    # Invalidate cache
+    redis = get_redis()
+    if redis:
+        try:
+            await redis.delete(f"exchange:id:{exchange.id}")
+            await redis.delete(f"exchange:code:{exchange.code}")
+            await redis.delete("exchange:all")
+            await redis.delete("exchange:active:all")
+        except Exception as e:
+            logger.error(f"Error invalidating exchange cache: {e}")
+
     return ExchangeInDb(
         id=exchange.id,
         name=exchange.name,
@@ -164,8 +281,23 @@ async def delete_exchange(
     if not exchange:
         return False
 
+    # Capture code before delete
+    code = exchange.code
+
     await session.delete(exchange)
     await session.commit()
+
+    # Invalidate cache
+    redis = get_redis()
+    if redis:
+        try:
+            await redis.delete(f"exchange:id:{exchange_id}")
+            await redis.delete(f"exchange:code:{code}")
+            await redis.delete("exchange:all")
+            await redis.delete("exchange:active:all")
+        except Exception as e:
+            logger.error(f"Error invalidating exchange cache: {e}")
+
     return True
 
 

@@ -16,6 +16,8 @@ from models import (
     ExchangeProviderMapping,
     Instrument,
     ProviderInstrumentMapping,
+    PriceHistoryIntraday,
+    PriceHistoryDaily,
 )
 from services.provider.base_provider import BaseMarketDataProvider
 from services.provider.yahoo_provider import YahooFinanceProvider
@@ -43,6 +45,9 @@ class ProviderManager:
         # New: provider_symbol_map caches provider specific search code -> internal instrument symbol
         # Structure: {"YF": {"AAPL": "AAPL"}, "DHAN": {"RELIANCE-EQ": "RELIANCE"}}
         self.provider_symbol_map: Dict[str, Dict[str, str]] = {}
+        # New: internal_to_search_map caches internal instrument symbol -> provider specific search code
+        # Structure: {"YF": {"AAPL": "AAPL"}, "DHAN": {"RELIANCE": "RELIANCE-EQ"}}
+        self.internal_to_search_map: Dict[str, Dict[str, str]] = {}
         self._initialized = False
 
     async def initialize(self):
@@ -50,6 +55,10 @@ class ProviderManager:
         Load exchange-provider mappings from database and
         initialize provider instances.
         """
+        if self._initialized:
+            logger.info("ProviderManager already initialized.")
+            return
+
         logger.info("Initializing ProviderManager...")
 
         async for session in get_db_session():
@@ -98,7 +107,7 @@ class ProviderManager:
         if provider_code == "YF":
             return YahooFinanceProvider(callback=self.callback)
         elif provider_code == "DHAN":
-            return DhanProvider(callback=self.callback)
+            return DhanProvider(callback=self.callback, provider_manager=self)
         else:
             logger.error(
                 f"Unknown provider code: {provider_code} - skipping initialization"
@@ -159,17 +168,30 @@ class ProviderManager:
                     symbols_by_provider[provider_code] = []
                 if provider_code not in self.provider_symbol_map:
                     self.provider_symbol_map[provider_code] = {}
+                if provider_code not in self.internal_to_search_map:
+                    self.internal_to_search_map[provider_code] = {}
 
                 # Append provider specific search code to subscription list
                 symbols_by_provider[provider_code].append(provider_search_code)
 
                 # Cache mappings
+                # Note: symbol_to_provider and symbol_to_exchange are keyed by provider_search_code
+                # This might be problematic if different providers use the same search code for different instruments
+                # But for now, we assume uniqueness or that we look up by provider context
+
+                # IMPORTANT: We should also map the internal symbol to provider/exchange for reverse lookups
+                self.symbol_to_provider[internal_symbol] = provider_code
+                self.symbol_to_exchange[internal_symbol] = row.exchange_id
+
                 self.symbol_to_provider[provider_search_code] = provider_code
                 self.symbol_to_exchange[provider_search_code] = row.exchange_id
+
                 # provider_symbol_map holds provider search code -> internal instrument symbol
                 self.provider_symbol_map[provider_code][provider_search_code] = (
                     internal_symbol
                 )
+                # internal_to_search_map holds internal instrument symbol -> provider search code
+                self.internal_to_search_map[provider_code][internal_symbol] = provider_search_code
 
             # Log statistics
             logger.info(
@@ -213,6 +235,16 @@ class ProviderManager:
             return None
         return self.provider_symbol_map.get(provider_code, {}).get(provider_search_code)
 
+    async def get_search_code(self, provider_code: str, internal_symbol: str) -> Optional[str]:
+        """
+        Get provider specific search code for an internal symbol.
+        Lazy-loads mapping if needed.
+        """
+        if not self.internal_to_search_map:
+            await self.get_symbols_by_provider()
+        
+        return self.internal_to_search_map.get(provider_code, {}).get(internal_symbol)
+
     async def start_all_providers(self, symbols_by_provider: Dict[str, list[str]]):
         """Connect all providers with their respective symbols"""
         logger.info("Starting all provider connections...")
@@ -223,10 +255,16 @@ class ProviderManager:
         for provider_code, symbols in symbols_by_provider.items():
             if provider_code in self.providers and self.providers[provider_code]:
                 logger.info(f"Connecting {provider_code} with {len(symbols)} symbols")
-                # Run in threadpool since WebSocket connections may block
-                task = run_in_threadpool(
-                    self.providers[provider_code].connect_websocket, symbols
-                )
+                provider = self.providers[provider_code]
+                
+                if asyncio.iscoroutinefunction(provider.connect_websocket):
+                    # For async providers (like Dhan)
+                    task = provider.connect_websocket(symbols)
+                else:
+                    # For sync providers (like Yahoo) - run in threadpool
+                    task = run_in_threadpool(
+                        provider.connect_websocket, symbols
+                    )
                 tasks.append(task)
 
         # Connect all providers in parallel
@@ -328,3 +366,34 @@ class ProviderManager:
     def is_initialized(self) -> bool:
         """Check if provider manager is initialized"""
         return self._initialized
+
+    async def get_intraday_prices(
+        self, instrument: Instrument
+    ) -> list["PriceHistoryIntraday"]:
+        """Fetch intraday prices for a single instrument from its provider."""
+        provider_code = self.exchange_to_provider.get(instrument.exchange_id)
+        if not provider_code:
+            return []
+
+        provider = self.providers.get(provider_code)
+        if not provider:
+            return []
+
+        result = await provider.get_intraday_prices([instrument])
+        return result.get(instrument.symbol, [])
+
+    async def get_daily_prices(
+        self, instrument: Instrument
+    ) -> list["PriceHistoryDaily"]:
+        """Fetch daily prices for a single instrument from its provider."""
+        provider_code = self.exchange_to_provider.get(instrument.exchange_id)
+        if not provider_code:
+            return []
+
+        provider = self.providers.get(provider_code)
+        if not provider:
+            return []
+
+        result = await provider.get_daily_prices([instrument])
+        return result.get(instrument.symbol, [])
+

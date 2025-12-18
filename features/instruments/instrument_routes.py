@@ -10,11 +10,6 @@ from features.instruments.instrument_schema import (
     InstrumentUpdate,
     InstrumentInDb,
 )
-from features.provider.provider_schema import ProviderInstrumentMappingCreate
-from features.provider.provider_service import (
-    get_provider_by_id,
-    create_provider_instrument_mapping,
-)
 from models import Instrument, Exchange
 from utils.common_constants import UserRoles
 
@@ -24,10 +19,15 @@ instrument_router = APIRouter(
 )
 
 
+def is_admin(user_claims: dict) -> bool:
+    roles = user_claims.get("roles", [])
+    return UserRoles.ADMIN.value in roles
+
 # Existing routes
 @instrument_router.get("/list/{exchange}")
 async def list_instruments(
     exchange: str,
+    limit: int = 50,
     user_claims: dict = Depends(require_auth()),
     session: AsyncSession = Depends(get_db_session),
 ):
@@ -42,9 +42,13 @@ async def list_instruments(
             detail="Invalid or Unsupported exchange code",
         )
 
-    result = await session.execute(
-        select(Instrument).where(Instrument.exchange_id == exchange_obj.id)
-    )
+    stmt = select(Instrument).where(Instrument.exchange_id == exchange_obj.id)
+    if not is_admin(user_claims):
+        stmt = stmt.where(Instrument.is_active == True)
+
+    stmt = stmt.limit(limit)
+
+    result = await session.execute(stmt)
     instrument_list = result.scalars().all()
     return instrument_list
 
@@ -76,12 +80,17 @@ async def instrument_details(
         )
 
     # Fetch Instrument
-    result = await session.execute(
-        select(Instrument).where(
-            (Instrument.symbol == symbol) & (Instrument.exchange_id == exchange_obj.id)
-        )
+    stmt = select(Instrument).where(
+        (Instrument.symbol == symbol) & (Instrument.exchange_id == exchange_obj.id)
     )
-    instrument = result.scalar_one_or_none() or []
+    if not is_admin(user_claims):
+        stmt = stmt.where(Instrument.is_active == True)
+
+    result = await session.execute(stmt)
+    instrument = result.scalar_one_or_none()
+    
+    if not instrument:
+        return None 
 
     return instrument
 
@@ -94,34 +103,9 @@ async def create_instrument(
     instrument_data: InstrumentCreate,
     user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
     session: AsyncSession = Depends(get_db_session),
-    provider_id: int = None,
-    provider_search_code: str = None,
 ):
     """Create a new instrument and map it to a provider"""
-
-    if not provider_id or not provider_search_code:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Provider ID and Provider Search Code are required",
-        )
-
-    provider = await get_provider_by_id(session, provider_id)
-    if not provider:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Provider not found",
-        )
-
     instrument = await instrument_service.create_instrument(session, instrument_data)
-    provider_instrument_mapping = ProviderInstrumentMappingCreate(
-        provider_id=provider_id,
-        instrument_id=instrument.id,
-        provider_instrument_search_code=provider_search_code,
-    )
-    create_mappings = await create_provider_instrument_mapping(
-        session, provider_instrument_mapping
-    )
-
     return instrument
 
 
@@ -131,7 +115,18 @@ async def list_all_instruments(
     session: AsyncSession = Depends(get_db_session),
 ):
     """Get all instruments"""
-    return await instrument_service.get_all_instruments(session)
+    only_active = not is_admin(user_claims)
+    return await instrument_service.get_all_instruments(session, only_active=True)
+
+
+@instrument_router.get("/search")
+async def search_instruments(
+    query: str,
+    session: AsyncSession = Depends(get_db_session),
+    user_claims: dict = Depends(require_auth()),
+):
+    only_active = not is_admin(user_claims)
+    return await instrument_service.search_instruments(session, query, only_active=only_active)
 
 
 @instrument_router.get("/{instrument_id}", response_model=InstrumentInDb)
@@ -141,7 +136,8 @@ async def get_instrument(
     session: AsyncSession = Depends(get_db_session),
 ):
     """Get instrument by ID"""
-    instrument = await instrument_service.get_instrument_by_id(session, instrument_id)
+    only_active = not is_admin(user_claims)
+    instrument = await instrument_service.get_instrument_by_id(session, instrument_id, only_active=only_active)
     if not instrument:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Instrument not found"
@@ -149,11 +145,46 @@ async def get_instrument(
     return instrument
 
 
+@instrument_router.patch("/{instrument_id}/recording", response_model=InstrumentInDb)
+async def toggle_recording(
+    instrument_id: int,
+    should_record: bool,
+    user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """
+    Enable or disable data recording for an instrument.
+    Requires ADMIN role.
+    """
+    if not is_admin(user_claims):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can change recording settings",
+        )
+
+    try:
+        instrument = await instrument_service.toggle_instrument_recording(
+            session, instrument_id, should_record
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+    if not instrument:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Instrument not found"
+        )
+    
+    return instrument
+
+
 @instrument_router.put("/{instrument_id}", response_model=InstrumentInDb)
 async def update_instrument(
     instrument_id: int,
     instrument_data: InstrumentUpdate,
-    user_claims: dict = Depends(require_auth()),
+    user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Update an instrument"""

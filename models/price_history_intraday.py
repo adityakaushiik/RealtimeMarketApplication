@@ -8,7 +8,6 @@ from datetime import datetime
 from .base import Base
 from .mixins import BaseMixin
 
-
 class PriceHistoryIntraday(Base, BaseMixin):
     __tablename__ = "price_history_intraday"
 
@@ -26,7 +25,7 @@ class PriceHistoryIntraday(Base, BaseMixin):
     adj_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     deliver_percentage: Mapped[float | None] = mapped_column(Float, nullable=True)
-    price_not_found: Mapped[bool] = mapped_column(
+    resolve_required: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
     interval: Mapped[str | None] = mapped_column(String(32), nullable=True)

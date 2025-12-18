@@ -73,7 +73,7 @@ class BaseMarketDataProvider(ABC):
         pass
 
     @abstractmethod
-    def get_intraday_prices(
+    async def get_intraday_prices(
         self, instruments: List[Instrument]
     ) -> dict[str, list[PriceHistoryIntraday]]:
         """
@@ -85,7 +85,7 @@ class BaseMarketDataProvider(ABC):
         pass
 
     @abstractmethod
-    def get_daily_prices(
+    async def get_daily_prices(
         self, instruments: List[Instrument]
     ) -> dict[str, list[PriceHistoryDaily]]:
         """

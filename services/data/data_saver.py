@@ -13,6 +13,7 @@ from models.price_history_intraday import PriceHistoryIntraday
 from models.price_history_daily import PriceHistoryDaily
 from config.database_config import get_db_session
 from config.logger import logger
+from config.redis_config import get_redis
 
 
 class DataSaver:
@@ -23,10 +24,12 @@ class DataSaver:
 
     def __init__(self):
         self.redis_timeseries = get_redis_timeseries()
+        self.redis = get_redis()
         self.exchanges: List[ExchangeData] = []
         self._running_tasks: Dict[str, asyncio.Task] = {}
         self._stop_flags: Dict[str, bool] = {}
-        self.symbol_map_cache: Dict[str, int] = {}
+        # Cache stores symbol -> (instrument_id, should_record_data)
+        self.symbol_map_cache: Dict[str, tuple[int, bool]] = {}
 
     def add_exchange(self, exchange_data: ExchangeData) -> None:
         """Add an exchange to monitor."""
@@ -180,10 +183,18 @@ class DataSaver:
             results = await asyncio.gather(*tasks)
 
             valid_data = {}
+            missing_data_symbols = []
             for key, result in zip(keys, results):
                 # Check if we have valid data
                 if result and result.get("ts"):
                     valid_data[key] = result
+                else:
+                    missing_data_symbols.append(key)
+
+            if missing_data_symbols:
+                logger.warning(
+                    f"[{exchange_data.exchange_name}] No data in window for {len(missing_data_symbols)} symbols. Examples: {missing_data_symbols[:5]}"
+                )
 
             if not valid_data:
                 logger.warning(
@@ -200,6 +211,14 @@ class DataSaver:
                     symbol_map = await self._get_symbol_to_instrument_mapping(
                         session, list(valid_data.keys()), exchange_data.exchange_id
                     )
+
+                    unmapped_symbols = []
+                    for symbol in valid_data.keys():
+                        if symbol not in symbol_map:
+                            unmapped_symbols.append(symbol)
+
+                    if unmapped_symbols:
+                        logger.warning(f"[{exchange_data.exchange_name}] {len(unmapped_symbols)} symbols have data but no instrument mapping (or not marked for recording). Examples: {unmapped_symbols[:5]}")
 
                     for symbol, data in valid_data.items():
                         instrument_id = symbol_map.get(symbol)
@@ -238,7 +257,7 @@ class DataSaver:
                                 low=low_val,
                                 close=close_val,
                                 volume=vol_val,
-                                price_not_found=False,
+                                resolve_required=False,
                             )
                         )
                         result = await session.execute(stmt)
@@ -275,7 +294,7 @@ class DataSaver:
                         daily_record = daily_result.scalar_one_or_none()
 
                         if daily_record:
-                            daily_record.price_not_found = False
+                            daily_record.resolve_required = False
                             daily_record.close = close_val
                             daily_record.volume = (daily_record.volume or 0) + vol_val
 
@@ -298,8 +317,17 @@ class DataSaver:
                             )
 
                     await session.commit()
+                    
+                    # Update last save time in Redis
+                    if self.redis:
+                        try:
+                            await self.redis.set(f"last_save_time:{interval_minutes}m", str(align_to_ts))
+                            logger.info(f"Updated last_save_time:{interval_minutes}m to {align_to_ts}")
+                        except Exception as e:
+                            logger.error(f"Failed to update last_save_time in Redis: {e}")
+
                     logger.info(
-                        f"Updated records for {len(valid_data)} symbols at {datetime.now()}"
+                        f"Updated records for {len(valid_data)} symbols at {datetime.now(timezone.utc)}"
                     )
 
                 except Exception as e:
@@ -312,23 +340,28 @@ class DataSaver:
     async def _get_symbol_to_instrument_mapping(
         self, session: AsyncSession, symbols: List[str], exchange_id: int
     ) -> Dict[str, int]:
-        """Get mapping from symbol to instrument_id."""
+        """Get mapping from symbol to instrument_id for instruments that should be recorded."""
         mapping = {}
         missing = []
 
         for s in symbols:
             if s in self.symbol_map_cache:
-                mapping[s] = self.symbol_map_cache[s]
+                inst_id, should_record = self.symbol_map_cache[s]
+                if should_record:
+                    mapping[s] = inst_id
             else:
                 missing.append(s)
 
         if missing:
-            stmt = select(Instrument.symbol, Instrument.id).where(
+            stmt = select(
+                Instrument.symbol, Instrument.id, Instrument.should_record_data
+            ).where(
                 Instrument.symbol.in_(missing), Instrument.exchange_id == exchange_id
             )
             result = await session.execute(stmt)
             for row in result.all():
-                self.symbol_map_cache[row.symbol] = row.id
-                mapping[row.symbol] = row.id
+                self.symbol_map_cache[row.symbol] = (row.id, row.should_record_data)
+                if row.should_record_data:
+                    mapping[row.symbol] = row.id
 
         return mapping
