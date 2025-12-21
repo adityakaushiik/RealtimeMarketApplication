@@ -2,12 +2,15 @@
 import os
 import redis.asyncio as async_redis
 
+from config.settings import get_settings
+
 redis_client = None
 
 
 def _build_redis_url_from_env():
     # Priority: REDIS_URL > compose-style REDIS_HOST/REDIS_PORT > localhost default
-    redis_url = os.getenv("REDIS_URL")
+    settings = get_settings()
+    redis_url = settings.REDIS_URL
     if redis_url:
         return redis_url
     host = os.getenv("REDIS_HOST", "localhost")

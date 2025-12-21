@@ -4,6 +4,7 @@ All providers (Yahoo Finance, Dhan, etc.) must implement this interface.
 """
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Callable, Optional, Set, List
 
 from models import Instrument, PriceHistoryIntraday, PriceHistoryDaily
@@ -74,25 +75,39 @@ class BaseMarketDataProvider(ABC):
 
     @abstractmethod
     async def get_intraday_prices(
-        self, instruments: List[Instrument]
+            self,
+            instruments: List[Instrument],
+            start_date: Optional[datetime] = None,
+            end_date: Optional[datetime] = None,
+            timeframe: str = '5m',
     ) -> dict[str, list[PriceHistoryIntraday]]:
         """
         Fetch intraday price history for given instruments.
 
         Args:
             instruments: List of Instrument objects to fetch data for
+            start_date: Start datetime (inclusive)
+            end_date: End datetime (inclusive)
+            timeframe: Timeframe string (e.g., '5m')
         """
         pass
 
     @abstractmethod
     async def get_daily_prices(
-        self, instruments: List[Instrument]
+            self,
+            instruments: List[Instrument],
+            start_date: Optional[datetime] = None,
+            end_date: Optional[datetime] = None,
+            timeframe: str = '1d',
     ) -> dict[str, list[PriceHistoryDaily]]:
         """
         Fetch daily price history for given instruments.
 
         Args:
             instruments: List of Instrument objects to fetch data for
+            start_date: Start datetime (inclusive)
+            end_date: End datetime (inclusive)
+            timeframe: Timeframe string (e.g., '1d')
         """
         pass
 

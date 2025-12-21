@@ -1,8 +1,9 @@
 from .base import Base
 
 # Import models so they are accessible as models.*
-from .instrument_types import InstrumentType
 from .exchange import Exchange
+from .exchange_holiday import ExchangeHoliday
+from .instrument_types import InstrumentType
 from .sector import Sector
 from .instruments import Instrument
 from .price_history_intraday import PriceHistoryIntraday
@@ -11,6 +12,7 @@ from .provider import Provider
 from .exchange_provider_mapping import ExchangeProviderMapping
 from .provider_instrument_mapping import ProviderInstrumentMapping
 from .user import User, Role
+from .watchlist import Watchlist, WatchlistItem
 
 __all__ = [
     "Base",
@@ -25,4 +27,7 @@ __all__ = [
     "ProviderInstrumentMapping",
     "User",
     "Role",
+    "ExchangeHoliday",
+    "Watchlist",
+    "WatchlistItem",
 ]

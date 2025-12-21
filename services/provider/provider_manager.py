@@ -34,17 +34,23 @@ class ProviderManager:
       Useful to translate inbound provider-specific symbols back to internal canonical symbols.
     """
 
-    def __init__(self, callback):
-        self.callback = callback
+    def __init__(self):
+        self.callback = None
         self.providers: Dict[str, BaseMarketDataProvider] = {}
+
+
         self.exchange_to_provider: Dict[int, str] = {}  # exchange_id -> provider_code
         self.symbol_to_provider: Dict[
             str, str
         ] = {}  # internal symbol (provider search symbol currently) -> provider_code
         self.symbol_to_exchange: Dict[str, int] = {}  # internal symbol -> exchange_id
+
+
         # New: provider_symbol_map caches provider specific search code -> internal instrument symbol
-        # Structure: {"YF": {"AAPL": "AAPL"}, "DHAN": {"RELIANCE-EQ": "RELIANCE"}}
+        # Structure: {"YF": {"AAPL": "AAPL"}, "DHAN": {"123213": "RELIANCE"}}
         self.provider_symbol_map: Dict[str, Dict[str, str]] = {}
+
+
         # New: internal_to_search_map caches internal instrument symbol -> provider specific search code
         # Structure: {"YF": {"AAPL": "AAPL"}, "DHAN": {"RELIANCE": "RELIANCE-EQ"}}
         self.internal_to_search_map: Dict[str, Dict[str, str]] = {}
@@ -104,6 +110,15 @@ class ProviderManager:
         self, provider_code: str
     ) -> Optional[BaseMarketDataProvider]:
         """Factory method to create provider instances"""
+
+        if not self.callback:
+            logger.error(
+                "ProviderManager callback not set before provider initialization"
+            )
+            raise ValueError(
+                "ProviderManager callback must be set before initializing providers"
+            )
+
         if provider_code == "YF":
             return YahooFinanceProvider(callback=self.callback)
         elif provider_code == "DHAN":
@@ -368,7 +383,10 @@ class ProviderManager:
         return self._initialized
 
     async def get_intraday_prices(
-        self, instrument: Instrument
+        self, instrument: Instrument,
+            start_date: Optional[str] = None,
+            end_date: Optional[str] = None,
+            timeframe: str = '1d',
     ) -> list["PriceHistoryIntraday"]:
         """Fetch intraday prices for a single instrument from its provider."""
         provider_code = self.exchange_to_provider.get(instrument.exchange_id)
@@ -383,7 +401,10 @@ class ProviderManager:
         return result.get(instrument.symbol, [])
 
     async def get_daily_prices(
-        self, instrument: Instrument
+        self, instrument: Instrument,
+            start_date: Optional[str] = None,
+            end_date: Optional[str] = None,
+            timeframe: str = '1d',
     ) -> list["PriceHistoryDaily"]:
         """Fetch daily prices for a single instrument from its provider."""
         provider_code = self.exchange_to_provider.get(instrument.exchange_id)
@@ -397,3 +418,10 @@ class ProviderManager:
         result = await provider.get_daily_prices([instrument])
         return result.get(instrument.symbol, [])
 
+# Global reference for dependency injection
+_provider_manager_instance = None
+def get_provider_manager() -> ProviderManager:
+    global _provider_manager_instance
+    if _provider_manager_instance is None:
+        _provider_manager_instance = ProviderManager()
+    return _provider_manager_instance

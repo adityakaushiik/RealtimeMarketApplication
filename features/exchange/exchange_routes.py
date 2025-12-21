@@ -11,6 +11,9 @@ from features.exchange.exchange_schema import (
     ExchangeProviderMappingCreate,
     ExchangeProviderMappingUpdate,
     ExchangeProviderMappingInDb,
+    ExchangeHolidayCreate,
+    ExchangeHolidayUpdate,
+    ExchangeHolidayInDb,
 )
 from features.exchange import exchange_service
 from models import ExchangeProviderMapping
@@ -196,3 +199,89 @@ async def remove_provider_from_exchange(
     if not deleted:
         raise HTTPException(status_code=404, detail="Mapping not found")
     return None
+
+
+# Exchange Holiday routes
+
+@exchange_router.post(
+    "/holidays",
+    response_model=ExchangeHolidayInDb,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_exchange_holiday(
+    holiday_data: ExchangeHolidayCreate,
+    user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Create a new exchange holiday"""
+    # Check if exchange exists
+    exchange = await exchange_service.get_exchange_by_id(session, holiday_data.exchange_id)
+    if not exchange:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Exchange not found",
+        )
+
+    return await exchange_service.create_exchange_holiday(session, holiday_data)
+
+
+@exchange_router.put(
+    "/holidays/{holiday_id}",
+    response_model=ExchangeHolidayInDb,
+)
+async def update_exchange_holiday(
+    holiday_id: int,
+    holiday_data: ExchangeHolidayUpdate,
+    user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Update an exchange holiday"""
+    updated_holiday = await exchange_service.update_exchange_holiday(
+        session, holiday_id, holiday_data
+    )
+    if not updated_holiday:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Exchange holiday not found",
+        )
+    return updated_holiday
+
+
+@exchange_router.delete(
+    "/holidays/{holiday_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_exchange_holiday(
+    holiday_id: int,
+    user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Delete an exchange holiday"""
+    success = await exchange_service.delete_exchange_holiday(session, holiday_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Exchange holiday not found",
+        )
+    return None
+
+
+@exchange_router.get(
+    "/{exchange_id}/holidays",
+    response_model=list[ExchangeHolidayInDb],
+)
+async def list_exchange_holidays(
+    exchange_id: int,
+    user_claims: dict = Depends(require_auth()),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """List all holidays for an exchange"""
+    # Check if exchange exists
+    exchange = await exchange_service.get_exchange_by_id(session, exchange_id)
+    if not exchange:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Exchange not found",
+        )
+
+    return await exchange_service.get_exchange_holidays(session, exchange_id)

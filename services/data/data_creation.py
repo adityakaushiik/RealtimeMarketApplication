@@ -1,13 +1,13 @@
-import asyncio
 from datetime import datetime, timedelta, time
-from typing import List, Optional
+from typing import List
 import pytz
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.logger import logger
-from services.data.exchange_data import ExchangeData
+from models.exchange import Exchange
+from models.exchange_holiday import ExchangeHoliday
 from models.instruments import Instrument
 from models.price_history_intraday import PriceHistoryIntraday
 from models.price_history_daily import PriceHistoryDaily
@@ -15,17 +15,17 @@ from models.price_history_daily import PriceHistoryDaily
 
 class DataCreationService:
     def __init__(self, session: AsyncSession):
-        self.exchanges: List[ExchangeData] = []
+        self.exchanges: List[Exchange] = []
         self.session: AsyncSession = session
 
-    def add_exchange(self, exchange_data: ExchangeData) -> None:
+    def add_exchange(self, exchange: Exchange) -> None:
         """Add an exchange to monitor for data collection."""
-        self.exchanges.append(exchange_data)
-        logger.info(f"Added exchange: {exchange_data.exchange_name}")
+        self.exchanges.append(exchange)
+        logger.info(f"Added exchange: {exchange.name}")
 
     def list_exchanges(self) -> List[str]:
         """List the names of all exchanges being monitored."""
-        return [exchange.exchange_name for exchange in self.exchanges]
+        return [exchange.name for exchange in self.exchanges]
 
     async def start_data_creation(self, offset_days: int = 0) -> None:
         """
@@ -40,41 +40,60 @@ class DataCreationService:
             await self._create_data_records_for_exchange(exchange, offset_days)
 
     async def _create_data_records_for_exchange(
-        self, exchange: ExchangeData, offset_days: int = 0
+        self, exchange: Exchange, offset_days: int = 0
     ) -> None:
         """Create data records for a specific exchange."""
+        # Refresh the exchange object to ensure attributes are loaded and not expired
+        # This is necessary because previous iterations might have called commit(), expiring all objects.
+        await self.session.refresh(exchange)
+
+        exchange_name = exchange.name
         try:
             # Calculate target date and times
-            tz = pytz.timezone(exchange.timezone_str)
+            tz = pytz.timezone(exchange.timezone)
             now = datetime.now(tz)
             target_date = now.date() + timedelta(days=offset_days)
 
+            # Check for holidays or special sessions
+            stmt_holiday = select(ExchangeHoliday).where(
+                ExchangeHoliday.exchange_id == exchange.id,
+                ExchangeHoliday.date == target_date
+            )
+            result_holiday = await self.session.execute(stmt_holiday)
+            holiday = result_holiday.scalar_one_or_none()
+
+            market_open = exchange.market_open_time
+            market_close = exchange.market_close_time
+
+            if holiday:
+                if holiday.is_closed:
+                    logger.info(f"Skipping data creation for {exchange_name} on {target_date}: Holiday ({holiday.description})")
+                    return
+                else:
+                    # Special session (e.g. Muhurat trading)
+                    if holiday.open_time and holiday.close_time:
+                        logger.info(f"Using special trading hours for {exchange_name} on {target_date}: {holiday.open_time} - {holiday.close_time} ({holiday.description})")
+                        market_open = holiday.open_time
+                        market_close = holiday.close_time
+
             # Calculate start and end times for the target date
-            # Determine effective start time (earliest of market open or pre-market open)
-            effective_start_time = exchange.market_open_time
-            if exchange.pre_market_open_time:
-                effective_start_time = min(
-                    exchange.market_open_time, exchange.pre_market_open_time
+            # Use strictly market open and close times, ignoring pre/post market sessions
+            if not market_open or not market_close:
+                logger.warning(
+                    f"Skipping data creation for {exchange_name}: Market open/close times not defined."
                 )
+                return
 
-            # Determine effective end time (latest of market close or post-market close)
-            effective_end_time = exchange.market_close_time
-            if exchange.post_market_close_time:
-                effective_end_time = max(
-                    exchange.market_close_time, exchange.post_market_close_time
-                )
-
-            start_dt = tz.localize(datetime.combine(target_date, effective_start_time))
-            end_dt = tz.localize(datetime.combine(target_date, effective_end_time))
+            start_dt = tz.localize(datetime.combine(target_date, market_open))
+            end_dt = tz.localize(datetime.combine(target_date, market_close))
 
             logger.info(
-                f"Creating data records for {exchange.exchange_name} on {target_date} (Offset: {offset_days})"
+                f"Creating data records for {exchange_name} on {target_date} (Offset: {offset_days})"
             )
 
             # Fetch active instruments for this exchange
             stmt = select(Instrument).where(
-                Instrument.exchange_id == exchange.exchange_id,
-                Instrument.is_active == True,
+                Instrument.exchange_id == exchange.id,
                 Instrument.should_record_data == True,
             )
             result = await self.session.execute(stmt)
@@ -82,7 +101,7 @@ class DataCreationService:
 
             if not instruments:
                 logger.warning(
-                    f"No active instruments found for {exchange.exchange_name}"
+                    f"No active instruments found for {exchange_name}"
                 )
                 return
 
@@ -95,7 +114,7 @@ class DataCreationService:
 
             # Use market open time for daily record timestamp (standard convention)
             daily_record_dt = tz.localize(
-                datetime.combine(target_date, exchange.market_open_time)
+                datetime.combine(target_date, market_open)
             )
 
             # Fetch existing records to avoid duplicates
@@ -162,16 +181,16 @@ class DataCreationService:
 
             if not daily_records and not intraday_records:
                 logger.info(
-                    f"No new records to create for {exchange.exchange_name} on {target_date}"
+                    f"No new records to create for {exchange_name} on {target_date}"
                 )
             else:
                 await self.session.commit()
                 logger.info(
-                    f"Successfully created records for {exchange.exchange_name} on {target_date}"
+                    f"Successfully created records for {exchange_name} on {target_date}"
                 )
 
         except Exception as e:
             logger.error(
-                f"Error creating data records for {exchange.exchange_name}: {e!r}"
+                f"Error creating data records for {exchange_name}: {e!r}"
             )
             await self.session.rollback()

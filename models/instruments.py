@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, List
+
 from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .sector import Sector
 from .instrument_types import InstrumentType
 from .exchange import Exchange
-from .price_history_intraday import PriceHistoryIntraday
-from .price_history_daily import PriceHistoryDaily
 from .provider_instrument_mapping import ProviderInstrumentMapping
 from .base import Base
 from .mixins import BaseMixin
+
+if TYPE_CHECKING:
+    from .price_history_intraday import PriceHistoryIntraday
+    from .price_history_daily import PriceHistoryDaily
 
 
 class Instrument(Base, BaseMixin):

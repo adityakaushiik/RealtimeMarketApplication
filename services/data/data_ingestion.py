@@ -6,7 +6,7 @@ from config.logger import logger
 from config.redis_config import get_redis
 
 # from services.data.data_broadcast import get_data_broadcast
-from services.provider.provider_manager import ProviderManager
+from services.provider.provider_manager import ProviderManager, get_provider_manager
 from services.redis_timeseries import get_redis_timeseries
 from services.websocket_manager import get_websocket_manager
 from utils.binary_conversions import pack_snapshot, pack_update, example_update_data
@@ -15,13 +15,6 @@ from utils.common_constants import DataIngestionFormat
 from sqlalchemy import select
 from models import Instrument
 from config.database_config import get_db_session
-
-# Global reference for dependency injection
-_provider_manager_instance = None
-
-
-def get_provider_manager():
-    return _provider_manager_instance
 
 
 class LiveDataIngestion:
@@ -38,10 +31,9 @@ class LiveDataIngestion:
         self.redis = get_redis()
 
         # NEW: Use ProviderManager instead of single provider
-        self.provider_manager = ProviderManager(callback=self.handle_market_data)
-        
-        global _provider_manager_instance
-        _provider_manager_instance = self.provider_manager
+        self.provider_manager = None
+        if not get_provider_manager():
+            self.provider_manager = get_provider_manager()
         
         self._sync_task = None
         self.persistent_symbols = set()

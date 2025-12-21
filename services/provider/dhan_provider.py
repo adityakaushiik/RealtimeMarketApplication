@@ -23,7 +23,8 @@ import json
 import struct
 import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Optional, Any
+import pytz
 
 import websockets
 import requests
@@ -103,8 +104,9 @@ class DhanProvider(BaseMarketDataProvider):
         self.client_id = settings.DHAN_CLIENT_ID
         self.access_token = settings.DHAN_ACCESS_TOKEN
         
-        self.ws: Optional[websockets.WebSocketClientProtocol] = None
+        self.ws: Any = None
         self._connection_task = None
+        self._token_refresh_task = None
         self._running = False
         
         # Rate Limiting
@@ -115,6 +117,67 @@ class DhanProvider(BaseMarketDataProvider):
             raise ValueError(
                 "Callback function must be provided for handling messages."
             )
+
+    async def _refresh_token_loop(self):
+        """
+        Background task to refresh Dhan API token every 20 hours.
+        """
+        refresh_interval = 20 * 60 * 60  # 20 hours in seconds
+        # refresh_interval = 60 # for testing
+
+        logger.info("Starting Dhan token refresh loop (every 20 hours)")
+
+        while self._running:
+            try:
+                # Wait for the interval
+                await asyncio.sleep(refresh_interval)
+
+                logger.info("Refreshing Dhan API token...")
+
+                # Prepare request
+                url = f"{self.REST_URL}/RenewToken"
+                headers = {
+                    "access-token": self.access_token,
+                    "dhanClientId": self.client_id,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                }
+
+                # Make request
+                response = await asyncio.to_thread(
+                    requests.post, url, headers=headers, json={}
+                )
+
+                if response.ok:
+                    logger.info("Dhan API token refreshed successfully.")
+                    # The old token is expired, so we must update to the new one.
+                    try:
+                        data = response.json()
+                        new_token = None
+
+                        # Check for token in likely locations
+                        if "accessToken" in data:
+                            new_token = data["accessToken"]
+                        elif "data" in data and isinstance(data["data"], dict) and "accessToken" in data["data"]:
+                            new_token = data["data"]["accessToken"]
+
+                        if new_token:
+                            self.access_token = new_token
+                            logger.info("Successfully updated Dhan access token.")
+                        else:
+                            logger.warning(f"Token refresh response did not contain accessToken. Response: {data}")
+                    except Exception as e:
+                        logger.error(f"Error parsing token refresh response: {e}")
+                else:
+                    logger.error(f"Failed to refresh Dhan token: {response.status_code} - {response.text}")
+
+            except asyncio.CancelledError:
+                logger.info("Dhan token refresh task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in Dhan token refresh loop: {e}")
+                # Wait a bit before retrying to avoid tight loop in case of error
+                await asyncio.sleep(60)
 
     async def _make_request(self, endpoint: str, payload: dict) -> dict:
         """Helper to make async HTTP requests to Dhan API"""
@@ -163,6 +226,9 @@ class DhanProvider(BaseMarketDataProvider):
         # Start the connection loop in background
         self._connection_task = asyncio.create_task(self._run_websocket_loop())
         
+        # Start token refresh task
+        self._token_refresh_task = asyncio.create_task(self._refresh_token_loop())
+
         # Add callback to log any exceptions
         def handle_connection_result(task):
             try:
@@ -205,7 +271,7 @@ class DhanProvider(BaseMarketDataProvider):
                             message = await websocket.recv()
                             await self._process_message(message)
                         except websockets.ConnectionClosed as e:
-                            logger.warning(f"Dhan WebSocket connection closed: {e.code} - {e.reason}")
+                            logger.warning(f"Dhan WebSocket connection closed: {e.rcvd.code} - {e.rcvd.reason}")
                             break
                         except Exception as e:
                             logger.error(f"Error processing message: {e}")
@@ -398,6 +464,8 @@ class DhanProvider(BaseMarketDataProvider):
         self._running = False
         if self._connection_task:
             self._connection_task.cancel()
+        if self._token_refresh_task:
+            self._token_refresh_task.cancel()
         self.is_connected = False
         logger.info("Dhan WebSocket disconnected")
 
@@ -446,21 +514,46 @@ class DhanProvider(BaseMarketDataProvider):
             asyncio.create_task(self._unsubscribe_batch(symbols))
 
     async def get_intraday_prices(
-        self, instruments: List[Instrument]
+        self, instruments: List[Instrument],
+            start_date: Optional[datetime] = None,
+            end_date: Optional[datetime] = None,
+            timeframe: str = '5m',
     ) -> dict[str, list[PriceHistoryIntraday]]:
         """
-        Fetch intraday price history for given instruments (last 3 days).
+        Fetch intraday price history for given instruments.
         """
         results = {}
-        end_date = datetime.now(timezone.utc)
-        start_date = end_date - timedelta(days=3)
-        
+
+        if not end_date:
+            end_date = datetime.now(timezone.utc)
+        if not start_date:
+            start_date = end_date - timedelta(days=3)
+
+        # Dhan expects dates in IST (Asia/Kolkata)
+        # We need to convert UTC start_date/end_date to IST
+        ist_tz = pytz.timezone('Asia/Kolkata')
+
+        # Ensure dates are timezone aware (UTC)
+        if start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=timezone.utc)
+        if end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
+
+        start_date_ist = start_date.astimezone(ist_tz)
+        end_date_ist = end_date.astimezone(ist_tz)
+
+        # Add buffer to avoid "Input_Exception" when start_date == end_date
+        # Dhan API requires a window to fetch data for a specific timestamp
+        start_date_ist = start_date_ist - timedelta(minutes=5)
+        end_date_ist = end_date_ist + timedelta(minutes=5)
+
         # Format dates as required by Dhan API (YYYY-MM-DD HH:MM:SS)
-        from_date_str = start_date.strftime("%Y-%m-%d %H:%M:%S")
-        to_date_str = end_date.strftime("%Y-%m-%d %H:%M:%S")
+        from_date_str = start_date_ist.strftime("%Y-%m-%d %H:%M:%S")
+        to_date_str = end_date_ist.strftime("%Y-%m-%d %H:%M:%S")
 
-        print(from_date_str, to_date_str)
+        logger.debug(f"Fetching intraday prices from {from_date_str} to {to_date_str} (IST)")
 
+        requests_sent = 0
         for instrument in instruments:
             security_id = instrument.symbol
             if self.provider_manager:
@@ -488,7 +581,8 @@ class DhanProvider(BaseMarketDataProvider):
             await asyncio.sleep(0.2)
             
             data = await self._make_request("/charts/intraday", payload)
-            
+            requests_sent += 1
+
             if not data or "timestamp" not in data:
                 continue
                 
@@ -505,8 +599,8 @@ class DhanProvider(BaseMarketDataProvider):
                     # Dhan returns epoch timestamp (seconds or ms? API doc says "Epoch timestamp")
                     # Example: 1328845020 -> 2012-02-10... seems to be seconds.
                     ts = timestamps[i]
-                    # Dhan sends timestamps in IST but as UTC epoch. Subtract 5.5 hours.
-                    ts = ts - 19800
+                    # Dhan Historical API returns valid UTC timestamp. No shift needed.
+                    # ts = ts - 19800
                     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
                     
                     history.append(
@@ -528,21 +622,41 @@ class DhanProvider(BaseMarketDataProvider):
             
             results[instrument.symbol] = history
 
+        logger.info(f"[RESOLVER-DHAN] Sent {requests_sent} requests to Dhan for intraday prices.")
         return results
 
     async def get_daily_prices(
-        self, instruments: List[Instrument]
+        self, instruments: List[Instrument],
+            start_date: Optional[datetime] = None,
+            end_date: Optional[datetime] = None,
+            timeframe: str = '1d',
     ) -> dict[str, list[PriceHistoryDaily]]:
         """
-        Fetch daily price history for given instruments (last 30 days).
+        Fetch daily price history for given instruments.
         """
         results = {}
-        end_date = datetime.now(timezone.utc)
-        start_date = end_date - timedelta(days=30)
-        
+
+        if not end_date:
+            end_date = datetime.now(timezone.utc)
+        if not start_date:
+            start_date = end_date - timedelta(days=30)
+
+        # Dhan expects dates in IST (Asia/Kolkata)
+        ist_tz = pytz.timezone('Asia/Kolkata')
+
+        if start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=timezone.utc)
+        if end_date.tzinfo is None:
+            end_date = end_date.replace(tzinfo=timezone.utc)
+
+        start_date_ist = start_date.astimezone(ist_tz)
+        end_date_ist = end_date.astimezone(ist_tz)
+
         # Format dates as required by Dhan API (YYYY-MM-DD)
-        from_date_str = start_date.strftime("%Y-%m-%d")
-        to_date_str = end_date.strftime("%Y-%m-%d")
+        from_date_str = start_date_ist.strftime("%Y-%m-%d")
+        to_date_str = end_date_ist.strftime("%Y-%m-%d")
+
+        logger.debug(f"Fetching daily prices from {from_date_str} to {to_date_str} (IST)")
 
         for instrument in instruments:
             security_id = instrument.symbol
@@ -582,8 +696,8 @@ class DhanProvider(BaseMarketDataProvider):
             for i in range(len(timestamps)):
                 try:
                     ts = timestamps[i]
-                    # Dhan sends timestamps in IST but as UTC epoch. Subtract 5.5 hours.
-                    ts = ts - 19800
+                    # Dhan Historical API returns valid UTC timestamp. No shift needed.
+                    # ts = ts - 19800
                     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
                     
                     history.append(

@@ -1,6 +1,6 @@
 import asyncio
-from datetime import timezone
-from typing import List
+from datetime import timezone, datetime, timedelta
+from typing import List, Optional
 
 import pandas as pd
 import yfinance as yf
@@ -64,7 +64,8 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         """Disconnect from Yahoo Finance WebSocket."""
         if self.websocket_connection:
             try:
-                self.websocket_connection.unsubscribe_all()
+                if self.subscribed_symbols:
+                    self.websocket_connection.unsubscribe(list(self.subscribed_symbols))
                 self.websocket_connection = None
                 self.subscribed_symbols.clear()
                 self.is_connected = False
@@ -93,10 +94,13 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                 logger.error(f"Error unsubscribing from Yahoo Finance symbols: {e}")
 
     async def get_intraday_prices(
-        self, instruments: List[Instrument]
+            self, instruments: List[Instrument],
+            start_date: Optional[datetime] = None,
+            end_date: Optional[datetime] = None,
+            timeframe: str = '5m',
     ) -> dict[str, list[PriceHistoryIntraday]]:
         """
-        Fetch intraday prices (5m interval) for the last 5 days.
+        Fetch intraday prices (5m interval) for the specified date range.
         """
         if not instruments:
             return {}
@@ -104,18 +108,29 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         symbols = [i.symbol for i in instruments]
         logger.info(f"Fetching intraday prices from YF for {len(symbols)} symbols")
 
+        # Default to last 5 days if no dates provided
+        if not end_date:
+            end_date = datetime.now(timezone.utc)
+        if not start_date:
+            start_date = end_date - timedelta(days=5)
+
         try:
             # Run blocking yfinance download in a thread
             # period="5d" is the max for 5m interval in yfinance free tier usually
+            # But we try to use start/end if provided.
+            # Note: yfinance 5m data is limited to last 60 days.
+
             df = await asyncio.to_thread(
                 yf.download,
                 tickers=symbols,
-                period="5d",
+                start=start_date,
+                end=end_date,
                 interval="5m",
                 group_by="ticker",
                 threads=True,
                 progress=False,
                 auto_adjust=False,
+                ignore_tz=False,
             )
 
             if df.empty:
@@ -127,9 +142,17 @@ class YahooFinanceProvider(BaseMarketDataProvider):
             # Handle single symbol vs multiple symbols structure
             if len(symbols) == 1:
                 symbol = symbols[0]
-                # If single symbol, columns are just Open, High, etc.
-                # We wrap it to treat uniformly
-                result[symbol] = self._parse_intraday_dataframe(df, symbol)
+                # Check if MultiIndex (happens if group_by='ticker' is respected even for 1 symbol)
+                if isinstance(df.columns, pd.MultiIndex):
+                    try:
+                        symbol_df = df[symbol]
+                        result[symbol] = self._parse_intraday_dataframe(symbol_df, symbol)
+                    except KeyError:
+                        # Fallback if symbol is not top level (maybe it's not MultiIndex but looks like it?)
+                        # Or maybe columns are just Open, High...
+                        result[symbol] = self._parse_intraday_dataframe(df, symbol)
+                else:
+                    result[symbol] = self._parse_intraday_dataframe(df, symbol)
             else:
                 # Multi-index columns: (Ticker, OHLCV)
                 for symbol in symbols:
@@ -152,7 +175,11 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         for index, row in df.iterrows():
             try:
                 # index is Timestamp
-                dt = index.to_pydatetime()
+                if isinstance(index, pd.Timestamp):
+                    dt = index.to_pydatetime()
+                else:
+                    dt = pd.to_datetime(index).to_pydatetime()
+
                 if dt.tzinfo is not None:
                     dt = dt.astimezone(timezone.utc)
                 else:
@@ -160,7 +187,7 @@ class YahooFinanceProvider(BaseMarketDataProvider):
 
                 records.append(
                     PriceHistoryIntraday(
-                        instrument_id=0, # Placeholder, will be set by caller
+                        instrument_id=0,  # Placeholder, will be set by caller
                         datetime=dt,
                         open=float(row["Open"]),
                         high=float(row["High"]),
@@ -176,10 +203,13 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         return records
 
     async def get_daily_prices(
-        self, instruments: List[Instrument]
+            self, instruments: List[Instrument],
+            start_date: Optional[datetime] = None,
+            end_date: Optional[datetime] = None,
+            timeframe: str = '1d',
     ) -> dict[str, list[PriceHistoryDaily]]:
         """
-        Fetch daily prices for the last 1 year.
+        Fetch daily prices for the specified date range.
         """
         if not instruments:
             return {}
@@ -187,17 +217,24 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         symbols = [i.symbol for i in instruments]
         logger.info(f"Fetching daily prices from YF for {len(symbols)} symbols")
 
+        # Default to last 1 year if no dates provided
+        if not end_date:
+            end_date = datetime.now(timezone.utc)
+        if not start_date:
+            start_date = end_date - timedelta(days=365)
+
         try:
             # Run blocking yfinance download in a thread
             df = await asyncio.to_thread(
                 yf.download,
                 tickers=symbols,
-                period="1y",
+                start=start_date,
+                end=end_date,
                 interval="1d",
                 group_by="ticker",
                 threads=True,
                 progress=False,
-                actions=True, # To get Dividends and Splits if needed
+                actions=True,  # To get Dividends and Splits if needed
                 auto_adjust=False,
             )
 
@@ -209,7 +246,14 @@ class YahooFinanceProvider(BaseMarketDataProvider):
 
             if len(symbols) == 1:
                 symbol = symbols[0]
-                result[symbol] = self._parse_daily_dataframe(df, symbol)
+                if isinstance(df.columns, pd.MultiIndex):
+                    try:
+                        symbol_df = df[symbol]
+                        result[symbol] = self._parse_daily_dataframe(symbol_df, symbol)
+                    except KeyError:
+                        result[symbol] = self._parse_daily_dataframe(df, symbol)
+                else:
+                    result[symbol] = self._parse_daily_dataframe(df, symbol)
             else:
                 for symbol in symbols:
                     try:
@@ -229,7 +273,11 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         records = []
         for index, row in df.iterrows():
             try:
-                dt = index.to_pydatetime()
+                if isinstance(index, pd.Timestamp):
+                    dt = index.to_pydatetime()
+                else:
+                    dt = pd.to_datetime(index).to_pydatetime()
+
                 if dt.tzinfo is not None:
                     dt = dt.astimezone(timezone.utc)
                 else:
@@ -240,7 +288,7 @@ class YahooFinanceProvider(BaseMarketDataProvider):
 
                 records.append(
                     PriceHistoryDaily(
-                        instrument_id=0, # Placeholder
+                        instrument_id=0,  # Placeholder
                         datetime=dt,
                         open=float(row["Open"]),
                         high=float(row["High"]),
@@ -254,4 +302,3 @@ class YahooFinanceProvider(BaseMarketDataProvider):
             except Exception as e:
                 continue
         return records
-

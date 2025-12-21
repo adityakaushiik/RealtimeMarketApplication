@@ -1,15 +1,23 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, DateTime, BigInteger
-from sqlalchemy.orm import Mapped, mapped_column
+from typing import TYPE_CHECKING
+
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, DateTime, BigInteger, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 
 from .base import Base
 from .mixins import BaseMixin
 
+if TYPE_CHECKING:
+    from .instruments import Instrument
+
 
 class PriceHistoryDaily(Base, BaseMixin):
     __tablename__ = "price_history_daily"
+    __table_args__ = (
+        UniqueConstraint("instrument_id", "datetime", name="uq_price_history_daily_instrument_datetime"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     instrument_id: Mapped[int] = mapped_column(
@@ -28,6 +36,11 @@ class PriceHistoryDaily(Base, BaseMixin):
     resolve_required: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
+    resolve_tries: Mapped[int] = mapped_column(
+        Integer, server_default="0", nullable=False
+    )
     dividend: Mapped[float | None] = mapped_column(Float, nullable=True)
     split: Mapped[float | None] = mapped_column(Float, nullable=True)
     split_adjusted: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    instrument: Mapped["Instrument"] = relationship()

@@ -35,3 +35,6 @@ class User(Base, BaseMixin):
         ForeignKey("roles.id"), nullable=True, index=True
     )
     role: Mapped[Role | None] = relationship(back_populates="users")
+    watchlists: Mapped[list["Watchlist"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )

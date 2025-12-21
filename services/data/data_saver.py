@@ -7,7 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.redis_timeseries import get_redis_timeseries
-from services.data.exchange_data import ExchangeData
+from models.exchange import Exchange
 from models.instruments import Instrument
 from models.price_history_intraday import PriceHistoryIntraday
 from models.price_history_daily import PriceHistoryDaily
@@ -25,16 +25,20 @@ class DataSaver:
     def __init__(self):
         self.redis_timeseries = get_redis_timeseries()
         self.redis = get_redis()
-        self.exchanges: List[ExchangeData] = []
+        self.exchanges: List[Exchange] = []
         self._running_tasks: Dict[str, asyncio.Task] = {}
         self._stop_flags: Dict[str, bool] = {}
-        # Cache stores symbol -> (instrument_id, should_record_data)
-        self.symbol_map_cache: Dict[str, tuple[int, bool]] = {}
+        # Cache stores symbol -> (instrument_id, should_record_data, exchange_id)
+        self.symbol_map_cache: Dict[str, tuple[int, bool, int]] = {}
 
-    def add_exchange(self, exchange_data: ExchangeData) -> None:
+    def add_exchange(self, exchange: Exchange) -> None:
         """Add an exchange to monitor."""
-        self.exchanges.append(exchange_data)
-        logger.info(f"Added exchange: {exchange_data.exchange_name}")
+        # Initialize timestamps for the exchange
+        tz = pytz.timezone(exchange.timezone)
+        exchange.update_timestamps_for_date(datetime.now(tz).date())
+        
+        self.exchanges.append(exchange)
+        logger.info(f"Added exchange: {exchange.name}")
 
     async def start_all_exchanges(self, interval_minutes: Optional[int] = None) -> None:
         """Start periodic updates for all exchanges."""
@@ -42,11 +46,11 @@ class DataSaver:
             logger.warning("No exchanges registered")
             return
 
-        for exchange_data in self.exchanges:
+        for exchange in self.exchanges:
             task = asyncio.create_task(
-                self.run_periodic_save(exchange_data, interval_minutes)
+                self.run_periodic_save(exchange, interval_minutes)
             )
-            self._running_tasks[exchange_data.exchange_name] = task
+            self._running_tasks[exchange.name] = task
 
         logger.info(f"Started periodic updates for {len(self.exchanges)} exchange(s)")
 
@@ -63,16 +67,16 @@ class DataSaver:
         logger.info("Stopped all periodic updates")
 
     async def run_periodic_save(
-        self, exchange_data: ExchangeData, interval_minutes: Optional[int] = None
+        self, exchange: Exchange, interval_minutes: Optional[int] = None
     ) -> None:
         """
         Run periodic updates for a specific exchange.
         """
-        exchange_name = exchange_data.exchange_name
+        exchange_name = exchange.name
         interval = (
             interval_minutes
             if interval_minutes is not None
-            else exchange_data.interval_minutes
+            else exchange.interval_minutes
         )
         interval_ms = interval * 60 * 1000
 
@@ -80,29 +84,29 @@ class DataSaver:
             f"Starting periodic update for {exchange_name} (Interval: {interval}m)"
         )
 
-        tz = pytz.timezone(exchange_data.timezone_str)
+        tz = pytz.timezone(exchange.timezone)
 
         try:
             while not self._stop_flags.get(exchange_name, False):
                 current_time_ms = int(time.time() * 1000)
                 logger.debug(
-                    f"[{exchange_name}] Check: Current={current_time_ms}, Start={exchange_data.start_time}, End={exchange_data.end_time}"
+                    f"[{exchange_name}] Check: Current={current_time_ms}, Start={exchange.start_time}, End={exchange.end_time}"
                 )
 
                 # Check if market is open or if we should do a final save
-                if current_time_ms > exchange_data.end_time + interval_ms:
+                if current_time_ms > exchange.end_time + interval_ms:
                     # Market closed for the current configured day.
                     # Check if we need to roll over to tomorrow or if we just need to update to today (if stale).
                     current_date = datetime.now(tz).date()
 
                     # Update to current date first
-                    exchange_data.update_timestamps_for_date(current_date)
+                    exchange.update_timestamps_for_date(current_date)
 
                     # Check again
-                    if current_time_ms > exchange_data.end_time + interval_ms:
+                    if current_time_ms > exchange.end_time + interval_ms:
                         # Still closed for today, so move to tomorrow
                         next_date = current_date + timedelta(days=1)
-                        exchange_data.update_timestamps_for_date(next_date)
+                        exchange.update_timestamps_for_date(next_date)
                         logger.info(
                             f"Market closed for {exchange_name}. Waiting for next session on {next_date}..."
                         )
@@ -114,8 +118,8 @@ class DataSaver:
                     # Continue to loop to hit the wait block
                     continue
 
-                if current_time_ms < exchange_data.start_time:
-                    wait_ms = exchange_data.start_time - current_time_ms
+                if current_time_ms < exchange.start_time:
+                    wait_ms = exchange.start_time - current_time_ms
                     logger.info(f"Waiting {wait_ms / 1000:.0f}s for market open...")
                     await asyncio.sleep(wait_ms / 1000)
                     continue
@@ -138,7 +142,7 @@ class DataSaver:
                 # e.g. if we woke up at 10:05:05 (target 10:05:00), we want the 10:00:00 bucket
                 target_bucket_ts = next_interval_ts - interval_ms
                 await self.update_records_for_interval(
-                    exchange_data, interval, target_bucket_ts
+                    exchange, interval, target_bucket_ts
                 )
 
         except asyncio.CancelledError:
@@ -150,19 +154,19 @@ class DataSaver:
             )
 
     async def update_records_for_interval(
-        self, exchange_data: ExchangeData, interval_minutes: int, align_to_ts: int
+        self, exchange: Exchange, interval_minutes: int, align_to_ts: int
     ) -> None:
         """Fetch data from Redis and update existing DB records."""
         try:
             keys = await self.redis_timeseries.get_all_keys()
             if not keys:
                 logger.warning(
-                    f"[{exchange_data.exchange_name}] No keys found in Redis"
+                    f"[{exchange.name}] No keys found in Redis"
                 )
                 return
 
             logger.info(
-                f"[{exchange_data.exchange_name}] Found {len(keys)} keys. Fetching OHLCV aligned to {align_to_ts}..."
+                f"[{exchange.name}] Found {len(keys)} keys. Fetching OHLCV aligned to {align_to_ts}..."
             )
 
             # Fetch OHLCV data for the last interval
@@ -193,23 +197,23 @@ class DataSaver:
 
             if missing_data_symbols:
                 logger.warning(
-                    f"[{exchange_data.exchange_name}] No data in window for {len(missing_data_symbols)} symbols. Examples: {missing_data_symbols[:5]}"
+                    f"[{exchange.name}] No data in window for {len(missing_data_symbols)} symbols. Examples: {missing_data_symbols[:5]}"
                 )
 
             if not valid_data:
                 logger.warning(
-                    f"[{exchange_data.exchange_name}] No valid data found for interval"
+                    f"[{exchange.name}] No valid data found for interval"
                 )
                 return
 
             logger.info(
-                f"[{exchange_data.exchange_name}] Updating DB for {len(valid_data)} symbols..."
+                f"[{exchange.name}] Updating DB for {len(valid_data)} symbols..."
             )
 
             async for session in get_db_session():
                 try:
                     symbol_map = await self._get_symbol_to_instrument_mapping(
-                        session, list(valid_data.keys()), exchange_data.exchange_id
+                        session, list(valid_data.keys()), exchange.id
                     )
 
                     unmapped_symbols = []
@@ -218,7 +222,7 @@ class DataSaver:
                             unmapped_symbols.append(symbol)
 
                     if unmapped_symbols:
-                        logger.warning(f"[{exchange_data.exchange_name}] {len(unmapped_symbols)} symbols have data but no instrument mapping (or not marked for recording). Examples: {unmapped_symbols[:5]}")
+                        logger.warning(f"[{exchange.name}] {len(unmapped_symbols)} symbols have data but no instrument mapping (or not marked for recording). Examples: {unmapped_symbols[:5]}")
 
                     for symbol, data in valid_data.items():
                         instrument_id = symbol_map.get(symbol)
@@ -262,25 +266,37 @@ class DataSaver:
                         )
                         result = await session.execute(stmt)
                         if result.rowcount == 0:
-                            logger.warning(
-                                f"No intraday record found to update for {symbol} at {record_dt} (Instrument ID: {instrument_id})"
+                            # Upsert: Insert if update failed (record doesn't exist)
+                            logger.info(
+                                f"Creating new intraday record for {symbol} at {record_dt}"
                             )
+                            new_record = PriceHistoryIntraday(
+                                instrument_id=instrument_id,
+                                datetime=record_dt,
+                                open=open_val,
+                                high=high_val,
+                                low=low_val,
+                                close=close_val,
+                                volume=vol_val,
+                                resolve_required=False,
+                            )
+                            session.add(new_record)
 
                         # Update Daily Record
                         # Daily record timestamp is exactly the market open time for the current session
-                        # We use exchange_data.market_open_time which is computed for "today" (current session)
+                        # We use exchange.market_open_time which is computed for "today" (current session)
                         # Note: We must use the official market open time, not pre-market start
                         # We need to get the timezone object again or use the one from outer scope if available
-                        # But simpler to just use the exchange_data helper which handles it internally if we pass the date
+                        # But simpler to just use the exchange helper which handles it internally if we pass the date
                         # We can derive the date from record_dt (which is UTC) converted to exchange timezone
 
                         record_dt_local = record_dt.astimezone(
-                            pytz.timezone(exchange_data.timezone_str)
+                            pytz.timezone(exchange.timezone)
                         )
 
                         daily_dt = datetime.fromtimestamp(
-                            exchange_data._compute_timestamp(
-                                record_dt_local.date(), exchange_data.market_open_time
+                            exchange._compute_timestamp(
+                                record_dt_local.date(), exchange.market_open_time
                             )
                             / 1000,
                             tz=timezone.utc,
@@ -312,9 +328,21 @@ class DataSaver:
 
                             session.add(daily_record)
                         else:
-                            logger.warning(
-                                f"No daily record found for {symbol} at {daily_dt}"
+                            # Upsert: Create daily record if it doesn't exist
+                            logger.info(
+                                f"Creating new daily record for {symbol} at {daily_dt}"
                             )
+                            new_daily = PriceHistoryDaily(
+                                instrument_id=instrument_id,
+                                datetime=daily_dt,
+                                open=open_val,
+                                high=high_val,
+                                low=low_val,
+                                close=close_val,
+                                volume=vol_val,
+                                resolve_required=False,
+                            )
+                            session.add(new_daily)
 
                     await session.commit()
                     
@@ -346,9 +374,16 @@ class DataSaver:
 
         for s in symbols:
             if s in self.symbol_map_cache:
-                inst_id, should_record = self.symbol_map_cache[s]
-                if should_record:
-                    mapping[s] = inst_id
+                try:
+                    inst_id, should_record, cached_exchange_id = self.symbol_map_cache[s]
+                    if cached_exchange_id == exchange_id:
+                        if should_record:
+                            mapping[s] = inst_id
+                    else:
+                        missing.append(s)
+                except ValueError:
+                    # Handle case where cache might have old format (tuple of 2)
+                    missing.append(s)
             else:
                 missing.append(s)
 
@@ -360,7 +395,11 @@ class DataSaver:
             )
             result = await session.execute(stmt)
             for row in result.all():
-                self.symbol_map_cache[row.symbol] = (row.id, row.should_record_data)
+                self.symbol_map_cache[row.symbol] = (
+                    row.id,
+                    row.should_record_data,
+                    exchange_id,
+                )
                 if row.should_record_data:
                     mapping[row.symbol] = row.id
 

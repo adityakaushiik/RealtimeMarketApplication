@@ -1,16 +1,16 @@
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Type
+import pytz
 
-from sqlalchemy import select, update, bindparam, inspect, text
-from sqlalchemy.orm import load_only
+from sqlalchemy import select, update, text, func
+from sqlalchemy.orm import joinedload
 
 from config.database_config import get_db_session
 from config.logger import logger
 from config.redis_config import get_redis
 from models import Instrument, PriceHistoryIntraday, PriceHistoryDaily
 from services.provider.provider_manager import ProviderManager
-
 
 class DataResolver:
     """
@@ -31,6 +31,7 @@ class DataResolver:
         Checks for gaps in data updates since the last save and marks existing records
         for resolution.
         """
+
         redis = get_redis()
         if not redis:
             logger.warning("Redis not available for gap check")
@@ -69,6 +70,7 @@ class DataResolver:
 
                 # Update existing records in this time range to resolve_required=True
                 # We assume records were pre-created by DataCreationService
+                # Also increment resolve_tries
                 stmt = (
                     update(PriceHistoryIntraday)
                     .where(
@@ -76,7 +78,10 @@ class DataResolver:
                         PriceHistoryIntraday.datetime < now,
                         PriceHistoryIntraday.instrument_id.in_(instrument_ids)
                     )
-                    .values(resolve_required=True)
+                    .values(
+                        resolve_required=True,
+                        resolve_tries=PriceHistoryIntraday.resolve_tries + 1
+                    )
                 )
                 
                 result = await session.execute(stmt)
@@ -119,99 +124,169 @@ class DataResolver:
         """
         Aggregates resolved intraday prices for the current day to update/resolve
         the daily price record for today.
-        """
-        logger.info("Starting aggregation of intraday prices to daily for today")
 
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        Updated to be timezone-aware:
+        Groups instruments by exchange timezone to correctly determine the "start of day"
+        in UTC for each instrument.
+        """
+        logger.info("🔍 [RESOLVER] Starting aggregation of intraday prices to daily for today")
+
+        # We can't just use a single "today_start" in UTC because "today" starts at different
+        # UTC times for different exchanges.
+        # We need to fetch daily records that need resolution, then group them by exchange timezone.
 
         async for session in get_db_session():
             try:
-                # 1. Find daily records for today that need resolution
-                stmt = select(PriceHistoryDaily).where(
-                    PriceHistoryDaily.resolve_required == True,
-                    PriceHistoryDaily.datetime >= today_start
+                # 1. Find daily records for "today" (or recent) that need resolution
+                # We filter loosely by UTC time first to reduce the set, then refine.
+                # Let's say anything in the last 24-48 hours.
+                # Actually, we should look for records where resolve_required is True.
+                # And we assume these records were created with the correct "date" (midnight UTC usually for daily records).
+
+                # However, the user says: "if the data is in utc and was created for utc date for the day 20-12-2025 then it would lie into 2 dates for NASDAQ"
+                # This implies the daily record's `datetime` column might be 2025-12-20 00:00:00 UTC.
+                # But for NASDAQ, the trading day 2025-12-20 is from 14:30 UTC to 21:00 UTC.
+
+                # So if we have a daily record for 2025-12-20, we want to aggregate intraday data
+                # that falls within that exchange's trading day.
+
+                # Let's fetch the daily records needing resolution.
+                today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                today_end = today_start + timedelta(days=1)
+
+                stmt = (
+                    select(PriceHistoryDaily)
+                    .options(joinedload(PriceHistoryDaily.instrument).joinedload(Instrument.exchange))
+                    .where(
+                        PriceHistoryDaily.resolve_required == True,
+                        # Only aggregate for TODAY. Historical data should be fetched from provider.
+                        PriceHistoryDaily.datetime >= today_start,
+                        PriceHistoryDaily.datetime < today_end
+                    )
                 )
                 result = await session.execute(stmt)
                 daily_records = result.scalars().all()
 
                 if not daily_records:
-                    logger.info("No daily records for today needing resolution via aggregation.")
+                    logger.info("🔍 [RESOLVER] No daily records for today needing resolution via aggregation.")
                     return
 
-                logger.info(f"Found {len(daily_records)} daily records for today to aggregate from intraday.")
+                logger.info(f"🔍 [RESOLVER] Found {len(daily_records)} daily records to aggregate from intraday.")
 
-                # Map instrument_id to daily_record for easy update
-                daily_map = {r.instrument_id: r for r in daily_records}
-                instrument_ids = list(daily_map.keys())
+                # Group by (Exchange, Date)
+                # We need to know the "Date" of the daily record to find the start/end in UTC.
+                # Assuming daily_record.datetime is midnight UTC of the date.
 
-                # 2. Aggregate intraday data for all these instruments in one query
-                # We use a subquery or window functions to get first/last efficiently
-                # Since we are on TimescaleDB, we can use `first()` and `last()` if the extension is active,
-                # but to be safe and portable within standard SQL/SQLAlchemy:
+                grouped_records = defaultdict(list)
 
-                # We'll use a common pattern: Group by instrument_id and get min/max/sum
-                # For Open/Close, we can use `first_value` / `last_value` window functions or `distinct on` in Postgres.
-                # Here is a robust Postgres approach using `DISTINCT ON` isn't great for aggregation.
-                # Let's use the `first` and `last` from TimescaleDB if possible, but assuming standard Postgres:
+                for record in daily_records:
+                    instrument = record.instrument
+                    exchange = instrument.exchange
 
-                # We will fetch the aggregates (High, Low, Volume) and then Open/Close separately or
-                # use a more complex query.
-                # Given the requirement for efficiency, let's try to do it in one go using a CTE or similar.
+                    # Key: (exchange_id, date_date_object)
+                    # record.datetime is a datetime object. We take the date part.
+                    target_date = record.datetime.date()
+                    grouped_records[(exchange, target_date)].append(record)
 
-                # However, for simplicity and reliability with SQLAlchemy ORM:
-                # We can query for all intraday records for these instruments today, ordered by time.
-                # But that's too much data.
+                # Process each group
+                total_updated = 0
 
-                # Let's use a custom SQL query for efficiency.
+                for (exchange, target_date), records in grouped_records.items():
+                    tz_name = exchange.timezone or "UTC"
+                    try:
+                        tz = pytz.timezone(tz_name)
+                    except pytz.UnknownTimeZoneError:
+                        logger.warning(f"🔍 [RESOLVER] Unknown timezone {tz_name}, defaulting to UTC")
+                        tz = pytz.UTC
 
-                # Construct the query
-                # We assume 'price_history_intraday' is the table name
-                # We want: instrument_id, first(open), max(high), min(low), last(close), sum(volume)
-                # TimescaleDB provides first(value, time) and last(value, time)
+                    # Calculate start of day using market open time
+                    # If market times are missing, fallback to full day? Or skip?
+                    # Let's fallback to full day if missing, but they should be there.
+                    open_time = exchange.market_open_time or datetime.min.time()
+                    close_time = exchange.market_close_time or datetime.max.time() # Actually max time is 23:59:59...
 
-                query = text("""
-                    SELECT 
-                        instrument_id,
-                        first(open, datetime) as open,
-                        max(high) as high,
-                        min(low) as low,
-                        last(close, datetime) as close,
-                        sum(volume) as volume
-                    FROM price_history_intraday
-                    WHERE instrument_id = ANY(:instrument_ids)
-                      AND datetime >= :start_time
-                    GROUP BY instrument_id
-                """)
+                    # Create a naive datetime for market open on that date
+                    naive_start = datetime.combine(target_date, open_time)
 
-                # If first/last are not available (standard Postgres), we would need a different query.
-                # Assuming TimescaleDB is enabled as per prompt "price_history_intraday is a timescale db hypertable".
+                    # Localize it to the exchange timezone
+                    try:
+                        local_start = tz.localize(naive_start)
+                    except Exception:
+                        local_start = naive_start.replace(tzinfo=tz)
 
-                result = await session.execute(query, {
-                    "instrument_ids": instrument_ids,
-                    "start_time": today_start
-                })
+                    # Convert to UTC
+                    utc_start = local_start.astimezone(timezone.utc)
 
-                rows = result.fetchall()
+                    # End of day (market close)
+                    naive_end = datetime.combine(target_date, close_time)
 
-                updated_count = 0
-                for row in rows:
-                    inst_id = row.instrument_id
-                    if inst_id in daily_map:
-                        record = daily_map[inst_id]
-                        record.open = row.open
-                        record.high = row.high
-                        record.low = row.low
-                        record.close = row.close
-                        record.volume = row.volume
-                        record.resolve_required = False
-                        session.add(record)
-                        updated_count += 1
+                    # Handle case where close time is earlier than open time (crossing midnight)
+                    # Though for daily aggregation we usually assume trading day is contiguous.
+                    # If close < open, it might mean next day.
+                    if close_time < open_time:
+                         naive_end += timedelta(days=1)
+
+                    try:
+                        local_end = tz.localize(naive_end)
+                    except Exception:
+                        local_end = naive_end.replace(tzinfo=tz)
+                    utc_end = local_end.astimezone(timezone.utc)
+
+                    logger.info(
+                        f"🔍 [RESOLVER] Aggregating batch: Exchange={exchange.name}, Date={target_date}. "
+                        f"UTC Window: {utc_start} to {utc_end}. Instruments: {len(records)}"
+                    )
+
+                    # Collect instrument IDs for this batch
+                    instrument_ids = [r.instrument_id for r in records]
+
+                    # Map instrument_id to record for update
+                    record_map = {r.instrument_id: r for r in records}
+
+                    # Query intraday data
+                    # We want data >= utc_start AND < utc_end
+
+                    query = text("""
+                        SELECT 
+                            instrument_id,
+                            first(open, datetime) as open,
+                            max(high) as high,
+                            min(low) as low,
+                            last(close, datetime) as close,
+                            sum(volume) as volume
+                        FROM price_history_intraday
+                        WHERE instrument_id = ANY(:instrument_ids)
+                          AND datetime >= :start_time
+                          AND datetime < :end_time
+                        GROUP BY instrument_id
+                    """)
+
+                    result = await session.execute(query, {
+                        "instrument_ids": instrument_ids,
+                        "start_time": utc_start,
+                        "end_time": utc_end
+                    })
+
+                    rows = result.fetchall()
+
+                    for row in rows:
+                        inst_id = row.instrument_id
+                        if inst_id in record_map:
+                            record = record_map[inst_id]
+                            record.open = row.open
+                            record.high = row.high
+                            record.low = row.low
+                            record.close = row.close
+                            record.volume = row.volume
+                            record.resolve_required = False
+                            session.add(record)
+                            total_updated += 1
 
                 await session.commit()
-                logger.info(f"Successfully aggregated {updated_count} daily records from intraday data.")
+                logger.info(f"🔍 [RESOLVER] Successfully aggregated {total_updated} daily records from intraday data.")
 
             except Exception as e:
-                logger.error(f"Error aggregating intraday to daily: {e}", exc_info=True)
+                logger.error(f"🔍 [RESOLVER] Error aggregating intraday to daily: {e}", exc_info=True)
 
     async def _resolve_prices(
         self,
@@ -219,7 +294,7 @@ class DataResolver:
         provider_method_name: str,
     ):
         table_name = model.__tablename__
-        logger.info(f"Starting resolution for {table_name}")
+        logger.info(f"🔍 [RESOLVER] Starting resolution for {table_name}")
 
         async for session in get_db_session():
             try:
@@ -227,70 +302,84 @@ class DataResolver:
                 # We select distinct instrument_ids from the table where resolve_required is True
                 # OR where any of the price fields (open, high, low, close) are 0 or NULL
                 # AND datetime is in the past (less than current UTC time)
+                # AND resolve_tries < 3
                 now = datetime.now(timezone.utc)
                 
+                # Find min and max datetime for each instrument that needs resolution
                 stmt = (
-                    select(model.instrument_id, model.datetime)
+                    select(
+                        model.instrument_id,
+                        func.min(model.datetime).label("min_dt"),
+                        func.max(model.datetime).label("max_dt")
+                    )
                     .where(
                         model.datetime < now,
+                        model.resolve_tries < 3,
                         (model.resolve_required.is_(True)) |
                         (model.open == 0) | (model.open.is_(None)) |
                         (model.high == 0) | (model.high.is_(None)) |
                         (model.low == 0) | (model.low.is_(None)) |
                         (model.close == 0) | (model.close.is_(None))
                     )
+                    .group_by(model.instrument_id)
                 )
                 result = await session.execute(stmt)
                 rows = result.all()
 
                 if not rows:
-                    logger.info(f"No records found needing resolution for {table_name}")
+                    logger.info(f"🔍 [RESOLVER] No records found needing resolution for {table_name}")
                     return
 
-                # Create a set of (instrument_id, datetime) for fast lookup
-                # We normalize datetime to ensure timezone consistency if needed, but usually DB and provider should match
-                unresolved_keys = set()
-                instrument_ids = set()
-                for r in rows:
-                    instrument_ids.add(r.instrument_id)
-                    # Ensure we store as UTC or naive depending on DB, usually DB returns with TZ if column is TZ aware
-                    unresolved_keys.add((r.instrument_id, r.datetime))
+                # Map instrument_id -> (min_dt, max_dt)
+                instrument_ranges = {row.instrument_id: (row.min_dt, row.max_dt) for row in rows}
+                instrument_ids = list(instrument_ranges.keys())
 
                 logger.info(
-                    f"Found {len(instrument_ids)} instruments with {len(unresolved_keys)} records needing resolution in {table_name}"
+                    f"🔍 [RESOLVER] Found {len(instrument_ids)} instruments needing resolution in {table_name}"
                 )
 
                 # 2. Fetch Instrument objects
-                stmt_instruments = select(Instrument).where(
-                    Instrument.id.in_(instrument_ids)
+                stmt_instruments = (
+                    select(Instrument)
+                    .options(joinedload(Instrument.exchange))
+                    .where(Instrument.id.in_(instrument_ids))
                 )
                 result_instruments = await session.execute(stmt_instruments)
                 instruments = result_instruments.scalars().all()
 
                 # Detach from session to avoid lazy loading issues if we just need the data we have
                 # But we need to make sure we have the data first.
+                # We need exchange info now.
                 for i in instruments:
                     # Access attributes to ensure they are loaded
                     _ = i.symbol
                     _ = i.exchange_id
+                    _ = i.exchange.timezone # Ensure timezone is loaded
+                    session.expunge(i) # Detach to prevent implicit refresh errors
 
                 # Now we can pass them.
 
-                # 3. Group by provider
-                instruments_by_provider = defaultdict(list)
+                # 3. Group by provider AND timezone
+                # We need to group by timezone because we might need to convert UTC ranges
+                # to local dates for the provider.
+
+                # Key: (provider_code, timezone_name)
+                instruments_by_group = defaultdict(list)
+
                 for instrument in instruments:
                     provider_code = self.provider_manager.exchange_to_provider.get(
                         instrument.exchange_id
                     )
                     if provider_code:
-                        instruments_by_provider[provider_code].append(instrument)
+                        tz_name = instrument.exchange.timezone or "UTC"
+                        instruments_by_group[(provider_code, tz_name)].append(instrument)
                     else:
                         logger.warning(
                             f"No provider mapped for exchange {instrument.exchange_id} (Instrument: {instrument.symbol})"
                         )
 
                 # 4. Fetch and Update
-                for provider_code, provider_instruments in instruments_by_provider.items():
+                for (provider_code, tz_name), provider_instruments in instruments_by_group.items():
                     provider = self.provider_manager.providers.get(provider_code)
                     if not provider:
                         logger.warning(
@@ -298,100 +387,174 @@ class DataResolver:
                         )
                         continue
 
+                    # Group instruments by date range to optimize calls
+                    # For simplicity, we can take the global min and max for this batch,
+                    # or group by similar ranges.
+                    # A simple robust approach:
+                    # Find the overall min start_date and max end_date for this provider's batch.
+                    # This might fetch more data than needed for some instruments, but reduces API calls.
+
+                    # However, if ranges are vastly different (e.g. one needs 2020, one needs 2024),
+                    # fetching 2020-2024 for all is bad.
+                    # Let's try to group by "weeks" or just process individually if the provider supports batching?
+                    # Most providers (like YF) take a list of tickers and a single start/end.
+
+                    # Strategy: Calculate the union of all needed ranges.
+                    # If the union is too large, we might need to split.
+                    # For now, let's find the min start and max end for ALL instruments in this provider batch.
+
+                    batch_min_dt = min(instrument_ranges[i.id][0] for i in provider_instruments)
+                    batch_max_dt = max(instrument_ranges[i.id][1] for i in provider_instruments)
+
+                    # Ensure we don't fetch future data
+                    if batch_max_dt > now:
+                        batch_max_dt = now
+
                     logger.info(
-                        f"Fetching data from {provider_code} for {len(provider_instruments)} instruments"
+                        f"🔍 [RESOLVER] Requesting {provider_method_name} from {provider_code} "
+                        f"for {len(provider_instruments)} instruments ({tz_name}). "
+                        f"UTC Range: {batch_min_dt} to {batch_max_dt}"
                     )
 
-                    try:
-                        fetch_method = getattr(provider, provider_method_name)
-                        # This returns dict[symbol, list[Model]]
+                    # Call provider method dynamically
+                    fetch_method = getattr(provider, provider_method_name)
 
-                        # Ensure fetch_method is awaited properly, handling potential sync/async mismatch or context issues
-                        # The error "greenlet_spawn has not been called" suggests an async DB operation inside a sync context
-                        # or vice versa, but here we are in an async function awaiting an async provider method.
-                        # However, if the provider method does DB operations (lazy loading), it might trigger this.
-                        # YahooProvider uses yfinance which is sync, wrapped in asyncio.to_thread.
-                        # But if it accesses instrument attributes that are lazy loaded, it might fail if not eager loaded.
+                    # Ensure dates are timezone aware (UTC)
+                    if batch_min_dt.tzinfo is None:
+                        batch_min_dt = batch_min_dt.replace(tzinfo=timezone.utc)
+                    if batch_max_dt.tzinfo is None:
+                        batch_max_dt = batch_max_dt.replace(tzinfo=timezone.utc)
 
-                        fetched_data = await fetch_method(provider_instruments)
+                    # NOTE: We pass UTC datetimes to the provider.
+                    # The provider implementation is responsible for converting these to
+                    # the required format (e.g. local date string) if necessary,
+                    # using the instrument's exchange timezone if needed.
+                    # However, BaseMarketDataProvider interface doesn't take timezone info explicitly,
+                    # but it takes Instrument objects which have Exchange info.
 
-                        update_params = []
+                    fetched_data = await fetch_method(
+                        instruments=provider_instruments,
+                        start_date=batch_min_dt,
+                        end_date=batch_max_dt
+                    )
 
-                        for symbol, history_list in fetched_data.items():
-                            # Find instrument id
-                            instrument = next(
-                                (i for i in provider_instruments if i.symbol == symbol),
-                                None,
-                            )
-                            if not instrument:
-                                continue
+                    if not fetched_data:
+                        logger.warning(f"🔍 [RESOLVER] No data returned from {provider_code}")
+                        continue
 
-                            for history_item in history_list:
-                                # Check if this record actually needs resolution
-                                # We need to match the datetime precision and timezone
-                                # Assuming exact match for now. If provider returns naive and DB is aware, might need conversion.
-                                # Usually both should be UTC aware or consistent.
+                    # Calculate stats
+                    total_symbols_returned = len(fetched_data)
+                    total_records_returned = sum(len(records) for records in fetched_data.values())
 
-                                if (instrument.id, history_item.datetime) not in unresolved_keys:
-                                    continue
+                    logger.info(
+                        f"🔍 [RESOLVER] Received data from {provider_code}. "
+                        f"Symbols with data: {total_symbols_returned}/{len(provider_instruments)}. "
+                        f"Total records: {total_records_returned}."
+                    )
 
-                                # Prepare update dict
+                    # 5. Update Database (Optimized Bulk Upsert)
+                    logger.info(f"🔍 [RESOLVER] Saving {total_records_returned} records to database...")
 
-                                param = {
-                                    "b_instrument_id": instrument.id,
-                                    "b_datetime": history_item.datetime,
-                                    "open": history_item.open,
-                                    "high": history_item.high,
-                                    "low": history_item.low,
-                                    "close": history_item.close,
-                                    "volume": history_item.volume,
-                                    "resolve_required": False,
-                                }
-                                
-                                if model == PriceHistoryIntraday:
-                                    param["interval"] = getattr(history_item, "interval", None)
+                    # Map symbol to instrument_id for quick lookup
+                    symbol_to_id = {i.symbol: i.id for i in provider_instruments}
 
-                                update_params.append(param)
+                    # Flatten all records and assign correct instrument_id
+                    all_records = []
+                    for symbol, records in fetched_data.items():
+                        if symbol not in symbol_to_id:
+                            logger.warning(f"Received data for unknown symbol {symbol} from {provider_code}")
+                            continue
 
-                        if update_params:
-                            logger.info(
-                                f"Updating {len(update_params)} records for {provider_code} in {table_name}"
-                            )
+                        inst_id = symbol_to_id[symbol]
+                        for r in records:
+                            r.instrument_id = inst_id # Assign correct ID
+                            all_records.append(r)
 
-                            # Use Core Table for bulk update to avoid ORM primary key requirement
-                            table = inspect(model).local_table
+                    if not all_records:
+                        continue
 
-                            values_dict = {
-                                "open": bindparam("open"),
-                                "high": bindparam("high"),
-                                "low": bindparam("low"),
-                                "close": bindparam("close"),
-                                "volume": bindparam("volume"),
-                                "resolve_required": bindparam("resolve_required"),
-                            }
-                            
-                            if model == PriceHistoryIntraday:
-                                values_dict["interval"] = bindparam("interval")
+                    # Prepare data for bulk operations
+                    # We need to check which records exist to decide between UPDATE and INSERT
+                    # For 7200 records, checking existence might be heavy if done one by one.
+                    # We can try to use Postgres ON CONFLICT if we are sure about unique constraints.
+                    # But to be safe and generic (and since we are resolving gaps), we can try a bulk approach.
 
-                            stmt_update = (
-                                update(table)
-                                .where(
-                                    table.c.instrument_id == bindparam("b_instrument_id"),
-                                    table.c.datetime == bindparam("b_datetime"),
-                                )
-                                .values(**values_dict)
-                            )
+                    # Strategy:
+                    # 1. Extract all (instrument_id, datetime) pairs
+                    # 2. Query DB to find which ones exist
+                    # 3. Split into updates and inserts
+                    # 4. Execute bulk update and bulk insert
 
-                            await session.execute(stmt_update, update_params)
-                            await session.commit()
-                        else:
-                            logger.info(f"No matching data found to update for {provider_code}")
+                    # However, querying 7200 pairs might be slow too.
+                    # Let's try to use the `resolve_required` flag.
+                    # We assume we are updating records where `resolve_required=True` OR inserting new ones.
+                    # But we might be updating records that exist but resolve_required=False (re-fetching).
 
-                    except Exception as e:
-                        logger.error(
-                            f"Error resolving prices with {provider_code}: {e}",
-                            exc_info=True,
+                    # Let's use a temporary table or VALUES clause to check existence efficiently?
+                    # Or just use `dialects.postgresql.insert` with `on_conflict_do_update`.
+                    # Since we are on Neon (Postgres), this is the best way.
+                    # We assume there is a UNIQUE constraint on (instrument_id, datetime).
+                    # If not, we might get duplicates on INSERT.
+
+                    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                    # Convert objects to dicts and deduplicate
+                    # We use a dict keyed by (instrument_id, datetime) to ensure uniqueness within the batch
+                    # This prevents "ON CONFLICT DO UPDATE command cannot affect row a second time" error
+                    unique_records = {}
+                    for r in all_records:
+                        key = (r.instrument_id, r.datetime)
+                        d = {
+                            "instrument_id": r.instrument_id,
+                            "datetime": r.datetime,
+                            "open": r.open,
+                            "high": r.high,
+                            "low": r.low,
+                            "close": r.close,
+                            "volume": r.volume,
+                            "resolve_required": False
+                        }
+                        if hasattr(r, "adj_close"):
+                            d["adj_close"] = r.adj_close
+                        unique_records[key] = d
+
+                    records_dicts = list(unique_records.values())
+
+                    # Chunking to avoid huge statements
+                    chunk_size = 1000
+                    total_updated = 0
+
+                    for i in range(0, len(records_dicts), chunk_size):
+                        chunk = records_dicts[i:i + chunk_size]
+
+                        stmt = pg_insert(model).values(chunk)
+
+                        # Define update columns
+                        update_dict = {
+                            "open": stmt.excluded.open,
+                            "high": stmt.excluded.high,
+                            "low": stmt.excluded.low,
+                            "close": stmt.excluded.close,
+                            "volume": stmt.excluded.volume,
+                            "resolve_required": False
+                        }
+                        if "adj_close" in chunk[0]:
+                            update_dict["adj_close"] = stmt.excluded.adj_close
+
+                        # ON CONFLICT DO UPDATE
+                        # We need to specify the constraint.
+                        # If we don't know the name, we can specify index_elements.
+                        # Assuming (instrument_id, datetime) is unique.
+                        stmt = stmt.on_conflict_do_update(
+                            index_elements=['instrument_id', 'datetime'],
+                            set_=update_dict
                         )
 
+                        result = await session.execute(stmt)
+                        total_updated += result.rowcount
+
+                    await session.commit()
+                    logger.info(f"🔍 [RESOLVER] Updated/Inserted {total_updated} records for {provider_code}")
+
             except Exception as e:
-                logger.error(f"Error in _resolve_prices for {table_name}: {e}", exc_info=True)
+                logger.error(f"🔍 [RESOLVER] Error resolving prices for {table_name}: {e}", exc_info=True)

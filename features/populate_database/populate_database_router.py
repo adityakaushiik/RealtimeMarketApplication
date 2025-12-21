@@ -71,7 +71,7 @@ async def create_price_history_records_for_future(
     data_creation = DataCreationService(session=session)
 
     for exchange in exchange_data:
-        data_creation.add_exchange(exchange_data=exchange)
+        data_creation.add_exchange(exchange=exchange)
 
     await data_creation.start_data_creation(offset_days=offset_days)
 

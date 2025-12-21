@@ -22,10 +22,10 @@ from features.provider.provider_routes import provider_router
 from features.sector.sector_routes import sector_router
 from features.websocket.web_socket_routes import websocket_route
 from features.marketdata.marketdata_routes import marketdata_router  # added
+from features.watchlist.watchlist_routes import watchlist_router
 from services.data.data_ingestion import LiveDataIngestion, get_provider_manager
 from services.data.data_saver import DataSaver
 from services.data.data_resolver import DataResolver
-from services.data.exchange_data import ExchangeData
 from services.provider.provider_manager import ProviderManager
 from services.redis_subscriber import redis_subscriber
 from models import Exchange, Instrument, ProviderInstrumentMapping, PriceHistoryDaily
@@ -56,18 +56,22 @@ sentry_sdk.init(
 subscriber_task = None
 live_data_ingestion: LiveDataIngestion | None = None
 data_saver: DataSaver | None = None
+provider_manager : ProviderManager | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown."""
-    global subscriber_task, live_data_ingestion, data_broadcast, data_saver
+    global subscriber_task, live_data_ingestion, data_broadcast, data_saver, provider_manager
 
     logger.info("Task - 1. Starting Live Data Ingestion...")
     live_data_ingestion = LiveDataIngestion()
-    
-    # Initialize provider manager explicitly to ensure mappings are ready for DataResolver
-    await live_data_ingestion.provider_manager.initialize()
+
+    # Create Provider Manager and set callback
+    provider_manager = get_provider_manager()
+    provider_manager.callback = live_data_ingestion.handle_market_data
+    await provider_manager.initialize() # Ensure mappings are loaded before use
+    live_data_ingestion.provider_manager = provider_manager
     
     asyncio.create_task(live_data_ingestion.start_ingestion())
 
@@ -93,16 +97,8 @@ async def lifespan(app: FastAPI):
                     and exchange.market_close_time is not None
                     and exchange.timezone is not None
             ):
-                exchange_data = ExchangeData(
-                    exchange_name=exchange.name,
-                    exchange_id=exchange.id,
-                    market_open_time=exchange.market_open_time,
-                    market_close_time=exchange.market_close_time,
-                    pre_market_open_time=exchange.pre_market_open_time,
-                    post_market_close_time=exchange.post_market_close_time,
-                    timezone_str=exchange.timezone,
-                )
-                data_saver.add_exchange(exchange_data)
+                # Add exchange directly to data_saver
+                data_saver.add_exchange(exchange)
 
     # Save every 5 minute for testing
     await data_saver.start_all_exchanges(
@@ -203,6 +199,7 @@ app.include_router(instrument_router)
 app.include_router(exchange_router)
 app.include_router(provider_router)
 app.include_router(marketdata_router)
+app.include_router(watchlist_router)
 app.include_router(populate_database_route)
 app.include_router(sector_router)
 app.include_router(instrument_type_router)
