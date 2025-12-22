@@ -3,10 +3,12 @@ import time
 import pytz
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.redis_timeseries import get_redis_timeseries
+from services.provider.provider_manager import get_provider_manager
+from services.data.data_resolver import DataResolver
 from models.exchange import Exchange
 from models.instruments import Instrument
 from models.price_history_intraday import PriceHistoryIntraday
@@ -30,6 +32,8 @@ class DataSaver:
         self._stop_flags: Dict[str, bool] = {}
         # Cache stores symbol -> (instrument_id, should_record_data, exchange_id)
         self.symbol_map_cache: Dict[str, tuple[int, bool, int]] = {}
+        self.provider_manager = get_provider_manager()
+        self.data_resolver = DataResolver(self.provider_manager)
 
     def add_exchange(self, exchange: Exchange) -> None:
         """Add an exchange to monitor."""
@@ -200,6 +204,41 @@ class DataSaver:
                     f"[{exchange.name}] No data in window for {len(missing_data_symbols)} symbols. Examples: {missing_data_symbols[:5]}"
                 )
 
+                # Trigger immediate resolution for missing symbols
+                # We need to map these symbols to instrument IDs first
+                async for session in get_db_session():
+                    symbol_map = await self._get_symbol_to_instrument_mapping(
+                        session, missing_data_symbols, exchange.id
+                    )
+
+                    records_to_resolve = []
+                    for sym in missing_data_symbols:
+                        inst_id = symbol_map.get(sym)
+                        if inst_id:
+                            # Create a dummy record with the target timestamp to indicate what we need
+                            # The timestamp is the START of the bucket we missed
+                            # The query_align_ts is the END of the bucket.
+                            # So start is query_align_ts - interval_ms
+                            interval_ms = interval_minutes * 60 * 1000
+                            bucket_start_ts = query_align_ts - interval_ms
+                            record_dt = datetime.fromtimestamp(bucket_start_ts / 1000, tz=timezone.utc)
+
+                            records_to_resolve.append(
+                                PriceHistoryIntraday(
+                                    instrument_id=inst_id,
+                                    datetime=record_dt
+                                )
+                            )
+
+                    if records_to_resolve:
+                        logger.info(f"[{exchange.name}] Triggering immediate resolution for {len(records_to_resolve)} missing symbols. Timestamp: {records_to_resolve[0].datetime}")
+                        logger.debug(f"[{exchange.name}] Resolving symbols: {[sym for sym in missing_data_symbols if symbol_map.get(sym)]}")
+                        # Run in background to not block the main loop too much?
+                        # Or run inline to ensure data is available ASAP?
+                        # Inline is safer for data consistency but might delay next cycle.
+                        # Given it's "missing data", delay is acceptable to fix it.
+                        await self.data_resolver.resolve_specific_records(records_to_resolve)
+
             if not valid_data:
                 logger.warning(
                     f"[{exchange.name}] No valid data found for interval"
@@ -224,10 +263,18 @@ class DataSaver:
                     if unmapped_symbols:
                         logger.warning(f"[{exchange.name}] {len(unmapped_symbols)} symbols have data but no instrument mapping (or not marked for recording). Examples: {unmapped_symbols[:5]}")
 
+                    # Sort items by instrument_id to ensure consistent locking order and prevent deadlocks
+                    valid_items = []
                     for symbol, data in valid_data.items():
-                        instrument_id = symbol_map.get(symbol)
-                        if not instrument_id:
-                            continue
+                        inst_id = symbol_map.get(symbol)
+                        if inst_id:
+                            valid_items.append((inst_id, symbol, data))
+
+                    # Sort by instrument_id
+                    valid_items.sort(key=lambda x: x[0])
+
+                    for instrument_id, symbol, data in valid_items:
+                        # instrument_id is already unpacked
 
                         # Extract scalar values
                         ts = data["ts"]
@@ -283,13 +330,6 @@ class DataSaver:
                             session.add(new_record)
 
                         # Update Daily Record
-                        # Daily record timestamp is exactly the market open time for the current session
-                        # We use exchange.market_open_time which is computed for "today" (current session)
-                        # Note: We must use the official market open time, not pre-market start
-                        # We need to get the timezone object again or use the one from outer scope if available
-                        # But simpler to just use the exchange helper which handles it internally if we pass the date
-                        # We can derive the date from record_dt (which is UTC) converted to exchange timezone
-
                         record_dt_local = record_dt.astimezone(
                             pytz.timezone(exchange.timezone)
                         )
@@ -309,98 +349,101 @@ class DataSaver:
                         daily_result = await session.execute(daily_stmt)
                         daily_record = daily_result.scalar_one_or_none()
 
-                        if daily_record:
-                            daily_record.resolve_required = False
-                            daily_record.close = close_val
-                            daily_record.volume = (daily_record.volume or 0) + vol_val
-
-                            if daily_record.open is None:
-                                daily_record.open = open_val
-
-                            if (
-                                daily_record.high is None
-                                or high_val > daily_record.high
-                            ):
-                                daily_record.high = high_val
-
-                            if daily_record.low is None or low_val < daily_record.low:
-                                daily_record.low = low_val
-
-                            session.add(daily_record)
-                        else:
+                        if not daily_record:
                             # Upsert: Create daily record if it doesn't exist
                             logger.info(
                                 f"Creating new daily record for {symbol} at {daily_dt}"
                             )
-                            new_daily = PriceHistoryDaily(
+                            daily_record = PriceHistoryDaily(
                                 instrument_id=instrument_id,
                                 datetime=daily_dt,
                                 open=open_val,
                                 high=high_val,
                                 low=low_val,
                                 close=close_val,
-                                volume=vol_val,
+                                volume=0, # Will be updated below
                                 resolve_required=False,
                             )
-                            session.add(new_daily)
+                            session.add(daily_record)
+
+                        # Update Daily Record values
+                        daily_record.resolve_required = False
+                        daily_record.close = close_val
+
+                        if daily_record.open is None:
+                            daily_record.open = open_val
+
+                        if (
+                            daily_record.high is None
+                            or high_val > daily_record.high
+                        ):
+                            daily_record.high = high_val
+
+                        if daily_record.low is None or low_val < daily_record.low:
+                            daily_record.low = low_val
+
+                        # Recalculate daily volume from intraday records to ensure accuracy and avoid double counting
+                        day_start = daily_dt
+                        day_end = day_start + timedelta(days=1)
+
+                        # We need to flush the session to ensure the new intraday record is visible for the sum query
+                        await session.flush()
+
+                        vol_stmt = select(func.sum(PriceHistoryIntraday.volume)).where(
+                            PriceHistoryIntraday.instrument_id == instrument_id,
+                            PriceHistoryIntraday.datetime >= day_start,
+                            PriceHistoryIntraday.datetime < day_end
+                        )
+                        vol_result = await session.execute(vol_stmt)
+                        total_vol = vol_result.scalar() or 0
+
+                        daily_record.volume = total_vol
+                        session.add(daily_record)
 
                     await session.commit()
-                    
+
                     # Update last save time in Redis
                     if self.redis:
                         try:
                             await self.redis.set(f"last_save_time:{interval_minutes}m", str(align_to_ts))
                             logger.info(f"Updated last_save_time:{interval_minutes}m to {align_to_ts}")
                         except Exception as e:
-                            logger.error(f"Failed to update last_save_time in Redis: {e}")
-
-                    logger.info(
-                        f"Updated records for {len(valid_data)} symbols at {datetime.now(timezone.utc)}"
-                    )
+                            logger.error(f"Error updating last_save_time in Redis: {e}")
 
                 except Exception as e:
-                    logger.error(f"Error updating records: {e}")
+                    logger.error(f"Error saving data for {exchange.name}: {e}", exc_info=True)
                     await session.rollback()
 
         except Exception as e:
-            logger.error(f"Error in update_records_for_interval: {e}")
+            logger.error(f"Error in update_records_for_interval for {exchange.name}: {e}", exc_info=True)
 
     async def _get_symbol_to_instrument_mapping(
         self, session: AsyncSession, symbols: List[str], exchange_id: int
     ) -> Dict[str, int]:
-        """Get mapping from symbol to instrument_id for instruments that should be recorded."""
         mapping = {}
-        missing = []
+        symbols_to_fetch = []
 
-        for s in symbols:
-            if s in self.symbol_map_cache:
-                try:
-                    inst_id, should_record, cached_exchange_id = self.symbol_map_cache[s]
-                    if cached_exchange_id == exchange_id:
-                        if should_record:
-                            mapping[s] = inst_id
-                    else:
-                        missing.append(s)
-                except ValueError:
-                    # Handle case where cache might have old format (tuple of 2)
-                    missing.append(s)
+        # Check cache first
+        for sym in symbols:
+            if sym in self.symbol_map_cache:
+                inst_id, should_record, ex_id = self.symbol_map_cache[sym]
+                if ex_id == exchange_id and should_record:
+                    mapping[sym] = inst_id
             else:
-                missing.append(s)
+                symbols_to_fetch.append(sym)
 
-        if missing:
-            stmt = select(
-                Instrument.symbol, Instrument.id, Instrument.should_record_data
-            ).where(
-                Instrument.symbol.in_(missing), Instrument.exchange_id == exchange_id
+        if symbols_to_fetch:
+            stmt = select(Instrument).where(
+                Instrument.symbol.in_(symbols_to_fetch),
+                Instrument.exchange_id == exchange_id
             )
             result = await session.execute(stmt)
-            for row in result.all():
-                self.symbol_map_cache[row.symbol] = (
-                    row.id,
-                    row.should_record_data,
-                    exchange_id,
-                )
-                if row.should_record_data:
-                    mapping[row.symbol] = row.id
+            instruments = result.scalars().all()
+
+            for inst in instruments:
+                self.symbol_map_cache[inst.symbol] = (inst.id, inst.should_record_data, inst.exchange_id)
+                if inst.should_record_data:
+                    mapping[inst.symbol] = inst.id
 
         return mapping
+

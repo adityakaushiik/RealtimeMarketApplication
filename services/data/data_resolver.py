@@ -1,6 +1,6 @@
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
-from typing import Type
+from typing import Type, List, Dict, Tuple, Any
 import pytz
 
 from sqlalchemy import select, update, text, func
@@ -520,6 +520,9 @@ class DataResolver:
 
                     records_dicts = list(unique_records.values())
 
+                    # Sort records by instrument_id and datetime to prevent deadlocks
+                    records_dicts.sort(key=lambda x: (x['instrument_id'], x['datetime']))
+
                     # Chunking to avoid huge statements
                     chunk_size = 1000
                     total_updated = 0
@@ -558,3 +561,180 @@ class DataResolver:
 
             except Exception as e:
                 logger.error(f"🔍 [RESOLVER] Error resolving prices for {table_name}: {e}", exc_info=True)
+
+    async def resolve_specific_records(self, records: List[PriceHistoryIntraday]):
+        """
+        Immediately resolve a specific list of PriceHistoryIntraday records.
+        This is useful for real-time gap filling when data is missing during ingestion.
+        """
+        if not records:
+            return
+
+        logger.info(f"🔍 [RESOLVER] resolving {len(records)} specific records immediately.")
+
+        # Group records by instrument_id to fetch instrument details efficiently
+        instrument_ids = list({r.instrument_id for r in records})
+
+        async for session in get_db_session():
+            try:
+                # Fetch Instrument objects with Exchange info
+                stmt = (
+                    select(Instrument)
+                    .options(joinedload(Instrument.exchange))
+                    .where(Instrument.id.in_(instrument_ids))
+                )
+                result = await session.execute(stmt)
+                instruments = result.scalars().all()
+
+                # Map ID to Instrument
+                instrument_map = {i.id: i for i in instruments}
+
+                # Detach instruments from session
+                for i in instruments:
+                    _ = i.symbol
+                    _ = i.exchange_id
+                    _ = i.exchange.timezone
+                    session.expunge(i)
+
+                # Group by provider and timezone
+                # Key: (provider_code, timezone_name)
+                instruments_by_group = defaultdict(list)
+
+                # Also map instrument_id to the list of records we want to resolve for it
+                # This helps us determine the date range needed for each instrument
+                records_by_instrument = defaultdict(list)
+                for r in records:
+                    records_by_instrument[r.instrument_id].append(r)
+
+                for instrument in instruments:
+                    provider_code = self.provider_manager.exchange_to_provider.get(
+                        instrument.exchange_id
+                    )
+                    if provider_code:
+                        tz_name = instrument.exchange.timezone or "UTC"
+                        instruments_by_group[(provider_code, tz_name)].append(instrument)
+
+                # Process each group
+                for (provider_code, tz_name), provider_instruments in instruments_by_group.items():
+                    provider = self.provider_manager.providers.get(provider_code)
+                    if not provider:
+                        continue
+
+                    # Determine the overall min/max date range for this batch
+                    # We look at the specific records we want to resolve
+                    batch_min_dt = None
+                    batch_max_dt = None
+
+                    for inst in provider_instruments:
+                        inst_records = records_by_instrument[inst.id]
+                        if not inst_records:
+                            continue
+
+                        min_dt = min(r.datetime for r in inst_records)
+                        max_dt = max(r.datetime for r in inst_records)
+
+                        if batch_min_dt is None or min_dt < batch_min_dt:
+                            batch_min_dt = min_dt
+                        if batch_max_dt is None or max_dt > batch_max_dt:
+                            batch_max_dt = max_dt
+
+                    if batch_min_dt is None:
+                        continue
+
+                    # Ensure dates are timezone aware (UTC)
+                    if batch_min_dt.tzinfo is None:
+                        batch_min_dt = batch_min_dt.replace(tzinfo=timezone.utc)
+                    if batch_max_dt.tzinfo is None:
+                        batch_max_dt = batch_max_dt.replace(tzinfo=timezone.utc)
+
+                    logger.info(
+                        f"🔍 [RESOLVER] Requesting immediate update from {provider_code} "
+                        f"for {len(provider_instruments)} instruments. "
+                        f"UTC Range: {batch_min_dt} to {batch_max_dt}"
+                    )
+
+                    # Fetch data
+                    # We use get_intraday_prices as we are dealing with PriceHistoryIntraday
+                    fetched_data = await provider.get_intraday_prices(
+                        instruments=provider_instruments,
+                        start_date=batch_min_dt,
+                        end_date=batch_max_dt
+                    )
+
+                    if not fetched_data:
+                        logger.warning(f"🔍 [RESOLVER] No data returned from {provider_code} for immediate resolution.")
+                        continue
+
+                    total_fetched = sum(len(v) for v in fetched_data.values())
+                    logger.info(f"🔍 [RESOLVER] Fetched {total_fetched} records for {len(fetched_data)} symbols from {provider_code}.")
+
+                    # Save to DB
+                    # We reuse the logic from _resolve_prices but adapted for this context
+                    # Since we have the records in hand (passed as argument), we could update them directly?
+                    # But 'records' might be detached or transient objects.
+                    # It's safer to do a bulk upsert into the DB to ensure persistence.
+
+                    # Map symbol to instrument_id
+                    symbol_to_id = {i.symbol: i.id for i in provider_instruments}
+
+                    all_records = []
+                    for symbol, fetched_records in fetched_data.items():
+                        if symbol not in symbol_to_id:
+                            continue
+                        inst_id = symbol_to_id[symbol]
+                        for r in fetched_records:
+                            r.instrument_id = inst_id
+                            all_records.append(r)
+
+                    if not all_records:
+                        continue
+
+                    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                    unique_records = {}
+                    for r in all_records:
+                        key = (r.instrument_id, r.datetime)
+                        d = {
+                            "instrument_id": r.instrument_id,
+                            "datetime": r.datetime,
+                            "open": r.open,
+                            "high": r.high,
+                            "low": r.low,
+                            "close": r.close,
+                            "volume": r.volume,
+                            "resolve_required": False
+                        }
+                        unique_records[key] = d
+
+                    records_dicts = list(unique_records.values())
+                    records_dicts.sort(key=lambda x: (x['instrument_id'], x['datetime']))
+
+                    chunk_size = 1000
+                    total_updated = 0
+
+                    for i in range(0, len(records_dicts), chunk_size):
+                        chunk = records_dicts[i:i + chunk_size]
+                        stmt = pg_insert(PriceHistoryIntraday).values(chunk)
+
+                        update_dict = {
+                            "open": stmt.excluded.open,
+                            "high": stmt.excluded.high,
+                            "low": stmt.excluded.low,
+                            "close": stmt.excluded.close,
+                            "volume": stmt.excluded.volume,
+                            "resolve_required": False
+                        }
+
+                        stmt = stmt.on_conflict_do_update(
+                            index_elements=['instrument_id', 'datetime'],
+                            set_=update_dict
+                        )
+
+                        result = await session.execute(stmt)
+                        total_updated += result.rowcount
+
+                    await session.commit()
+                    logger.info(f"🔍 [RESOLVER] Immediate resolution updated {total_updated} records.")
+
+            except Exception as e:
+                logger.error(f"🔍 [RESOLVER] Error in resolve_specific_records: {e}", exc_info=True)

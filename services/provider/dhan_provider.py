@@ -300,9 +300,9 @@ class DhanProvider(BaseMarketDataProvider):
             return
         
         # Group by request code (15 for Ticker, 17 for Quote, 21 for Full)
-        # Using 15 (Ticker) as requested
-        request_code = FeedRequestCode.SUBSCRIBE_TICKER
-        
+        # Using 17 (Quote) to get Volume/LTQ data
+        request_code = FeedRequestCode.SUBSCRIBE_QUOTE
+
         # Split into chunks of 100 (API limit)
         chunk_size = 100
         for i in range(0, len(instruments), chunk_size):
@@ -380,6 +380,7 @@ class DhanProvider(BaseMarketDataProvider):
                 # 23-26: Volume (int32)
                 
                 ltp = struct.unpack('<f', message[8:12])[0]
+                ltq = struct.unpack('<H', message[12:14])[0]
                 ltt = struct.unpack('<I', message[14:18])[0]
                 volume = struct.unpack('<I', message[22:26])[0]
                 
@@ -388,7 +389,7 @@ class DhanProvider(BaseMarketDataProvider):
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
-                    "volume": float(volume)
+                    "volume": float(ltq)
                 }
                 
             elif response_code == FeedResponseCode.DISCONNECT:
@@ -544,6 +545,7 @@ class DhanProvider(BaseMarketDataProvider):
 
         # Add buffer to avoid "Input_Exception" when start_date == end_date
         # Dhan API requires a window to fetch data for a specific timestamp
+        # User specified: "if you want data for a given timeframe lets say 11:00 am , you must send start and end date like 10:55 and 11:05"
         start_date_ist = start_date_ist - timedelta(minutes=5)
         end_date_ist = end_date_ist + timedelta(minutes=5)
 

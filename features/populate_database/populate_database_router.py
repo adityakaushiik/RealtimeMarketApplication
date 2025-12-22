@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.status import HTTP_200_OK
@@ -11,6 +12,8 @@ from features.exchange.exchange_service import (
 )
 from features.populate_database.populate_database_service import (
     populate_instrument_in_database,
+    generate_backfill_template,
+    process_backfill_file,
 )
 from models import Instrument, ProviderInstrumentMapping
 from services.data.data_creation import DataCreationService
@@ -20,6 +23,29 @@ populate_database_route = APIRouter(
     prefix="/populate_database",
     tags=["populate_database"],
 )
+
+
+@populate_database_route.get("/backfill/template")
+async def get_backfill_template(
+    user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
+):
+    file_stream = generate_backfill_template()
+
+    return StreamingResponse(
+        file_stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=backfill_template.xlsx"},
+    )
+
+
+@populate_database_route.post("/backfill")
+async def backfill_data(
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_db_session),
+    user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
+):
+    result = await process_backfill_file(session, file)
+    return {"status": HTTP_200_OK, "data": result}
 
 
 @populate_database_route.get("/")
@@ -60,6 +86,7 @@ async def populate_database_by_exchange(
         "status": HTTP_200_OK,
         "message": f"Database populated for exchange {exchange_code}",
     }
+
 
 @populate_database_route.post("/create_price_history_records_for_future")
 async def create_price_history_records_for_future(

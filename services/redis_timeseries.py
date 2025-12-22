@@ -74,7 +74,7 @@ class RedisTimeSeries:
                     vol_key,
                     retention_msecs=self.retention_ms,
                     labels={"ts": "volume", "key": key},
-                    duplicate_policy="last",
+                    duplicate_policy="sum",
                 )
                 await pipe.execute()
             except ResponseError as e:
@@ -94,7 +94,7 @@ class RedisTimeSeries:
         try:
             async with r.pipeline() as pipe:
                 pipe.ts().add(price_key, timestamp, float(price), on_duplicate="last")
-                pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate="last")
+                pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate="sum")
                 await pipe.execute()
         except ResponseError as e:
             err_str = str(e).lower()
@@ -106,7 +106,7 @@ class RedisTimeSeries:
                         price_key, timestamp, float(price), on_duplicate="last"
                     )
                     pipe.ts().add(
-                        vol_key, timestamp, float(volume), on_duplicate="last"
+                        vol_key, timestamp, float(volume), on_duplicate="sum"
                     )
                     await pipe.execute()
             elif "timestamp cannot be older" in err_str:
@@ -518,6 +518,13 @@ class RedisTimeSeries:
             except Exception as fallback_error:
                 # If both methods fail, return empty list
                 return []
+
+        # Filter out any keys that might be provider-specific search codes if they differ from internal symbols
+        # This is tricky because Redis doesn't know about internal vs provider symbols.
+        # However, the DataSaver logic relies on these keys being mappable to internal symbols.
+        # If the keys in Redis are provider search codes (e.g. "RELIANCE-EQ"), but our DB expects "RELIANCE",
+        # then DataSaver will fail to map them.
+        # Ideally, Redis keys should be INTERNAL symbols.
 
         return keys
 

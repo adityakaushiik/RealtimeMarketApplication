@@ -20,6 +20,7 @@ from features.marketdata.marketdata_schema import (
 )
 from models import PriceHistoryIntraday, PriceHistoryDaily, Instrument
 from services.data.data_ingestion import get_provider_manager
+from services.redis_timeseries import get_redis_timeseries
 
 
 # PriceHistoryIntraday CRUD
@@ -254,7 +255,8 @@ async def get_price_history_intraday(
     result = await session.execute(stmt)
     records = result.scalars().all()
 
-    return [
+    # Convert to Pydantic models
+    result_list = [
         PriceHistoryIntradayInDb(
             id=r.id,
             instrument_id=r.instrument_id,
@@ -272,6 +274,47 @@ async def get_price_history_intraday(
         )
         for r in records
     ]
+
+    # Merge with ongoing candle from Redis
+    instrument = await session.get(Instrument, instrument_id)
+    if instrument:
+        rts = get_redis_timeseries()
+        # Get latest 5m candle (ongoing)
+        latest_candle = await rts.get_ohlcv_last_5m(instrument.symbol)
+
+        if latest_candle:
+            ts = latest_candle['ts']
+            dt = datetime.datetime.fromtimestamp(ts / 1000, tz=datetime.timezone.utc)
+
+            if not result_list or result_list[0].datetime < dt:
+                new_rec = PriceHistoryIntradayInDb(
+                    id=-1,
+                    instrument_id=instrument_id,
+                    datetime=dt,
+                    open=latest_candle['open'],
+                    high=latest_candle['high'],
+                    low=latest_candle['low'],
+                    close=latest_candle['close'],
+                    volume=int(latest_candle['volume']),
+                    resolve_required=False,
+                    interval=interval or "5m",
+                    previous_close=None,
+                    adj_close=None,
+                    deliver_percentage=None
+                )
+                result_list.insert(0, new_rec)
+            elif result_list and result_list[0].datetime == dt:
+                # Update existing record with fresher data from Redis
+                rec = result_list[0]
+                rec.open = latest_candle['open']
+                rec.high = latest_candle['high']
+                rec.low = latest_candle['low']
+                rec.close = latest_candle['close']
+                # For volume, we should use the Redis volume as it is the most up-to-date for the current bucket
+                # The DB record might be lagging or incomplete if we are in the middle of the bucket
+                rec.volume = int(latest_candle['volume'])
+
+    return result_list
 
 
 async def get_price_history_daily(
@@ -316,6 +359,31 @@ async def get_price_history_daily(
     # Check if the latest record (today) needs resolution
     if result_list and result_list[0].resolve_required:
         await _aggregate_intraday_for_daily_record(session, instrument_id, result_list[0])
+
+    # Merge with ongoing candle from Redis
+    instrument = await session.get(Instrument, instrument_id)
+    if instrument and result_list:
+        rts = get_redis_timeseries()
+        latest_candle = await rts.get_ohlcv_last_5m(instrument.symbol)
+
+        if latest_candle:
+            # We assume the first record is for the current day
+            today_rec = result_list[0]
+
+            # Update High/Low/Close
+            today_rec.close = latest_candle['close']
+
+            if today_rec.high is None or latest_candle['high'] > today_rec.high:
+                today_rec.high = latest_candle['high']
+
+            if today_rec.low is None or latest_candle['low'] < today_rec.low:
+                today_rec.low = latest_candle['low']
+
+            if today_rec.open is None:
+                today_rec.open = latest_candle['open']
+
+            # Add volume from the ongoing candle
+            today_rec.volume = (today_rec.volume or 0) + int(latest_candle['volume'])
 
     return result_list
 
