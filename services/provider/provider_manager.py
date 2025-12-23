@@ -22,6 +22,7 @@ from models import (
 from services.provider.base_provider import BaseMarketDataProvider
 from services.provider.yahoo_provider import YahooFinanceProvider
 from services.provider.dhan_provider import DhanProvider
+from services.provider.dhan_hq_provider import DhanHQProvider
 
 
 class ProviderManager:
@@ -123,6 +124,9 @@ class ProviderManager:
             return YahooFinanceProvider(callback=self.callback)
         elif provider_code == "DHAN":
             return DhanProvider(callback=self.callback, provider_manager=self)
+        elif provider_code == "DHAN_HQ":
+            # Alternative Dhan implementation using official dhanhq library
+            return DhanHQProvider(callback=self.callback, provider_manager=self)
         else:
             logger.error(
                 f"Unknown provider code: {provider_code} - skipping initialization"

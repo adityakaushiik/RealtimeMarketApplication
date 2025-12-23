@@ -285,6 +285,7 @@ class DataSaver:
                         vol_val = (
                             int(data["volume"]) if data["volume"] is not None else 0
                         )
+                        tick_count = data.get("count", 0)
 
                         if open_val is None:  # Skip if no data in this bucket
                             continue
@@ -294,6 +295,12 @@ class DataSaver:
                         # For 10:00-10:05 bucket, Redis returns 10:00 timestamp.
                         # This matches our DB record for 10:00.
                         record_dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+
+                        # Log tick count for monitoring data quality
+                        if tick_count < 10:
+                            logger.warning(f"[{exchange.name}] Low tick count for {symbol} at {record_dt}: {tick_count} ticks")
+                        else:
+                            logger.info(f"[{exchange.name}] Saving {symbol} at {record_dt}: {tick_count} ticks")
 
                         # Update Intraday Record
                         stmt = (

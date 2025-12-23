@@ -300,8 +300,8 @@ class DhanProvider(BaseMarketDataProvider):
             return
         
         # Group by request code (15 for Ticker, 17 for Quote, 21 for Full)
-        # Using 17 (Quote) to get Volume/LTQ data
-        request_code = FeedRequestCode.SUBSCRIBE_QUOTE
+        # Using 21 (Full) to get maximum data including OHLC and market depth
+        request_code = FeedRequestCode.SUBSCRIBE_FULL
 
         # Split into chunks of 100 (API limit)
         chunk_size = 100
@@ -373,17 +373,26 @@ class DhanProvider(BaseMarketDataProvider):
                 }
                 
             elif response_code == FeedResponseCode.QUOTE:
-                # 9-12: LTP (Last Traded Price) (float32)
-                # 13-14: Last Traded Qty (int16)
-                # 15-18: LTT (Last Traded Time) (int32)
-                # 19-22: ATP (Average Traded Price) (float32)
-                # 23-26: Volume (int32)
-                
+                # Quote packet structure (50 bytes):
+                # 0-1: Response code + length
+                # 2-3: Exchange segment
+                # 4-7: Security ID
+                # 8-11: LTP (float32)
+                # 12-13: LTQ (uint16)
+                # 14-17: LTT (uint32)
+                # 18-21: ATP (float32)
+                # 22-25: Volume (uint32)
+                # 26-29: Total Sell Qty (uint32)
+                # 30-33: Total Buy Qty (uint32)
+                # 34-37: Open (float32)
+                # 38-41: Close (float32)
+                # 42-45: High (float32)
+                # 46-49: Low (float32)
+
                 ltp = struct.unpack('<f', message[8:12])[0]
                 ltq = struct.unpack('<H', message[12:14])[0]
                 ltt = struct.unpack('<I', message[14:18])[0]
-                volume = struct.unpack('<I', message[22:26])[0]
-                
+
                 data = {
                     "symbol": str(security_id),
                     "exchange": exchange_str,
@@ -392,6 +401,66 @@ class DhanProvider(BaseMarketDataProvider):
                     "volume": float(ltq)
                 }
                 
+            elif response_code == FeedResponseCode.FULL:
+                # Full packet structure (162 bytes):
+                # Format: '<BHBIfHIfIIIIIIffff100s'
+                # 0: Response code (B - 1 byte)
+                # 1-2: Message length (H - 2 bytes)
+                # 3: Exchange segment (B - 1 byte)
+                # 4-7: Security ID (I - 4 bytes)
+                # 8-11: LTP (f - 4 bytes)
+                # 12-13: LTQ (H - 2 bytes)
+                # 14-17: LTT (I - 4 bytes)
+                # 18-21: ATP (f - 4 bytes)
+                # 22-25: Volume (I - 4 bytes)
+                # 26-29: Total Sell Qty (I - 4 bytes)
+                # 30-33: Total Buy Qty (I - 4 bytes)
+                # 34-37: OI (I - 4 bytes)
+                # 38-41: OI Day High (I - 4 bytes)
+                # 42-45: OI Day Low (I - 4 bytes)
+                # 46-49: Open (f - 4 bytes)
+                # 50-53: Close (f - 4 bytes)
+                # 54-57: High (f - 4 bytes)
+                # 58-61: Low (f - 4 bytes)
+                # 62-161: Market Depth (100 bytes)
+
+                if len(message) < 62:
+                    logger.warning(f"Full packet too short: {len(message)} bytes")
+                    return
+
+                ltp = struct.unpack('<f', message[8:12])[0]
+                ltq = struct.unpack('<H', message[12:14])[0]
+                ltt = struct.unpack('<I', message[14:18])[0]
+                atp = struct.unpack('<f', message[18:22])[0]
+                volume = struct.unpack('<I', message[22:26])[0]
+                total_sell_qty = struct.unpack('<I', message[26:30])[0]
+                total_buy_qty = struct.unpack('<I', message[30:34])[0]
+                oi = struct.unpack('<I', message[34:38])[0]
+                oi_day_high = struct.unpack('<I', message[38:42])[0]
+                oi_day_low = struct.unpack('<I', message[42:46])[0]
+                open_price = struct.unpack('<f', message[46:50])[0]
+                close_price = struct.unpack('<f', message[50:54])[0]
+                high_price = struct.unpack('<f', message[54:58])[0]
+                low_price = struct.unpack('<f', message[58:62])[0]
+
+                data = {
+                    "symbol": str(security_id),
+                    "exchange": exchange_str,
+                    "price": ltp,
+                    "timestamp": ltt,
+                    "volume": float(ltq),  # Use LTQ for tick volume
+                    # Additional fields available for future use:
+                    # "atp": atp,
+                    # "total_volume": volume,
+                    # "total_sell_qty": total_sell_qty,
+                    # "total_buy_qty": total_buy_qty,
+                    # "oi": oi,
+                    # "open": open_price,
+                    # "close": close_price,
+                    # "high": high_price,
+                    # "low": low_price,
+                }
+
             elif response_code == FeedResponseCode.DISCONNECT:
                 logger.warning(f"Received disconnect packet: {message}")
                 return
@@ -401,10 +470,6 @@ class DhanProvider(BaseMarketDataProvider):
                 # Convert timestamp to milliseconds if it's in seconds
                 ts = int(data['timestamp'])
 
-                # Dhan sends timestamps in IST (Indian Standard Time) but as a Unix timestamp relative to UTC epoch.
-                # e.g. 10:00 AM IST is sent as timestamp(10:00 AM UTC).
-                # We need to subtract 5.5 hours (19800 seconds) to get the true UTC timestamp.
-                # 19800 seconds = 5 hours * 3600 + 30 minutes * 60
                 ts = ts - 19800
 
                 if ts < 10000000000: # Less than 10 billion, likely seconds

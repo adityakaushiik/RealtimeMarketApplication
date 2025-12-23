@@ -277,6 +277,7 @@ class RedisTimeSeries:
             "low": ohlcv_data["low"][idx],
             "close": ohlcv_data["close"][idx],
             "volume": ohlcv_data["volume"][idx],
+            "count": ohlcv_data.get("count", [0])[idx] if ohlcv_data.get("count") else 0,
         }
 
     async def get_ohlcv_series(
@@ -327,7 +328,7 @@ class RedisTimeSeries:
         try:
             # Query aggregations for the same buckets (aligned to the end time) in parallel
             # logger.debug(f"TS.RANGE {price_key} {from_ts} {to_ts} bucket={bucket} align={to_ts}")
-            first, last, high, low, vol = await asyncio.gather(
+            first, last, high, low, vol, count = await asyncio.gather(
                 r.ts().range(
                     price_key,
                     from_ts,
@@ -368,6 +369,14 @@ class RedisTimeSeries:
                     bucket_size_msec=bucket,
                     align=to_ts,
                 ),
+                r.ts().range(
+                    price_key,
+                    from_ts,
+                    to_ts,
+                    aggregation_type="count",
+                    bucket_size_msec=bucket,
+                    align=to_ts,
+                ),
             )
         except ResponseError as e:
             # Handle case where key might have been deleted or expired
@@ -381,6 +390,7 @@ class RedisTimeSeries:
                     "low": [],
                     "close": [],
                     "volume": [],
+                    "count": [],
                 }
             raise
 
@@ -407,6 +417,7 @@ class RedisTimeSeries:
         l_map = to_map(low)
         c_map = to_map(last)
         v_map = to_map(vol)
+        cnt_map = to_map(count)
 
         # Build a sorted list of bucket end timestamps (union of keys present)
         all_ts = sorted(
@@ -415,6 +426,7 @@ class RedisTimeSeries:
             | set(l_map.keys())
             | set(c_map.keys())
             | set(v_map.keys())
+            | set(cnt_map.keys())
         )
 
         # Build columnar format for better performance and smaller payload
@@ -425,6 +437,7 @@ class RedisTimeSeries:
         lows = []
         closes = []
         volumes = []
+        counts = []
 
         for ts in all_ts:
             # Only include buckets where we at least have O and C; H/L/V may be absent if no data
@@ -436,6 +449,7 @@ class RedisTimeSeries:
             lows.append(l_map.get(ts))
             closes.append(c_map.get(ts))
             volumes.append(v_map.get(ts, 0.0))
+            counts.append(int(cnt_map.get(ts, 0)))
 
         return {
             "timestamp": timestamps,
@@ -444,6 +458,7 @@ class RedisTimeSeries:
             "low": lows,
             "close": closes,
             "volume": volumes,
+            "count": counts,
         }
 
     async def get_all_ohlcv_last_5m(

@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.status import HTTP_200_OK
+from datetime import date
 
 from config.database_config import get_db_session
 from features.auth.auth_service import require_auth
@@ -90,7 +91,7 @@ async def populate_database_by_exchange(
 
 @populate_database_route.post("/create_price_history_records_for_future")
 async def create_price_history_records_for_future(
-    offset_days: int = 0,
+    target_date: date,
     session: AsyncSession = Depends(get_db_session),
     user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
 ):
@@ -100,9 +101,9 @@ async def create_price_history_records_for_future(
     for exchange in exchange_data:
         data_creation.add_exchange(exchange=exchange)
 
-    await data_creation.start_data_creation(offset_days=offset_days)
+    await data_creation.start_data_creation(target_date=target_date)
 
     return {
         "status": HTTP_200_OK,
-        "message": f"Price history records creation started for futures exchanges with offset {offset_days} days",
+        "message": f"Price history records creation started for futures exchanges for date {target_date}",
     }

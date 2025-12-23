@@ -129,7 +129,7 @@ class DataResolver:
         Groups instruments by exchange timezone to correctly determine the "start of day"
         in UTC for each instrument.
         """
-        logger.info("🔍 [RESOLVER] Starting aggregation of intraday prices to daily for today")
+        logger.info("🔍 Starting aggregation of intraday prices to daily for today")
 
         # We can't just use a single "today_start" in UTC because "today" starts at different
         # UTC times for different exchanges.
@@ -168,10 +168,10 @@ class DataResolver:
                 daily_records = result.scalars().all()
 
                 if not daily_records:
-                    logger.info("🔍 [RESOLVER] No daily records for today needing resolution via aggregation.")
+                    logger.info("🔍 No daily records for today needing resolution via aggregation.")
                     return
 
-                logger.info(f"🔍 [RESOLVER] Found {len(daily_records)} daily records to aggregate from intraday.")
+                logger.info(f"🔍 Found {len(daily_records)} daily records to aggregate from intraday.")
 
                 # Group by (Exchange, Date)
                 # We need to know the "Date" of the daily record to find the start/end in UTC.
@@ -196,7 +196,7 @@ class DataResolver:
                     try:
                         tz = pytz.timezone(tz_name)
                     except pytz.UnknownTimeZoneError:
-                        logger.warning(f"🔍 [RESOLVER] Unknown timezone {tz_name}, defaulting to UTC")
+                        logger.warning(f"🔍 Unknown timezone {tz_name}, defaulting to UTC")
                         tz = pytz.UTC
 
                     # Calculate start of day using market open time
@@ -233,7 +233,7 @@ class DataResolver:
                     utc_end = local_end.astimezone(timezone.utc)
 
                     logger.info(
-                        f"🔍 [RESOLVER] Aggregating batch: Exchange={exchange.name}, Date={target_date}. "
+                        f"🔍 Aggregating batch: Exchange={exchange.name}, Date={target_date}. "
                         f"UTC Window: {utc_start} to {utc_end}. Instruments: {len(records)}"
                     )
 
@@ -283,10 +283,10 @@ class DataResolver:
                             total_updated += 1
 
                 await session.commit()
-                logger.info(f"🔍 [RESOLVER] Successfully aggregated {total_updated} daily records from intraday data.")
+                logger.info(f"🔍 Successfully aggregated {total_updated} daily records from intraday data.")
 
             except Exception as e:
-                logger.error(f"🔍 [RESOLVER] Error aggregating intraday to daily: {e}", exc_info=True)
+                logger.error(f"🔍 Error aggregating intraday to daily: {e}", exc_info=True)
 
     async def _resolve_prices(
         self,
@@ -294,7 +294,7 @@ class DataResolver:
         provider_method_name: str,
     ):
         table_name = model.__tablename__
-        logger.info(f"🔍 [RESOLVER] Starting resolution for {table_name}")
+        logger.info(f"🔍 Starting resolution for {table_name}")
 
         async for session in get_db_session():
             try:
@@ -327,7 +327,7 @@ class DataResolver:
                 rows = result.all()
 
                 if not rows:
-                    logger.info(f"🔍 [RESOLVER] No records found needing resolution for {table_name}")
+                    logger.info(f"🔍 No records found needing resolution for {table_name}")
                     return
 
                 # Map instrument_id -> (min_dt, max_dt)
@@ -335,7 +335,7 @@ class DataResolver:
                 instrument_ids = list(instrument_ranges.keys())
 
                 logger.info(
-                    f"🔍 [RESOLVER] Found {len(instrument_ids)} instruments needing resolution in {table_name}"
+                    f"🔍 Found {len(instrument_ids)} instruments needing resolution in {table_name}"
                 )
 
                 # 2. Fetch Instrument objects
@@ -411,7 +411,7 @@ class DataResolver:
                         batch_max_dt = now
 
                     logger.info(
-                        f"🔍 [RESOLVER] Requesting {provider_method_name} from {provider_code} "
+                        f"🔍 Requesting {provider_method_name} from {provider_code} "
                         f"for {len(provider_instruments)} instruments ({tz_name}). "
                         f"UTC Range: {batch_min_dt} to {batch_max_dt}"
                     )
@@ -439,7 +439,7 @@ class DataResolver:
                     )
 
                     if not fetched_data:
-                        logger.warning(f"🔍 [RESOLVER] No data returned from {provider_code}")
+                        logger.warning(f"🔍 No data returned from {provider_code}")
                         continue
 
                     # Calculate stats
@@ -447,13 +447,13 @@ class DataResolver:
                     total_records_returned = sum(len(records) for records in fetched_data.values())
 
                     logger.info(
-                        f"🔍 [RESOLVER] Received data from {provider_code}. "
+                        f"🔍 Received data from {provider_code}. "
                         f"Symbols with data: {total_symbols_returned}/{len(provider_instruments)}. "
                         f"Total records: {total_records_returned}."
                     )
 
                     # 5. Update Database (Optimized Bulk Upsert)
-                    logger.info(f"🔍 [RESOLVER] Saving {total_records_returned} records to database...")
+                    logger.info(f"🔍 Saving {total_records_returned} records to database...")
 
                     # Map symbol to instrument_id for quick lookup
                     symbol_to_id = {i.symbol: i.id for i in provider_instruments}
@@ -557,10 +557,10 @@ class DataResolver:
                         total_updated += result.rowcount
 
                     await session.commit()
-                    logger.info(f"🔍 [RESOLVER] Updated/Inserted {total_updated} records for {provider_code}")
+                    logger.info(f"🔍 Updated/Inserted {total_updated} records for {provider_code}")
 
             except Exception as e:
-                logger.error(f"🔍 [RESOLVER] Error resolving prices for {table_name}: {e}", exc_info=True)
+                logger.error(f"🔍 Error resolving prices for {table_name}: {e}", exc_info=True)
 
     async def resolve_specific_records(self, records: List[PriceHistoryIntraday]):
         """
@@ -570,7 +570,7 @@ class DataResolver:
         if not records:
             return
 
-        logger.info(f"🔍 [RESOLVER] resolving {len(records)} specific records immediately.")
+        logger.info(f"🔍 resolving {len(records)} specific records immediately.")
 
         # Group records by instrument_id to fetch instrument details efficiently
         instrument_ids = list({r.instrument_id for r in records})
@@ -648,7 +648,7 @@ class DataResolver:
                         batch_max_dt = batch_max_dt.replace(tzinfo=timezone.utc)
 
                     logger.info(
-                        f"🔍 [RESOLVER] Requesting immediate update from {provider_code} "
+                        f"🔍 Requesting immediate update from {provider_code} "
                         f"for {len(provider_instruments)} instruments. "
                         f"UTC Range: {batch_min_dt} to {batch_max_dt}"
                     )
@@ -662,11 +662,11 @@ class DataResolver:
                     )
 
                     if not fetched_data:
-                        logger.warning(f"🔍 [RESOLVER] No data returned from {provider_code} for immediate resolution.")
+                        logger.warning(f"🔍 No data returned from {provider_code} for immediate resolution.")
                         continue
 
                     total_fetched = sum(len(v) for v in fetched_data.values())
-                    logger.info(f"🔍 [RESOLVER] Fetched {total_fetched} records for {len(fetched_data)} symbols from {provider_code}.")
+                    logger.info(f"🔍 Fetched {total_fetched} records for {len(fetched_data)} symbols from {provider_code}.")
 
                     # Save to DB
                     # We reuse the logic from _resolve_prices but adapted for this context
@@ -734,7 +734,7 @@ class DataResolver:
                         total_updated += result.rowcount
 
                     await session.commit()
-                    logger.info(f"🔍 [RESOLVER] Immediate resolution updated {total_updated} records.")
+                    logger.info(f"🔍 Immediate resolution updated {total_updated} records.")
 
             except Exception as e:
-                logger.error(f"🔍 [RESOLVER] Error in resolve_specific_records: {e}", exc_info=True)
+                logger.error(f"🔍 Error in resolve_specific_records: {e}", exc_info=True)

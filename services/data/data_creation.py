@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, date
 from typing import List
 import pytz
 
@@ -27,20 +27,20 @@ class DataCreationService:
         """List the names of all exchanges being monitored."""
         return [exchange.name for exchange in self.exchanges]
 
-    async def start_data_creation(self, offset_days: int = 0) -> None:
+    async def start_data_creation(self, target_date: date) -> None:
         """
         Create Data Records for the future for all monitored exchanges.
         this includes record for intraday and daily data.
 
         Args:
-            offset_days: Number of days to offset from today (default: 0)
+            target_date: The specific date to create records for (YYYY-MM-DD)
         """
         # Run tasks sequentially to avoid sharing the same session concurrently
         for exchange in self.exchanges:
-            await self._create_data_records_for_exchange(exchange, offset_days)
+            await self._create_data_records_for_exchange(exchange, target_date)
 
     async def _create_data_records_for_exchange(
-        self, exchange: Exchange, offset_days: int = 0
+        self, exchange: Exchange, target_date: date
     ) -> None:
         """Create data records for a specific exchange."""
         # Refresh the exchange object to ensure attributes are loaded and not expired
@@ -51,8 +51,9 @@ class DataCreationService:
         try:
             # Calculate target date and times
             tz = pytz.timezone(exchange.timezone)
-            now = datetime.now(tz)
-            target_date = now.date() + timedelta(days=offset_days)
+            # Ensure target_date is a date object
+            if isinstance(target_date, datetime):
+                target_date = target_date.date()
 
             # Check for holidays or special sessions
             stmt_holiday = select(ExchangeHoliday).where(
@@ -88,7 +89,7 @@ class DataCreationService:
             end_dt = tz.localize(datetime.combine(target_date, market_close))
 
             logger.info(
-                f"Creating data records for {exchange_name} on {target_date} (Offset: {offset_days})"
+                f"Creating data records for {exchange_name} on {target_date}"
             )
 
             # Fetch active instruments for this exchange
@@ -108,7 +109,9 @@ class DataCreationService:
             # Generate 5-minute intervals
             five_minute_datetimes = []
             current_dt = start_dt
-            while current_dt <= end_dt:
+            # Use < end_dt because the timestamp represents the start of the interval.
+            # A candle starting at market_close_time would be outside trading hours.
+            while current_dt < end_dt:
                 five_minute_datetimes.append(current_dt)
                 current_dt += timedelta(minutes=exchange.interval_minutes)
 
@@ -126,26 +129,24 @@ class DataCreationService:
             existing_daily_result = await self.session.execute(existing_daily_stmt)
             existing_daily_ids = set(existing_daily_result.scalars().all())
 
-            # Check for existing intraday records (skip if any exist for the day to avoid partial insertion complexity)
-            # NOTE: This means if you are trying to backfill pre-market data for a day that already has market data,
-            # this will skip it. You would need to clear the day's data to regenerate everything.
+            # Check for existing intraday records for the specific timestamps we want to create
+            # We need to check which specific timestamps already exist for each instrument
             existing_intraday_stmt = (
-                select(PriceHistoryIntraday.instrument_id)
+                select(PriceHistoryIntraday.instrument_id, PriceHistoryIntraday.datetime)
                 .where(
                     PriceHistoryIntraday.instrument_id.in_([i.id for i in instruments]),
-                    PriceHistoryIntraday.datetime
-                    >= tz.localize(datetime.combine(target_date, time.min)),
-                    PriceHistoryIntraday.datetime
-                    < tz.localize(
-                        datetime.combine(target_date + timedelta(days=1), time.min)
-                    ),
+                    PriceHistoryIntraday.datetime >= start_dt,
+                    PriceHistoryIntraday.datetime < end_dt,
                 )
-                .group_by(PriceHistoryIntraday.instrument_id)
             )
             existing_intraday_result = await self.session.execute(
                 existing_intraday_stmt
             )
-            existing_intraday_ids = set(existing_intraday_result.scalars().all())
+
+            # Create a set of (instrument_id, datetime) tuples for existing records
+            existing_intraday_records = set()
+            for row in existing_intraday_result:
+                existing_intraday_records.add((row[0], row[1]))
 
             intraday_records = []
             daily_records = []
@@ -161,8 +162,8 @@ class DataCreationService:
                     daily_records.append(daily_record)
 
                 # Create Intraday Records if they don't exist
-                if instrument.id not in existing_intraday_ids:
-                    for dt in five_minute_datetimes:
+                for dt in five_minute_datetimes:
+                    if (instrument.id, dt) not in existing_intraday_records:
                         intraday_record = PriceHistoryIntraday(
                             instrument_id=instrument.id,
                             datetime=dt,

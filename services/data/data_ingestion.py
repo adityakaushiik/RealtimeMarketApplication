@@ -167,6 +167,10 @@ class LiveDataIngestion:
         provider_code: str,
     ):
         """Save data to timeseries (now includes provider_code for tracking)."""
+
+        if timestamp <= 0:
+            return
+
         try:
             await self.redis_timeseries.add_to_timeseries(
                 symbol, timestamp=timestamp, price=price, volume=volume
@@ -383,8 +387,8 @@ class LiveDataIngestion:
                 self.stats_symbol_counts = {}
 
                 logger.info(f"📊 Ingestion Stats (10s): Queue={q_size}, Processed={count}, UniqueSymbols={unique_symbols}, ActiveTasks={active_tasks}")
-                if count > 0:
-                    logger.info(f"   Top symbols: {top_symbols}")
+                # if count > 0:
+                #     logger.info(f"   Top symbols: {top_symbols}")
 
             except asyncio.CancelledError:
                 break
