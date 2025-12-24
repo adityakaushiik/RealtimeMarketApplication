@@ -81,6 +81,12 @@ class DhanHQProvider(BaseMarketDataProvider):
         # Track last processed data to detect duplicates
         self._last_tick_times: Dict[str, int] = {}
 
+        # Map to store latest tick data for each symbol
+        self.symbol_tick_map: Dict[str, Dict[str, Any]] = {}
+
+        # Task for periodic printing
+        self._print_task: Optional[asyncio.Task] = None
+
         # Stats
         self.stats_tick_count = 0
         self.stats_duplicate_count = 0
@@ -160,6 +166,9 @@ class DhanHQProvider(BaseMarketDataProvider):
 
         self.is_connected = True
         logger.info("DhanHQProvider WebSocket connection initiated")
+
+        # Start the periodic printing task
+        self._print_task = asyncio.create_task(self._print_symbol_map_periodically())
 
     def _run_ws_in_thread(self):
         """Run WebSocket in a separate thread with its own event loop."""
@@ -306,8 +315,19 @@ class DhanHQProvider(BaseMarketDataProvider):
         if ts < 10000000000:
             ts = ts * 1000
 
+        # Map security_id to internal symbol
+        internal_symbol = self.provider_manager.get_internal_symbol_sync("DHAN_HQ", symbol) if self.provider_manager else symbol
+
+        # Update the symbol tick map
+        self.symbol_tick_map[internal_symbol] = {
+            "price": float(price),
+            "volume": float(volume),
+            "timestamp": ts,
+            "last_update": datetime.now(timezone.utc)
+        }
+
         ingestion_data = DataIngestionFormat(
-            symbol=symbol,
+            symbol=internal_symbol,
             price=float(price),
             volume=float(volume),
             timestamp=ts,
@@ -320,6 +340,16 @@ class DhanHQProvider(BaseMarketDataProvider):
         if self.stats_tick_count % 500 == 0:
             logger.info(f"DhanHQProvider: {self.stats_tick_count} ticks received")
 
+    async def _print_symbol_map_periodically(self):
+        """Print the symbol tick map every 5 minutes."""
+        while self._running:
+            await asyncio.sleep(300)  # 5 minutes
+            if not self._running:
+                break
+            logger.info("Printing symbol tick map:")
+            for symbol, data in self.symbol_tick_map.items():
+                logger.info(f"  {symbol}: price={data['price']}, volume={data['volume']}, timestamp={data['timestamp']}, last_update={data['last_update']}")
+
     def disconnect_websocket(self):
         """Disconnect from Dhan WebSocket."""
         logger.info("Disconnecting DhanHQProvider...")
@@ -328,6 +358,10 @@ class DhanHQProvider(BaseMarketDataProvider):
         if self._ws_task:
             self._ws_task.cancel()
             self._ws_task = None
+
+        if self._print_task:
+            self._print_task.cancel()
+            self._print_task = None
 
         # Note: WebSocket will be closed by the context manager in _run_websocket
         self.ws = None

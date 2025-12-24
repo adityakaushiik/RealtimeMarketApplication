@@ -23,7 +23,7 @@ import json
 import struct
 import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 import pytz
 
 import websockets
@@ -351,7 +351,7 @@ class DhanProvider(BaseMarketDataProvider):
             msg_len = struct.unpack('<H', message[1:3])[0]
             exchange_segment = struct.unpack('<B', message[3:4])[0]
             security_id = struct.unpack('<I', message[4:8])[0]
-            
+
             # Map exchange segment code to string
             exchange_str = self.EXCHANGE_MAP.get(exchange_segment, str(exchange_segment))
             
@@ -359,17 +359,23 @@ class DhanProvider(BaseMarketDataProvider):
             data = {}
             
             if response_code == FeedResponseCode.TICKER:
-                # 9-12: LTP (Last Traded Price) (float32)
-                # 13-16: LTT (Last Traded Time) (int32)
+                # Ticker Packet (16 bytes)
+                # 0-8: Header
+                # 9-12: LTP (float32)
+                # 13-16: LTT (int32)
+
+                if len(message) < 16:
+                    return
+
                 ltp = struct.unpack('<f', message[8:12])[0]
-                ltt = struct.unpack('<I', message[12:16])[0]
-                
+                ltt = struct.unpack('<i', message[12:16])[0] # Using <i for signed int32 (Epoch)
+
                 data = {
                     "symbol": str(security_id),
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
-                    "volume": 0  # Ticker doesn't have volume
+                    "volume": 0
                 }
                 
             elif response_code == FeedResponseCode.QUOTE:
@@ -390,15 +396,18 @@ class DhanProvider(BaseMarketDataProvider):
                 # 46-49: Low (float32)
 
                 ltp = struct.unpack('<f', message[8:12])[0]
-                ltq = struct.unpack('<H', message[12:14])[0]
-                ltt = struct.unpack('<I', message[14:18])[0]
+                ltq = struct.unpack('<H', message[12:14])[0] # Using <H for unsigned int16
+                ltt = struct.unpack('<i', message[14:18])[0] # Using <i for signed int32
+
+                # We can parse other fields if needed, but for now we need Price, Time, Volume
+                # volume = struct.unpack('<I', message[22:26])[0]
 
                 data = {
                     "symbol": str(security_id),
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
-                    "volume": float(ltq)
+                    "volume": float(ltq) # Using LTQ as volume for tick updates
                 }
                 
             elif response_code == FeedResponseCode.FULL:
@@ -430,7 +439,7 @@ class DhanProvider(BaseMarketDataProvider):
 
                 ltp = struct.unpack('<f', message[8:12])[0]
                 ltq = struct.unpack('<H', message[12:14])[0]
-                ltt = struct.unpack('<I', message[14:18])[0]
+                ltt = struct.unpack('<i', message[14:18])[0]
                 atp = struct.unpack('<f', message[18:22])[0]
                 volume = struct.unpack('<I', message[22:26])[0]
                 total_sell_qty = struct.unpack('<I', message[26:30])[0]
@@ -448,17 +457,7 @@ class DhanProvider(BaseMarketDataProvider):
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
-                    "volume": float(ltq),  # Use LTQ for tick volume
-                    # Additional fields available for future use:
-                    # "atp": atp,
-                    # "total_volume": volume,
-                    # "total_sell_qty": total_sell_qty,
-                    # "total_buy_qty": total_buy_qty,
-                    # "oi": oi,
-                    # "open": open_price,
-                    # "close": close_price,
-                    # "high": high_price,
-                    # "low": low_price,
+                    "volume": float(ltq),
                 }
 
             elif response_code == FeedResponseCode.DISCONNECT:
@@ -466,14 +465,11 @@ class DhanProvider(BaseMarketDataProvider):
                 return
 
             if data:
-                # Send to callback
-                # Convert timestamp to milliseconds if it's in seconds
-                ts = int(data['timestamp'])
-
-                ts = ts - 19800
-
-                if ts < 10000000000: # Less than 10 billion, likely seconds
-                    ts = ts * 1000
+                # Use system time for timestamp to ensure:
+                # 1. Millisecond precision (Dhan provides seconds, causing overwrites in Redis TS)
+                # 2. Monotonically increasing timestamps for every update (captures all ticks)
+                # 3. No IST/UTC offset issues
+                ts = int(time.time() * 1000)
 
                 self.callback(
                     DataIngestionFormat(
