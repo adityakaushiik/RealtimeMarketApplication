@@ -1,17 +1,10 @@
 services:
 
-  # Redis Stack (TimeSeries, Search, JSON, etc.)
   redis:
     image: redis/redis-stack-server:latest
     ports:
       - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
-  # RedisInsight GUI
   redisinsight:
     image: redis/redisinsight:latest
     ports:
@@ -19,9 +12,20 @@ services:
     depends_on:
       - redis
 
-  # FastAPI App
-  fastapi:
+  frontend:
+    build:
+      context: ../RealtimeMarketApplicationFrontend
+    container_name: frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+  backend:
     build: .
+    container_name: backend
+    env_file:
+      - .env
     ports:
       - "8000:8000"
     depends_on:
@@ -29,4 +33,3 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_URL: redis://redis:6379
-      # TEMPORAL_HOST: temporal:7233  # Commented out since Temporal is removed; update your app code to use external Temporal host
