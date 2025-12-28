@@ -7,7 +7,7 @@ from config.database_config import get_db_session
 from models import User
 from features.auth.auth_schema import LoginResponse, LoginRequest
 from features.user.user_service import create_user
-from features.user.user_schema import UserWithPassword, UserInDb
+from features.user.user_schema import UserWithPassword, UserInDb, UserCreate
 from features.auth.auth_service import authenticate_user, create_access_token
 
 auth_router = APIRouter(
@@ -67,13 +67,7 @@ async def register(
             )
 
     # Create new user
-    user = await create_user(
-        session,
-        email=payload.email,
-        fname=payload.fname,
-        lname=payload.lname,
-        username=payload.username,
-        profile_picture_url=payload.profile_picture_url,
-        plain_password=payload.hashed_password,
-    )
+    user_data = UserCreate(**payload.model_dump())
+    user = await create_user(session, user_data)
+
     return user

@@ -23,7 +23,7 @@ import json
 import struct
 import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Any, Dict
+from typing import List, Optional, Any
 import pytz
 
 import websockets
@@ -523,6 +523,10 @@ class DhanProvider(BaseMarketDataProvider):
 
     def disconnect_websocket(self):
         """Disconnect from Dhan WebSocket."""
+        # Send disconnect message to server if connected
+        if self.ws and self.is_connected:
+            asyncio.create_task(self._send_disconnect_message())
+
         self._running = False
         if self._connection_task:
             self._connection_task.cancel()
@@ -530,6 +534,14 @@ class DhanProvider(BaseMarketDataProvider):
             self._token_refresh_task.cancel()
         self.is_connected = False
         logger.info("Dhan WebSocket disconnected")
+
+    async def _send_disconnect_message(self):
+        """Send disconnect request to Dhan server"""
+        try:
+            await self.ws.send(json.dumps({"RequestCode": 12}))
+            logger.info("Sent disconnect request to Dhan server")
+        except Exception as e:
+            logger.warning(f"Error sending disconnect message: {e}")
 
     def subscribe_symbols(self, symbols: list[str]):
         """Add new symbols to subscription"""
@@ -782,3 +794,4 @@ class DhanProvider(BaseMarketDataProvider):
             results[instrument.symbol] = history
 
         return results
+

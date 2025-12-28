@@ -24,7 +24,10 @@ def get_database_engine(echo: bool = False) -> AsyncEngine:
         _DATABASE_ENGINE = create_async_engine(
             _build_async_database_url(database_url),
             echo=echo,
-            # pool_pre_ping=True,  # Disabled to prevent MissingGreenlet error with asyncpg
+            pool_pre_ping=True,  # Check connection before use
+            pool_recycle=3600,  # Recycle connections after 1 hour
+            pool_size=10,
+            max_overflow=20,
         )
     return _DATABASE_ENGINE
 

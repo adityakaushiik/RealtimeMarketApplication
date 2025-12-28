@@ -4,6 +4,7 @@ from sqlalchemy import select
 from features.auth.auth_service import hash_password
 from models import User
 from features.user.user_schema import UserInDb, UserCreate, UserUpdate
+from utils.common_constants import UserRoles
 
 
 async def create_user(
@@ -19,6 +20,7 @@ async def create_user(
         lname=user_data.lname,
         username=user_data.username,
         profile_picture_url=user_data.profile_picture_url,
+        role_id=UserRoles.VIEWER.value
     )
     session.add(new_user)
     await session.commit()
