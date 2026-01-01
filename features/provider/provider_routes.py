@@ -15,7 +15,7 @@ from features.provider.provider_schema import (
 )
 from features.provider import provider_service
 from models import ProviderInstrumentMapping
-from utils.common_constants import UserRoles
+from utils.common_constants import UserRoles, is_admin
 
 provider_router = APIRouter(
     prefix="/provider",
@@ -89,9 +89,11 @@ async def create_provider_instrument_mapping(
             detail="Provider not found",
         )
 
+    only_active = not is_admin(user_claims)
+
     ## Validate instrument exists
     instrument = await instrument_service.get_instrument_by_id(
-        session, mapping_data.instrument_id
+        session, mapping_data.instrument_id, only_active=only_active
     )
     if not instrument:
         raise HTTPException(
@@ -122,9 +124,11 @@ async def update_provider_instrument_mapping(
             detail="Provider not found",
         )
 
+    only_active = not is_admin(user_claims)
+
     ## Validate instrument exists
     instrument = await instrument_service.get_instrument_by_id(
-        session, mapping_data.instrument_id
+        session, mapping_data.instrument_id, only_active=only_active
     )
     if not instrument:
         raise HTTPException(

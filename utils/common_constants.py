@@ -36,3 +36,8 @@ class DataBroadcastFormat(BaseModelPy):
 
 class DataIngestionFormat(DataBroadcastFormat):
     provider_code: str
+
+
+def is_admin(user_claims: dict) -> bool:
+    roles = user_claims.get("roles", [])
+    return UserRoles.ADMIN.value in roles

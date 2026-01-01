@@ -11,17 +11,13 @@ from features.instruments.instrument_schema import (
     InstrumentInDb,
 )
 from models import Instrument, Exchange
-from utils.common_constants import UserRoles
+from utils.common_constants import UserRoles, is_admin
 
 instrument_router = APIRouter(
     prefix="/instrument",
     tags=["instruments"],
 )
 
-
-def is_admin(user_claims: dict) -> bool:
-    roles = user_claims.get("roles", [])
-    return UserRoles.ADMIN.value in roles
 
 # Existing routes
 @instrument_router.get("/list/{exchange}")
