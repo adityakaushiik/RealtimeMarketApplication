@@ -1,3 +1,5 @@
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +10,8 @@ from models import User
 from features.auth.auth_schema import LoginResponse, LoginRequest
 from features.user.user_service import create_user
 from features.user.user_schema import UserWithPassword, UserInDb, UserCreate
-from features.auth.auth_service import authenticate_user, create_access_token
+from features.auth.auth_service import authenticate_user, create_access_token, require_auth
+from utils.common_constants import UserRoles
 
 auth_router = APIRouter(
     prefix="/auth",

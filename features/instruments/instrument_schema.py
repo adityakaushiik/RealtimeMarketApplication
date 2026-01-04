@@ -11,7 +11,7 @@ class InstrumentBase(BaseModelPy):
     sector_id: Optional[int] = None
     blacklisted: bool = False
     delisted: bool = False
-    should_record_data: bool = False
+    should_record_data: bool
 
 
 class InstrumentCreate(InstrumentBase):

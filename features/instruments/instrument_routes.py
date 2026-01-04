@@ -24,6 +24,7 @@ instrument_router = APIRouter(
 async def list_instruments(
     exchange: str,
     limit: int = 50,
+    instrument_type_id: int | None = None,
     user_claims: dict = Depends(require_auth()),
     session: AsyncSession = Depends(get_db_session),
 ):
@@ -41,6 +42,9 @@ async def list_instruments(
     stmt = select(Instrument).where(Instrument.exchange_id == exchange_obj.id)
     if not is_admin(user_claims):
         stmt = stmt.where(Instrument.is_active == True)
+
+    if instrument_type_id is not None:
+        stmt = stmt.where(Instrument.instrument_type_id == instrument_type_id)
 
     stmt = stmt.limit(limit)
 
@@ -104,17 +108,6 @@ async def create_instrument(
     instrument = await instrument_service.create_instrument(session, instrument_data)
     return instrument
 
-
-@instrument_router.get("/", response_model=list[InstrumentInDb])
-async def list_all_instruments(
-    user_claims: dict = Depends(require_auth()),
-    session: AsyncSession = Depends(get_db_session),
-):
-    """Get all instruments"""
-    only_active = not is_admin(user_claims)
-    return await instrument_service.get_all_instruments(session, only_active=True)
-
-
 @instrument_router.get("/search")
 async def search_instruments(
     query: str,
@@ -134,6 +127,22 @@ async def get_instrument(
     """Get instrument by ID"""
     only_active = not is_admin(user_claims)
     instrument = await instrument_service.get_instrument_by_id(session, instrument_id, only_active=only_active)
+    if not instrument:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Instrument not found"
+        )
+    return instrument
+
+
+@instrument_router.get("/by-symbol/{symbol}", response_model=InstrumentInDb)
+async def get_instrument_by_symbol(
+    symbol: str,
+    user_claims: dict = Depends(require_auth()),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Get instrument by symbol (without exchange)"""
+    only_active = not is_admin(user_claims)
+    instrument = await instrument_service.get_instrument_by_symbol(session, symbol, only_active=only_active)
     if not instrument:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Instrument not found"

@@ -30,6 +30,9 @@ class User(Base, BaseMixin):
     blacklisted: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
+    status: Mapped[int] = mapped_column(
+        Integer, server_default="0", nullable=False
+    )
 
     role_id: Mapped[int | None] = mapped_column(
         ForeignKey("roles.id"), nullable=True, index=True

@@ -13,6 +13,7 @@ from .exchange_provider_mapping import ExchangeProviderMapping
 from .provider_instrument_mapping import ProviderInstrumentMapping
 from .user import User, Role
 from .watchlist import Watchlist, WatchlistItem
+from .suggestion import Suggestion, SuggestionType
 
 __all__ = [
     "Base",
@@ -27,7 +28,8 @@ __all__ = [
     "ProviderInstrumentMapping",
     "User",
     "Role",
-    "ExchangeHoliday",
     "Watchlist",
     "WatchlistItem",
+    "Suggestion",
+    "SuggestionType",
 ]

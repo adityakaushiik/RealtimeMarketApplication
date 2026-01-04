@@ -27,9 +27,12 @@ class UserUpdate(BaseModelPy):
     profile_picture_url: Optional[str] = None
     blacklisted: Optional[bool] = None
     role_id: Optional[int] = None
+    status: Optional[int] = None
 
 
 class UserInDb(UserBase):
     id: int
     blacklisted: bool
     role_id: Optional[int] = None
+    is_active: bool
+    status: int

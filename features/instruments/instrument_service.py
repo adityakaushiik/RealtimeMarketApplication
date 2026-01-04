@@ -171,6 +171,7 @@ async def get_instrument_by_symbol(
 async def get_all_instruments(
     session: AsyncSession,
     only_active: bool = True,
+    instrument_type_id: int | None = None,
 ) -> list[InstrumentInDb]:
     """Get all instruments"""
     stmt = select(Instrument)
@@ -189,6 +190,7 @@ async def get_all_instruments(
             sector_id=i.sector_id,
             blacklisted=i.blacklisted,
             delisted=i.delisted,
+            should_record_data=i.should_record_data,
             is_active=i.is_active,
         )
         for i in instruments
@@ -293,6 +295,7 @@ async def search_instruments(
             blacklisted=i.blacklisted,
             delisted=i.delisted,
             is_active=i.is_active,
+            should_record_data=i.should_record_data,
         )
         for i in instruments
     ]
@@ -309,7 +312,7 @@ async def toggle_instrument_recording(
     """
     stmt = select(Instrument).where(Instrument.id == instrument_id)
     result = await session.execute(stmt)
-    instrument = result.scalar_one_or_none()
+    instrument : Instrument = result.scalar_one_or_none()
 
     if not instrument:
         return None

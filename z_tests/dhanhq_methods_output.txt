@@ -1,0 +1,35 @@
+All dhanhq instance methods:
+  cancel_forever
+  cancel_order
+  convert_position
+  convert_to_date_time
+  edis_inquiry
+  expiry_list
+  fetch_security_list
+  generate_tpin
+  get_forever
+  get_fund_limits
+  get_holdings
+  get_order_by_correlationID
+  get_order_by_id
+  get_order_list
+  get_positions
+  get_trade_book
+  get_trade_history
+  historical_daily_data
+  intraday_minute_data
+  kill_switch
+  ledger_report
+  margin_calculator
+  modify_forever
+  modify_order
+  ohlc_data
+  open_browser_for_tpin
+  option_chain
+  place_forever
+  place_order
+  place_slice_order
+  quote_data
+  ticker_data
+
+Chart-related methods: ['historical_daily_data', 'intraday_minute_data', 'ohlc_data']

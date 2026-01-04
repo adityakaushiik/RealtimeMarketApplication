@@ -20,9 +20,11 @@ from features.instruments.instrument_schema import InstrumentCreate
 from features.populate_database.populate_database_router import populate_database_route
 from features.provider.provider_routes import provider_router
 from features.sector.sector_routes import sector_router
+from features.user.user_routes import user_router
 from features.websocket.web_socket_routes import websocket_route
 from features.marketdata.marketdata_routes import marketdata_router  # added
 from features.watchlist.watchlist_routes import watchlist_router
+from features.suggestion.suggestion_router import router as suggestion_router
 from services.data.data_ingestion import LiveDataIngestion, get_provider_manager
 from services.data.data_saver import DataSaver
 from services.data.data_resolver import DataResolver
@@ -72,7 +74,7 @@ async def lifespan(app: FastAPI):
     provider_manager.callback = live_data_ingestion.handle_market_data
     await provider_manager.initialize() # Ensure mappings are loaded before use
     live_data_ingestion.provider_manager = provider_manager
-    
+
     asyncio.create_task(live_data_ingestion.start_ingestion())
 
     logger.info("Task - 1.1. Checking for data gaps...")
@@ -203,3 +205,5 @@ app.include_router(watchlist_router)
 app.include_router(populate_database_route)
 app.include_router(sector_router)
 app.include_router(instrument_type_router)
+app.include_router(user_router)
+app.include_router(suggestion_router)

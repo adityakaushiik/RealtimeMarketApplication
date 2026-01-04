@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional
 import jwt
 from fastapi import HTTPException, Request, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pwdlib import PasswordHash
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
@@ -12,7 +13,6 @@ from config.settings import get_settings
 from features.user.user_schema import UserInDb
 from models.user import User
 from utils.common_constants import UserRoles
-from pwdlib import PasswordHash
 
 # Reusable bearer scheme instance
 bearer_scheme = HTTPBearer(auto_error=True)
@@ -44,7 +44,7 @@ async def authenticate_user(
         return None
     if not verify_password(password, user.hashed_password):
         return None
-    return UserInDb.validate(user)
+    return UserInDb.model_validate(user)
 
 
 def create_access_token(data: dict, expires_delta_in_days: Optional[float] = 2) -> str:
@@ -131,3 +131,4 @@ def require_auth(
         return payload
 
     return dependency
+
