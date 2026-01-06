@@ -2,7 +2,7 @@ import asyncio
 import time
 import pytz
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ from models.price_history_daily import PriceHistoryDaily
 from config.database_config import get_db_session
 from config.logger import logger
 from config.redis_config import get_redis
+from utils.data_validation import validate_ohlc, validate_volume
 
 
 class DataSaver:
@@ -274,8 +275,6 @@ class DataSaver:
                     valid_items.sort(key=lambda x: x[0])
 
                     for instrument_id, symbol, data in valid_items:
-                        # instrument_id is already unpacked
-
                         # Extract scalar values
                         ts = data["ts"]
                         open_val = data["open"]
@@ -290,17 +289,26 @@ class DataSaver:
                         if open_val is None:  # Skip if no data in this bucket
                             continue
 
-                        # Use UTC timezone for record_dt to match DB storage
-                        # The timestamp from Redis is the START of the bucket.
-                        # For 10:00-10:05 bucket, Redis returns 10:00 timestamp.
-                        # This matches our DB record for 10:00.
+                        # C2: Validate and fix OHLC data
+                        ohlc_result = validate_ohlc(open_val, high_val, low_val, close_val, vol_val, fix=True)
+                        if not ohlc_result['valid'] and ohlc_result['fixed']:
+                            logger.warning(f"[{exchange.name}] Fixed OHLC for {symbol}: {ohlc_result['errors']}")
+                            open_val = ohlc_result['data']['open']
+                            high_val = ohlc_result['data']['high']
+                            low_val = ohlc_result['data']['low']
+                            close_val = ohlc_result['data']['close']
+
+                        # B4: Validate volume
+                        vol_result = validate_volume(vol_val)
+                        if vol_result['warnings']:
+                            logger.warning(f"[{exchange.name}] Volume warning for {symbol}: {vol_result['warnings']}")
+                        vol_val = vol_result['volume']
+
                         record_dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
 
                         # Log tick count for monitoring data quality
                         if tick_count < 10:
                             logger.warning(f"[{exchange.name}] Low tick count for {symbol} at {record_dt}: {tick_count} ticks")
-                        else:
-                            logger.info(f"[{exchange.name}] Saving {symbol} at {record_dt}: {tick_count} ticks")
 
                         # Update Intraday Record
                         stmt = (

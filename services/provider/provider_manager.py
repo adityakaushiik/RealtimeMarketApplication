@@ -4,7 +4,8 @@ Routes symbols to appropriate providers based on exchange mappings from database
 """
 
 import asyncio
-from typing import Dict, Optional
+import json
+from typing import Dict, Optional, Any
 
 from sqlalchemy import select
 
@@ -22,7 +23,11 @@ from models import (
 from services.provider.base_provider import BaseMarketDataProvider
 from services.provider.yahoo_provider import YahooFinanceProvider
 from services.provider.dhan_provider import DhanProvider
-from services.provider.dhan_hq_provider import DhanHQProvider
+
+try:
+    from config.redis_config import get_redis
+except ImportError:
+    get_redis = None
 
 
 class ProviderManager:
@@ -35,12 +40,16 @@ class ProviderManager:
       Useful to translate inbound provider-specific symbols back to internal canonical symbols.
     """
 
+    REDIS_KEY_SYMBOL_MAP = "provider_manager:symbol_map"
+    REDIS_KEY_TYPE_MAP = "provider_manager:instrument_type_map"
+
     def __init__(self):
         self.callback = None
         self.providers: Dict[str, BaseMarketDataProvider] = {}
 
 
         self.exchange_to_provider: Dict[int, str] = {}  # exchange_id -> provider_code
+        self.exchange_id_to_code: Dict[int, str] = {}  # exchange_id -> exchange_code ("NSE", "BSE")
         self.symbol_to_provider: Dict[
             str, str
         ] = {}  # internal symbol (provider search symbol currently) -> provider_code
@@ -55,6 +64,7 @@ class ProviderManager:
         # New: internal_to_search_map caches internal instrument symbol -> provider specific search code
         # Structure: {"YF": {"AAPL": "AAPL"}, "DHAN": {"RELIANCE": "RELIANCE-EQ"}}
         self.internal_to_search_map: Dict[str, Dict[str, str]] = {}
+        self.symbol_to_instrument_type: Dict[str, int] = {}  # internal symbol -> instrument_type_id
         self._initialized = False
 
     async def initialize(self):
@@ -94,6 +104,7 @@ class ProviderManager:
             # Build exchange -> provider mapping
             for mapping in mappings:
                 self.exchange_to_provider[mapping.id] = mapping.provider_code
+                self.exchange_id_to_code[mapping.id] = mapping.code
                 logger.info(f"Mapped {mapping.code} → {mapping.provider_code}")
 
             # Initialize provider instances
@@ -124,9 +135,6 @@ class ProviderManager:
             return YahooFinanceProvider(callback=self.callback)
         elif provider_code == "DHAN":
             return DhanProvider(callback=self.callback, provider_manager=self)
-        elif provider_code == "DHAN_HQ":
-            # Alternative Dhan implementation using official dhanhq library
-            return DhanHQProvider(callback=self.callback, provider_manager=self)
         else:
             logger.error(
                 f"Unknown provider code: {provider_code} - skipping initialization"
@@ -144,6 +152,14 @@ class ProviderManager:
         - Populates symbol_to_provider & symbol_to_exchange for quick lookups.
         - Populates provider_symbol_map with provider-specific search codes mapped back to internal instrument symbols.
         """
+        # Try loading from Redis first
+        if await self._load_from_redis():
+            # Reconstruct symbols_by_provider from internal maps for return value
+            symbols_by_provider = {}
+            for provider_code, search_map in self.provider_symbol_map.items():
+                symbols_by_provider[provider_code] = list(search_map.keys())
+            return symbols_by_provider
+
         symbols_by_provider: Dict[str, list[str]] = {}
 
         async for session in get_db_session():
@@ -153,6 +169,7 @@ class ProviderManager:
                     Instrument.id,
                     Instrument.symbol,  # internal canonical symbol
                     Instrument.exchange_id,
+                    Instrument.instrument_type_id,
                     ProviderInstrumentMapping.provider_instrument_search_code,  # provider specific search code
                     Provider.code.label("provider_code"),
                 )
@@ -182,6 +199,7 @@ class ProviderManager:
                 provider_code = row.provider_code
                 provider_search_code = row.provider_instrument_search_code
                 internal_symbol = row.symbol
+                instrument_type_id = row.instrument_type_id
 
                 if provider_code not in symbols_by_provider:
                     symbols_by_provider[provider_code] = []
@@ -201,9 +219,11 @@ class ProviderManager:
                 # IMPORTANT: We should also map the internal symbol to provider/exchange for reverse lookups
                 self.symbol_to_provider[internal_symbol] = provider_code
                 self.symbol_to_exchange[internal_symbol] = row.exchange_id
+                self.symbol_to_instrument_type[internal_symbol] = instrument_type_id
 
                 self.symbol_to_provider[provider_search_code] = provider_code
                 self.symbol_to_exchange[provider_search_code] = row.exchange_id
+                self.symbol_to_instrument_type[provider_search_code] = instrument_type_id
 
                 # provider_symbol_map holds provider search code -> internal instrument symbol
                 self.provider_symbol_map[provider_code][provider_search_code] = (
@@ -219,7 +239,69 @@ class ProviderManager:
             for provider_code, symbols in symbols_by_provider.items():
                 logger.info(f"  {provider_code}: {len(symbols)} symbols")
 
+            # Cache the newly loaded data
+            await self._save_to_redis()
+
         return symbols_by_provider
+
+    async def _load_from_redis(self) -> bool:
+        """Attempt to load symbol maps from Redis"""
+        if not get_redis:
+            return False
+
+        try:
+            redis = await get_redis()
+            cached_symbols = await redis.get(self.REDIS_KEY_SYMBOL_MAP)
+            cached_types = await redis.get(self.REDIS_KEY_TYPE_MAP)
+
+            if cached_symbols and cached_types:
+                data = json.loads(cached_symbols)
+
+                # Restore state
+                self.symbol_to_provider = data.get('symbol_to_provider', {})
+                self.symbol_to_exchange = data.get('symbol_to_exchange', {})
+                self.provider_symbol_map = data.get('provider_symbol_map', {})
+                self.internal_to_search_map = data.get('internal_to_search_map', {})
+
+                self.symbol_to_instrument_type = json.loads(cached_types)
+                logger.info("Loaded symbol mappings and instrument types from Redis cache.")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to load from Redis: {e}")
+
+        return False
+
+    async def _save_to_redis(self):
+        """Save current symbol maps to Redis"""
+        if not get_redis:
+            return
+
+        try:
+            redis = get_redis()
+
+            symbol_data = {
+                'symbol_to_provider': self.symbol_to_provider,
+                'symbol_to_exchange': self.symbol_to_exchange,
+                'provider_symbol_map': self.provider_symbol_map,
+                'internal_to_search_map': self.internal_to_search_map
+            }
+
+            await redis.set(self.REDIS_KEY_SYMBOL_MAP, json.dumps(symbol_data), ex=86400) # 24h ex
+            await redis.set(self.REDIS_KEY_TYPE_MAP, json.dumps(self.symbol_to_instrument_type), ex=86400)
+            logger.info("Saved symbol mappings to Redis.")
+        except Exception as e:
+            logger.error(f"Failed to save to Redis: {e}")
+
+    async def invalidate_cache(self):
+        """Clear the instrument cache in Redis"""
+        if not get_redis:
+            return
+        try:
+            redis = get_redis()
+            await redis.delete(self.REDIS_KEY_SYMBOL_MAP, self.REDIS_KEY_TYPE_MAP)
+            logger.info("Invalidated Redis symbol cache.")
+        except Exception as e:
+            logger.error(f"Error invalidating cache: {e}")
 
     async def get_provider_symbol_mapping(self) -> Dict[str, Dict[str, str]]:
         """
@@ -381,6 +463,18 @@ class ProviderManager:
     def get_provider_for_symbol(self, symbol: str) -> Optional[str]:
         """Get the provider code for a given symbol"""
         return self.symbol_to_provider.get(symbol)
+
+    def get_instrument_type_id(self, symbol: str) -> Optional[int]:
+        """Get instrument type ID for a symbol"""
+        return self.symbol_to_instrument_type.get(symbol)
+
+    def get_exchange_id_for_symbol(self, symbol: str) -> Optional[int]:
+        """Get exchange ID for a symbol"""
+        return self.symbol_to_exchange.get(symbol)
+
+    def get_exchange_code(self, exchange_id: int) -> Optional[str]:
+        """Get exchange code (NSE, BSE, etc.) by ID"""
+        return self.exchange_id_to_code.get(exchange_id)
 
     def is_initialized(self) -> bool:
         """Check if provider manager is initialized"""

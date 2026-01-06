@@ -294,14 +294,24 @@ class DhanProvider(BaseMarketDataProvider):
             logger.warning("Cannot subscribe: WebSocket is not connected")
             return
 
-        instruments = self._prepare_instruments(symbols)
+        instruments = []
+        for symbol in symbols:
+            # We need to resolve the internal symbol first to get instrument_type_id
+            internal_symbol = self.provider_manager.resolve_internal_symbol("DHAN", symbol) if self.provider_manager else symbol
+            if asyncio.iscoroutine(internal_symbol):
+                internal_symbol = await internal_symbol
+
+            instrument_tuple = self._prepare_single_instrument(symbol, internal_symbol)
+            if instrument_tuple:
+                instruments.append(instrument_tuple)
+
         if not instruments:
             logger.warning("No valid instruments to subscribe")
             return
         
         # Group by request code (15 for Ticker, 17 for Quote, 21 for Full)
-        # Using 21 (Full) to get maximum data including OHLC and market depth
-        request_code = FeedRequestCode.SUBSCRIBE_FULL
+        # Using 17 (Quote) as requested to get cleaner data stream instead of full depth
+        request_code = FeedRequestCode.SUBSCRIBE_QUOTE
 
         # Split into chunks of 100 (API limit)
         chunk_size = 100
@@ -399,15 +409,16 @@ class DhanProvider(BaseMarketDataProvider):
                 ltq = struct.unpack('<H', message[12:14])[0] # Using <H for unsigned int16
                 ltt = struct.unpack('<i', message[14:18])[0] # Using <i for signed int32
 
-                # We can parse other fields if needed, but for now we need Price, Time, Volume
-                # volume = struct.unpack('<I', message[22:26])[0]
+                # Parse other fields if needed
+                volume_full = struct.unpack('<I', message[22:26])[0]  # Total volume for the day
 
                 data = {
                     "symbol": str(security_id),
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
-                    "volume": float(ltq) # Using LTQ as volume for tick updates
+                    "volume": float(ltq), # Using LTQ as volume for tick updates (tick size)
+                    "total_volume": float(volume_full) # Cumulative volume for the day
                 }
                 
             elif response_code == FeedResponseCode.FULL:
@@ -458,6 +469,7 @@ class DhanProvider(BaseMarketDataProvider):
                     "price": ltp,
                     "timestamp": ltt,
                     "volume": float(ltq),
+                    "total_volume": float(volume), # Cumulative volume
                 }
 
             elif response_code == FeedResponseCode.DISCONNECT:
@@ -471,11 +483,15 @@ class DhanProvider(BaseMarketDataProvider):
                 # 3. No IST/UTC offset issues
                 ts = int(time.time() * 1000)
 
+                # Use total_volume if available for better accuracy, but RedisTimeseries expects "interval volume".
+                # For now we stick to tick volume (volume) but expose total_volume for debugging/future use.
+                vol_to_use = float(data.get('volume', 0))
+
                 self.callback(
                     DataIngestionFormat(
                         symbol=data['symbol'],
                         price=float(data['price']),
-                        volume=float(data['volume']),
+                        volume=vol_to_use,
                         timestamp=ts,
                         provider_code="DHAN",
                     )
@@ -484,42 +500,63 @@ class DhanProvider(BaseMarketDataProvider):
         except Exception as e:
             logger.error(f"Error parsing binary message: {e}")
 
-    def _prepare_instruments(self, symbols: list[str]) -> list[tuple]:
-        """Convert symbols to Dhan subscription format"""
-        instruments = []
-        
-        for symbol in symbols:
-            try:
-                exchange = "NSE_EQ"  # Default
-                sec_id = symbol
-                
-                if ":" in symbol:
-                    parts = symbol.split(":")
-                    if len(parts) == 2:
-                        exchange, sec_id = parts
-                elif "-" in symbol:
-                    sec_id = symbol.split("-")[0]
-                
-                # Normalize exchange
-                exchange = exchange.upper()
-                exchange = self.EXCHANGE_ALIAS.get(exchange, exchange)
+    def _prepare_single_instrument(self, provider_symbol: str, internal_symbol: str) -> Optional[tuple]:
+        """
+        Convert symbol to Dhan subscription format using instrument type from manager.
+        Returns (ExchangeSegment, SecurityId) tuple or None.
+        """
+        try:
+            sec_id = provider_symbol
+            exchange_seg = "NSE_EQ" # Default fallback
 
-                # Validate exchange is a valid string (e.g. NSE_EQ)
-                if exchange not in self.EXCHANGE_MAP_REV:
-                     logger.warning(f"Unknown exchange segment: {exchange} for symbol {symbol}")
-                
-                if not str(sec_id).isdigit():
-                    logger.warning(f"Security ID {sec_id} is not numeric. Dhan API expects numeric Security IDs.")
+            # If provider symbol has format "EXCHANGE:ID" or similar, parse it
+            if ":" in provider_symbol:
+                parts = provider_symbol.split(":")
+                if len(parts) == 2:
+                    # This path might be deprecated if we rely on manager's exchange info
+                    pass
 
-                instruments.append((exchange, sec_id))
-            except Exception as e:
-                logger.error(f"Error preparing instrument for {symbol}: {e}")
-                continue
-        
-        if not instruments:
-            logger.warning("No valid instruments found to subscribe")
-            
-        return instruments
+            if self.provider_manager:
+                # 1. Get Instrument Type ID
+                inst_type_id = self.provider_manager.get_instrument_type_id(internal_symbol)
+
+                # 2. Get Exchange ID -> Exchange Code AND Provider Code (Dhan)
+                # We need to know which exchange this symbol belongs to (NSE, BSE, MCX)
+                exchange_id = self.provider_manager.get_exchange_id_for_symbol(internal_symbol)
+                exchange_code = self.provider_manager.get_exchange_code(exchange_id) if exchange_id else "NSE"
+
+                # 3. Map based on SQL logic
+                # |1 |EQ |Equity | -> NSE_EQ / BSE_EQ
+                # |2 |INDEX |Market Index | -> IDX_I (Dhan constant for Index)
+                # |3 |CURR |Currency | -> NSE_CURRENCY
+                # |4 |OPT |Options | -> NSE_FNO / BSE_FNO
+                # |6 |FUT |Futures | -> NSE_FNO / BSE_FNO
+                # |9 |COMM |Commodity | -> MCX_COMM
+
+                if exchange_code == "NSE":
+                    if inst_type_id == 1: exchange_seg = "NSE_EQ"
+                    elif inst_type_id == 2: exchange_seg = "IDX_I" # or NSE_EQ depending on Dhan? Dhan uses IDX_I (0) for Indices
+                    elif inst_type_id == 3: exchange_seg = "NSE_CURRENCY"
+                    elif inst_type_id in (4, 6): exchange_seg = "NSE_FNO"
+                elif exchange_code == "BSE":
+                    if inst_type_id == 1: exchange_seg = "BSE_EQ"
+                    elif inst_type_id == 2: exchange_seg = "IDX_I" # BSE Index?
+                    elif inst_type_id in (4, 6): exchange_seg = "BSE_FNO"
+                elif exchange_code == "MCX":
+                    if inst_type_id == 9: exchange_seg = "MCX_COMM"
+
+            # If plain ID, use it. If "ID-EQ" format, split.
+            # Dhan usually expects just the numeric Security ID for the API
+            if "-" in sec_id:
+                sec_id = sec_id.split("-")[0]
+            elif ":" in sec_id:
+                sec_id = sec_id.split(":")[1]
+
+            return (exchange_seg, sec_id)
+
+        except Exception as e:
+            logger.error(f"Error preparing instrument {provider_symbol}: {e}")
+            return None
 
     def disconnect_websocket(self):
         """Disconnect from Dhan WebSocket."""
@@ -554,7 +591,17 @@ class DhanProvider(BaseMarketDataProvider):
         if not self.ws or not self.is_connected:
             return
 
-        instruments = self._prepare_instruments(symbols)
+        instruments = []
+        for symbol in symbols:
+            # We need to resolve the internal symbol first to get instrument_type_id
+            internal_symbol = self.provider_manager.resolve_internal_symbol("DHAN", symbol) if self.provider_manager else symbol
+            if asyncio.iscoroutine(internal_symbol):
+                internal_symbol = await internal_symbol
+
+            instrument_tuple = self._prepare_single_instrument(symbol, internal_symbol)
+            if instrument_tuple:
+                instruments.append(instrument_tuple)
+
         if not instruments:
             return
         
@@ -640,8 +687,24 @@ class DhanProvider(BaseMarketDataProvider):
                     continue
 
             # Determine exchange segment from instrument.exchange_id
-            exchange_segment = self.EXCHANGE_MAP.get(instrument.exchange_id, "NSE_EQ")
-            
+            exchange_segment = "NSE_EQ"
+
+            # Prepare security ID and exchange segment
+            if self.provider_manager:
+                internal_symbol = instrument.symbol
+
+                # Check mapping for instrument type based resolution
+                instrument_tuple = self._prepare_single_instrument(security_id, internal_symbol)
+
+                if instrument_tuple:
+                     exchange_segment, security_id = instrument_tuple
+                else:
+                    # Fallback to map if prepare_single fail or provider manager not ready?
+                    # The get_search_code above already did half the job for security_id
+                    exchange_segment = self.EXCHANGE_MAP.get(instrument.exchange_id, "NSE_EQ")
+            else:
+                 exchange_segment = self.EXCHANGE_MAP.get(instrument.exchange_id, "NSE_EQ")
+
             payload = {
                 "securityId": str(security_id),
                 "exchangeSegment": exchange_segment,
@@ -743,8 +806,22 @@ class DhanProvider(BaseMarketDataProvider):
                     logger.warning(f"Could not find securityId for {instrument.symbol} in Dhan provider")
                     continue
 
-            exchange_segment = self.EXCHANGE_MAP.get(instrument.exchange_id, "NSE_EQ")
-            
+            # Determine exchange segment
+            exchange_segment = "NSE_EQ"
+            if self.provider_manager:
+                 # Reuse local helper to get correct segment for instrument type
+                 internal_symbol = instrument.symbol
+                 instrument_tuple = self._prepare_single_instrument(security_id, internal_symbol)
+                 if instrument_tuple:
+                      exchange_segment, mapped_sec_id = instrument_tuple
+                      # Warning: _prepare_single_instrument might return trimmed security id?
+                      # It returns (exchange_seg, sec_id). Let's use it.
+                      security_id = mapped_sec_id
+                 else:
+                      exchange_segment = self.EXCHANGE_MAP.get(instrument.exchange_id, "NSE_EQ")
+            else:
+                 exchange_segment = self.EXCHANGE_MAP.get(instrument.exchange_id, "NSE_EQ")
+
             payload = {
                 "securityId": security_id,
                 "exchangeSegment": exchange_segment,

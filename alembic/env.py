@@ -39,6 +39,10 @@ from models import (
     Sector,
     User,
     Role,
+    Gate3Cycle,
+    Gate3Logs,
+Gate3CycleLog, Gate3DecisionLog, Gate3SecurityLog, Gate3ExecutionBlockLog
+
 )
 
 # add your model's MetaData object here

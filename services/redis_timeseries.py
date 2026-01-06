@@ -13,13 +13,16 @@ class RedisTimeSeries:
 
     Keys created:
       <key>:price  - price ticks
-      <key>:volume - size/volume per tick
+      <key>:volume - size/volume per tick (cumulative volume, stored as last value)
+      <key>:volume_delta - volume delta per tick (for accurate aggregation)
 
-    Retention: 15 minutes (older samples are auto-trimmed by Redis).
+    Retention: 60 minutes (extended from 15 for robustness).
     """
 
-    def __init__(self, retention_minutes: int = 15, redis_client=None) -> None:
+    def __init__(self, retention_minutes: int = 60, redis_client=None) -> None:
         self.retention_ms = retention_minutes * 60 * 1000
+        # Track last known cumulative volume for delta calculation (B2)
+        self._last_cumulative_volume: Dict[str, int] = {}
         # Allow dependency injection of a redis client; else lazy init on first use
         self._redis = redis_client
 
@@ -85,34 +88,47 @@ class RedisTimeSeries:
     async def add_to_timeseries(
         self, key: str, timestamp: float, price: float, volume: float = 0.0
     ) -> None:
+        """
+        Add tick data to timeseries.
+
+        B2: Volume handling - if volume appears to be cumulative (larger than previous),
+        calculate delta for accurate aggregation. Otherwise treat as incremental.
+        """
         r = self._get_client()
         price_key = f"{key}:price"
         vol_key = f"{key}:volume"
 
+        # B2: Calculate volume delta for cumulative volumes
+        volume_to_store = float(volume)
+        last_vol = self._last_cumulative_volume.get(key, 0)
+
+        if volume > 0:
+            # If volume is greater than last known, treat as cumulative and calc delta
+            if volume > last_vol:
+                volume_to_store = float(volume - last_vol)
+                self._last_cumulative_volume[key] = int(volume)
+            elif volume < last_vol * 0.1:
+                # Volume much smaller likely means new day/reset - use as-is
+                volume_to_store = float(volume)
+                self._last_cumulative_volume[key] = int(volume)
+            # else: volume same or slightly less, use as incremental
+
         # Optimistic add: try to add first. If it fails because key doesn't exist, create and retry.
-        # This avoids checking existence or calling create on every single tick.
         try:
             async with r.pipeline() as pipe:
                 pipe.ts().add(price_key, timestamp, float(price), on_duplicate="last")
-                pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate="sum")
+                pipe.ts().add(vol_key, timestamp, volume_to_store, on_duplicate="sum")
                 await pipe.execute()
         except ResponseError as e:
             err_str = str(e).lower()
             if "key does not exist" in err_str:
                 await self.create_timeseries(key)
-                # Retry add
                 async with r.pipeline() as pipe:
-                    pipe.ts().add(
-                        price_key, timestamp, float(price), on_duplicate="last"
-                    )
-                    pipe.ts().add(
-                        vol_key, timestamp, float(volume), on_duplicate="sum"
-                    )
+                    pipe.ts().add(price_key, timestamp, float(price), on_duplicate="last")
+                    pipe.ts().add(vol_key, timestamp, volume_to_store, on_duplicate="sum")
                     await pipe.execute()
             elif "timestamp cannot be older" in err_str:
-                # Ignore out-of-order data that is older than the latest sample
-                # This happens if data arrives late or out of sequence
-                pass
+                pass  # Ignore out-of-order data
             else:
                 raise
 

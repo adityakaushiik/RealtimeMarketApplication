@@ -11,6 +11,7 @@ from config.logger import logger
 from config.redis_config import get_redis
 from models import Instrument, PriceHistoryIntraday, PriceHistoryDaily
 from services.provider.provider_manager import ProviderManager
+from utils.data_validation import retry_with_backoff, validate_ohlc
 
 class DataResolver:
     """
@@ -425,18 +426,21 @@ class DataResolver:
                     if batch_max_dt.tzinfo is None:
                         batch_max_dt = batch_max_dt.replace(tzinfo=timezone.utc)
 
-                    # NOTE: We pass UTC datetimes to the provider.
-                    # The provider implementation is responsible for converting these to
-                    # the required format (e.g. local date string) if necessary,
-                    # using the instrument's exchange timezone if needed.
-                    # However, BaseMarketDataProvider interface doesn't take timezone info explicitly,
-                    # but it takes Instrument objects which have Exchange info.
+                    # C1: Wrap fetch with retry logic
+                    async def fetch_with_retry():
+                        return await fetch_method(
+                            instruments=provider_instruments,
+                            start_date=batch_min_dt,
+                            end_date=batch_max_dt
+                        )
 
-                    fetched_data = await fetch_method(
-                        instruments=provider_instruments,
-                        start_date=batch_min_dt,
-                        end_date=batch_max_dt
-                    )
+                    try:
+                        fetched_data = await retry_with_backoff(
+                            max_retries=2, base_delay=2.0, exceptions=(Exception,)
+                        )(fetch_with_retry)()
+                    except Exception as e:
+                        logger.error(f"🔍 Failed to fetch from {provider_code} after retries: {e}")
+                        continue
 
                     if not fetched_data:
                         logger.warning(f"🔍 No data returned from {provider_code}")
@@ -556,8 +560,31 @@ class DataResolver:
                         result = await session.execute(stmt)
                         total_updated += result.rowcount
 
+                    # Increment resolve_tries for all records in the requested range that still require resolution
+                    # This ensures that records for which no data was found are eventually ignored
+                    increment_stmt = (
+                        update(model)
+                        .where(
+                            model.instrument_id.in_(symbol_to_id.values()),
+                            model.datetime >= batch_min_dt,
+                            model.datetime <= batch_max_dt,
+                            model.resolve_required == True
+                        )
+                        .values(resolve_tries=model.resolve_tries + 1)
+                    )
+                    await session.execute(increment_stmt)
+
                     await session.commit()
                     logger.info(f"🔍 Updated/Inserted {total_updated} records for {provider_code}")
+
+                    # A1: Log records that remain unresolved after this batch
+                    expected_updates = len(records_dicts)
+                    if total_updated < expected_updates:
+                        unresolved = expected_updates - total_updated
+                        logger.warning(
+                            f"⚠️ {unresolved}/{expected_updates} records remain unresolved for {provider_code}. "
+                            f"Check for missing provider data or mapping issues."
+                        )
 
             except Exception as e:
                 logger.error(f"🔍 Error resolving prices for {table_name}: {e}", exc_info=True)
@@ -732,6 +759,20 @@ class DataResolver:
 
                         result = await session.execute(stmt)
                         total_updated += result.rowcount
+
+                    # Increment resolve_tries for all records in the requested range that still require resolution
+                    # This ensures that records for which no data was found are eventually ignored
+                    increment_stmt = (
+                        update(PriceHistoryIntraday)
+                        .where(
+                            PriceHistoryIntraday.instrument_id.in_(symbol_to_id.values()),
+                            PriceHistoryIntraday.datetime >= batch_min_dt,
+                            PriceHistoryIntraday.datetime <= batch_max_dt,
+                            PriceHistoryIntraday.resolve_required == True
+                        )
+                        .values(resolve_tries=PriceHistoryIntraday.resolve_tries + 1)
+                    )
+                    await session.execute(increment_stmt)
 
                     await session.commit()
                     logger.info(f"🔍 Immediate resolution updated {total_updated} records.")

@@ -1,4 +1,5 @@
 import asyncio
+import time
 from datetime import timezone, datetime, timedelta
 from typing import List, Optional
 
@@ -47,13 +48,15 @@ class YahooFinanceProvider(BaseMarketDataProvider):
     def message_handler(self, message: dict):
         """Handle incoming messages from Yahoo Finance WebSocket."""
         try:
+            ts = int(time.time() * 1000)
+
             # print(f"Yahoo Finance message received: {message}")
             self.callback(
                 DataIngestionFormat(
                     symbol=message["id"],
                     price=message["price"],
                     volume=message.get("day_volume", 0),
-                    timestamp=int(message["time"]),
+                    timestamp=ts,
                     provider_code="YF",
                 )
             )

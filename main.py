@@ -25,11 +25,13 @@ from features.websocket.web_socket_routes import websocket_route
 from features.marketdata.marketdata_routes import marketdata_router  # added
 from features.watchlist.watchlist_routes import watchlist_router
 from features.suggestion.suggestion_router import router as suggestion_router
+from features.health.health_routes import health_router
 from services.data.data_ingestion import LiveDataIngestion, get_provider_manager
 from services.data.data_saver import DataSaver
 from services.data.data_resolver import DataResolver
 from services.provider.provider_manager import ProviderManager
 from services.redis_subscriber import redis_subscriber
+from services.scheduled_jobs import get_scheduled_jobs
 from models import Exchange, Instrument, ProviderInstrumentMapping, PriceHistoryDaily
 
 import sentry_sdk
@@ -59,12 +61,13 @@ subscriber_task = None
 live_data_ingestion: LiveDataIngestion | None = None
 data_saver: DataSaver | None = None
 provider_manager : ProviderManager | None = None
+scheduled_jobs = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown."""
-    global subscriber_task, live_data_ingestion, data_broadcast, data_saver, provider_manager
+    global subscriber_task, live_data_ingestion, data_broadcast, data_saver, provider_manager, scheduled_jobs
 
     logger.info("Task - 1. Starting Live Data Ingestion...")
     live_data_ingestion = LiveDataIngestion()
@@ -77,9 +80,10 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(live_data_ingestion.start_ingestion())
 
-    logger.info("Task - 1.1. Checking for data gaps...")
+    # Task - 1.1. Checking for data gaps...
+    # Moved to scheduled_jobs to prevent race condition/double logging at startup
     data_resolver = DataResolver(live_data_ingestion.provider_manager)
-    asyncio.create_task(data_resolver.check_and_fill_gaps())
+    # asyncio.create_task(data_resolver.check_and_fill_gaps())
 
     # Start Subscriber
     logger.info("Task - 2. Starting Redis subscriber...")
@@ -106,6 +110,12 @@ async def lifespan(app: FastAPI):
     await data_saver.start_all_exchanges(
         interval_minutes=5
     )
+
+    # Task - 4. Start Scheduled Jobs (A4: periodic gap detection, A2: retry alerts, B3: volume reconciliation)
+    logger.info("Task - 4. Starting Scheduled Jobs...")
+    scheduled_jobs = get_scheduled_jobs()
+    scheduled_jobs.set_resolver(data_resolver)
+    await scheduled_jobs.start()
 
 
     # provider_manager : ProviderManager = get_provider_manager()
@@ -150,6 +160,11 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Stopping background tasks...")
+
+    # Stop scheduled jobs
+    if scheduled_jobs:
+        await scheduled_jobs.stop()
+
     # Stop data_saver
     if data_saver:
         await data_saver.stop_all_exchanges()
@@ -207,3 +222,4 @@ app.include_router(sector_router)
 app.include_router(instrument_type_router)
 app.include_router(user_router)
 app.include_router(suggestion_router)
+app.include_router(health_router)
