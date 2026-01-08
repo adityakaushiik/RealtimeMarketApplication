@@ -23,7 +23,7 @@ instrument_router = APIRouter(
 @instrument_router.get("/list/{exchange}")
 async def list_instruments(
     exchange: str,
-    limit: int = 50,
+    limit: int = 200,
     instrument_type_id: int | None = None,
     user_claims: dict = Depends(require_auth()),
     session: AsyncSession = Depends(get_db_session),
