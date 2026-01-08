@@ -28,9 +28,27 @@ def get_redis():
         if redis_client is None:
             redis_url = _build_redis_url_from_env()
             print(redis_url)
-            redis_client = async_redis.from_url(redis_url, decode_responses=False)
-            print(f"Created redis client for {redis_url} (decode_responses=True)")
+            # Configure specifically for persistent connections
+            redis_client = async_redis.from_url(
+                redis_url,
+                decode_responses=False,
+                socket_keepalive=True,    # Enable TCP keepalive
+                health_check_interval=30  # Check connection health every 30s
+            )
+            print(f"Created redis client for {redis_url} (decode_responses=False)")
         return redis_client
     except Exception as e:
         print(f"Redis connection error: {e}")
         return None
+
+async def close_redis_client():
+    """Close the global redis client connection pool."""
+    global redis_client
+    if redis_client:
+        try:
+            await redis_client.close()
+            print("Redis client closed")
+        except Exception as e:
+            print(f"Error closing redis client: {e}")
+        finally:
+            redis_client = None
