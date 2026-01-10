@@ -6,17 +6,12 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
 from config.database_config import close_database_engine, get_db_session
+from config.redis_config import close_redis_client
 from config.logger import logger
 from features.auth.auth_routes import auth_router
-from features.exchange import exchange_service
-from features.exchange.exchange_schema import ExchangeInDb
-from features.exchange.exchange_service import get_exchange_by_code
-from features.instrument_type import instrument_type_service
-from features.instrument_type.instrument_type_routes import instrument_type_router, get_instrument_type
-from features.instruments import instrument_service
+from features.instrument_type.instrument_type_routes import instrument_type_router
 from features.instruments.instrument_routes import instrument_router
 from features.exchange.exchange_routes import exchange_router
-from features.instruments.instrument_schema import InstrumentCreate
 from features.populate_database.populate_database_router import populate_database_route
 from features.provider.provider_routes import provider_router
 from features.sector.sector_routes import sector_router
@@ -29,14 +24,17 @@ from features.health.health_routes import health_router
 from services.data.data_ingestion import LiveDataIngestion, get_provider_manager
 from services.data.data_saver import DataSaver
 from services.data.data_resolver import DataResolver
+from services.data.gap_detection import get_gap_detection_service, set_gap_detection_provider
 from services.provider.provider_manager import ProviderManager
+from services.data.redis_mapping import get_redis_mapping_helper
 from services.redis_subscriber import redis_subscriber
+from services.redis_timeseries import get_redis_timeseries
 from services.scheduled_jobs import get_scheduled_jobs
-from models import Exchange, Instrument, ProviderInstrumentMapping, PriceHistoryDaily
+from models import Exchange, Instrument, ProviderInstrumentMapping
 
 import sentry_sdk
 
-from utils.parse_file import parse_csv_file
+from utils.parse_file import parse_excel_file, parse_csv_file
 
 sentry_sdk.init(
     dsn="https://87837fe7f05ab475836caf4864a1c150@o4510497758576640.ingest.us.sentry.io/4510497760673792",
@@ -62,28 +60,114 @@ live_data_ingestion: LiveDataIngestion | None = None
 data_saver: DataSaver | None = None
 provider_manager : ProviderManager | None = None
 scheduled_jobs = None
+gap_detection_service = None
+data_broadcast = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown."""
-    global subscriber_task, live_data_ingestion, data_broadcast, data_saver, provider_manager, scheduled_jobs
+    global subscriber_task, live_data_ingestion, data_broadcast, data_saver, provider_manager, scheduled_jobs, gap_detection_service
+
+    # data = await parse_csv_file(file_path=r"C:\Users\tech\OneDrive\Documents\BSE_INSTRUMENTS_CSV1111.csv")
+    # print(data)
+    # async for session in get_db_session():
+    #
+    #     required_symbols = {"ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE",
+    #                         "BAJAJFINSV", "BEL", "BPCL", "BHARTIARTL", "BRITANNIA", "CIPLA", "COALINDIA", "DRREDDY",
+    #                         "EICHERMOT", "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE", "HEROMOTOCO"}
+    #     print(required_symbols)
+    #     for row in data:
+    #         symbol = row.get("UNDERLYING_SYMBOL")
+    #         print(symbol)
+    #         if symbol in required_symbols:
+    #
+    #             instrument = await session.execute(
+    #                 select(Instrument).where(Instrument.symbol == symbol + ".BSE")
+    #             )
+    #             instrument = instrument.scalars().first()
+    #             if instrument:
+    #
+    #                 mapping = await session.execute(
+    #                     select(ProviderInstrumentMapping).where(
+    #                         ProviderInstrumentMapping.instrument_id == instrument.id,
+    #                         ProviderInstrumentMapping.provider_id == 2 # Dhan provider ID
+    #                     )
+    #                 )
+    #                 mapping = mapping.scalars().first()
+    #                 if not mapping:
+    #                     new_mapping = ProviderInstrumentMapping(
+    #                         provider_id=2,
+    #                         instrument_id=instrument.id,
+    #                         provider_instrument_search_code=row.get("SEM_SMST_SECURITY_ID"),
+    #                         is_active=True
+    #                     )
+    #                     session.add(new_mapping)
+    #                     await session.commit()
+    #                     logger.info(f"Added mapping for {symbol} to Dhan provider.")
+    #                 elif mapping:
+    #                     mapping.provider_instrument_search_code = row.get("SECURITY_ID")
+    #                     mapping.is_active = True
+    #                     await session.commit()
+    #                     logger.info(f"Updated mapping for {symbol} to Dhan provider.")
+    #
+    # return
+
+    # --- Startup ---
+    logger.info("Starting up application...")
+
+    # Sync Redis Mappings
+    try:
+         await get_redis_mapping_helper().sync_mappings_from_db()
+    except Exception as e:
+        logger.error(f"Failed to sync Redis mappings on startup: {e}")
 
     logger.info("Task - 1. Starting Live Data Ingestion...")
     live_data_ingestion = LiveDataIngestion()
 
     # Create Provider Manager and set callback
     provider_manager = get_provider_manager()
-    provider_manager.callback = live_data_ingestion.handle_market_data
+
+
+    # Task - 1.5: Initialize Redis TimeSeries downsampling for recordable instruments
+    logger.info("Task - 1.5: Initializing Redis TimeSeries for recordable instruments...")
+    try:
+        redis_ts = get_redis_timeseries()
+        # Fetch recordable symbols from Redis mappings (already synced above)
+        mapper = get_redis_mapping_helper()
+        record_map = await mapper.get_symbol_record_map()
+
+        recordable_symbols = [
+            symbol for symbol, should_record in record_map.items()
+            if should_record
+        ]
+
+        if recordable_symbols:
+            await redis_ts.initialize_recordable_instruments(recordable_symbols)
+            logger.info(f"✅ Initialized Redis TimeSeries for {len(recordable_symbols)} recordable instruments")
+    except Exception as e:
+        logger.error(f"Failed to initialize Redis TimeSeries: {e}")
+
     await provider_manager.initialize() # Ensure mappings are loaded before use
     live_data_ingestion.provider_manager = provider_manager
 
     asyncio.create_task(live_data_ingestion.start_ingestion())
 
+    # # Task - 1.6: Initialize Gap Detection Service and fill gaps from startup
+    logger.info("Task - 1.6: Initializing Gap Detection Service...")
+    try:
+        gap_detection_service = get_gap_detection_service()
+        set_gap_detection_provider(provider_manager)
+        await gap_detection_service.initialize()
+        # Run gap detection and filling in background
+        asyncio.create_task(gap_detection_service.fill_gaps_from_startup())
+    except Exception as e:
+        logger.error(f"Failed to initialize gap detection: {e}")
+
     # Task - 1.1. Checking for data gaps...
     # Moved to scheduled_jobs to prevent race condition/double logging at startup
     data_resolver = DataResolver(live_data_ingestion.provider_manager)
-    # asyncio.create_task(data_resolver.check_and_fill_gaps())
+    asyncio.create_task(data_resolver.check_and_fill_gaps())
 
     # Start Subscriber
     logger.info("Task - 2. Starting Redis subscriber...")
@@ -106,56 +190,14 @@ async def lifespan(app: FastAPI):
                 # Add exchange directly to data_saver
                 data_saver.add_exchange(exchange)
 
-    # Save every 5 minute for testing
-    await data_saver.start_all_exchanges(
-        interval_minutes=5
-    )
+    # Also start end-of-day monitors for final data consolidation
+    await data_saver.start_end_of_day_monitors()
 
-    # Task - 4. Start Scheduled Jobs (A4: periodic gap detection, A2: retry alerts, B3: volume reconciliation)
+    # # Task - 4. Start Scheduled Jobs (A4: periodic gap detection, A2: retry alerts, B3: volume reconciliation)
     logger.info("Task - 4. Starting Scheduled Jobs...")
     scheduled_jobs = get_scheduled_jobs()
     scheduled_jobs.set_resolver(data_resolver)
     await scheduled_jobs.start()
-
-
-    # provider_manager : ProviderManager = get_provider_manager()
-    # async for session in get_db_session():
-    #     existing_instruments = await session.execute(select(Instrument).where(
-    #         Instrument.is_active == True,
-    #         Instrument.should_record_data == True,
-    #         Instrument.exchange_id == 7  # NSE
-    #     ))
-    #     existing_instruments = existing_instruments.scalars().all()
-    #
-    #     bulk_data = []
-    #     for instrument in existing_instruments:
-    #         data = await provider_manager.get_daily_prices(instrument=instrument)
-    #
-    #         for price in data:
-    #             price : PriceHistoryDaily
-    #             bulk_data.append(PriceHistoryDaily(
-    #                 instrument_id=price.instrument_id,
-    #                 datetime=price.datetime,
-    #                 open=price.open,
-    #                 high=price.high,
-    #                 low=price.low,
-    #                 close=price.close,
-    #                 volume=price.volume,
-    #                 is_active=price.is_active,
-    #                 resolve_required=False,
-    #                 dividend=price.dividend,
-    #                 split=price.split,
-    #             ))
-    #
-    #     session.add_all(bulk_data)
-    #     await session.commit()
-    #     logger.info(f"Inserted {len(bulk_data)} daily price records.")
-
-
-    # async for session in get_db_session():
-    #     data_creation_service = DataCreationService(session)
-    #     Example usage (if you were running it manually)
-    # await data_creation_service.start_data_creation(offset_days=0)
 
     yield
 
@@ -178,15 +220,18 @@ async def lifespan(app: FastAPI):
             pass
 
     # Stop publisher
-    if data_broadcast and data_broadcast.broadcast_task:
-        data_broadcast.broadcast_task.cancel()
-        try:
-            await data_broadcast.broadcast_task
-        except asyncio.CancelledError:
-            pass
+    # if data_broadcast and data_broadcast.broadcast_task:
+    #     data_broadcast.broadcast_task.cancel()
+    #     try:
+    #         await data_broadcast.broadcast_task
+    #     except asyncio.CancelledError:
+    #         pass
 
     if live_data_ingestion:
         live_data_ingestion.stop_ingestion()
+
+    # Close Redis client
+    await close_redis_client()
 
     # Dispose DB engine so async connections close cleanly
     await close_database_engine()

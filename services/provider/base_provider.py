@@ -10,19 +10,20 @@ from typing import Callable, Optional, Set, List
 from models import Instrument, PriceHistoryIntraday, PriceHistoryDaily
 
 
+from services.data.data_queue import get_data_ingestion_queue_instance
+
 class BaseMarketDataProvider(ABC):
     """Abstract base class for all market data providers"""
 
-    def __init__(self, provider_code: str, callback: Optional[Callable] = None):
+    def __init__(self, provider_code: str):
         """
         Initialize the provider.
 
         Args:
             provider_code: Unique code for this provider (e.g., 'YF', 'DHAN')
-            callback: Function to call when new market data arrives
         """
         self.provider_code = provider_code
-        self.callback = callback
+        self.data_queue = get_data_ingestion_queue_instance()
         self.websocket_connection = None
         self.subscribed_symbols: Set[str] = set()
         self.is_connected = False

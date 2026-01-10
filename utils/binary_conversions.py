@@ -23,12 +23,13 @@ example_snapshot_data = {
     "volume": 1234567890,
 }
 
-# Update: symbol, timestamp, price (float), volume
+# Update: symbol, timestamp, price (float), volume, size (tick volume)
 update_format = Struct(
     "symbol" / CString("utf8"),
     "timestamp" / Int64ub,
     "price" / Float32b,
     "volume" / Int64ub,
+    "size" / Int64ub,
 )
 
 # Update example
@@ -37,6 +38,7 @@ example_update_data = {
     "timestamp": 1732601000,
     "price": 151.8,
     "volume": 987654321,
+    "size": 100,
 }
 
 

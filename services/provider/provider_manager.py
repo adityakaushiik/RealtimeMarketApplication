@@ -4,25 +4,18 @@ Routes symbols to appropriate providers based on exchange mappings from database
 """
 
 import asyncio
-import json
-from typing import Dict, Optional, Any
+from typing import Dict, Optional
 
-from sqlalchemy import select
-
-from config.database_config import get_db_session
 from config.logger import logger
 from models import (
-    Exchange,
-    Provider,
-    ExchangeProviderMapping,
     Instrument,
-    ProviderInstrumentMapping,
     PriceHistoryIntraday,
     PriceHistoryDaily,
 )
 from services.provider.base_provider import BaseMarketDataProvider
 from services.provider.yahoo_provider import YahooFinanceProvider
 from services.provider.dhan_provider import DhanProvider
+from services.data.redis_mapping import get_redis_mapping_helper
 
 try:
     from config.redis_config import get_redis
@@ -44,7 +37,7 @@ class ProviderManager:
     REDIS_KEY_TYPE_MAP = "provider_manager:instrument_type_map"
 
     def __init__(self):
-        self.callback = None
+        # self.callback = None
         self.providers: Dict[str, BaseMarketDataProvider] = {}
 
 
@@ -55,17 +48,11 @@ class ProviderManager:
         ] = {}  # internal symbol (provider search symbol currently) -> provider_code
         self.symbol_to_exchange: Dict[str, int] = {}  # internal symbol -> exchange_id
 
-
-        # New: provider_symbol_map caches provider specific search code -> internal instrument symbol
-        # Structure: {"YF": {"AAPL": "AAPL"}, "DHAN": {"123213": "RELIANCE"}}
-        self.provider_symbol_map: Dict[str, Dict[str, str]] = {}
-
-
-        # New: internal_to_search_map caches internal instrument symbol -> provider specific search code
-        # Structure: {"YF": {"AAPL": "AAPL"}, "DHAN": {"RELIANCE": "RELIANCE-EQ"}}
-        self.internal_to_search_map: Dict[str, Dict[str, str]] = {}
         self.symbol_to_instrument_type: Dict[str, int] = {}  # internal symbol -> instrument_type_id
         self._initialized = False
+
+        # Redis Mapping Helper
+        self.redis_mapper = get_redis_mapping_helper()
 
     async def initialize(self):
         """
@@ -78,63 +65,49 @@ class ProviderManager:
 
         logger.info("Initializing ProviderManager...")
 
-        async for session in get_db_session():
-            # Query all active exchange-provider mappings
-            result = await session.execute(
-                select(
-                    Exchange.id,
-                    Exchange.code,
-                    Provider.code.label("provider_code"),
-                    ExchangeProviderMapping.is_primary,
-                )
-                .join(
-                    ExchangeProviderMapping,
-                    Exchange.id == ExchangeProviderMapping.exchange_id,
-                )
-                .join(Provider, Provider.id == ExchangeProviderMapping.provider_id)
-                .where(
-                    ExchangeProviderMapping.is_active == True,
-                    ExchangeProviderMapping.is_primary == True,
-                    Provider.is_active == True,
-                )
+        # Load routing info from Redis into memory for fast sync access (optional but good for performance)
+        # OR we can purely rely on RedisMapper. For now, let's keep local caches used in sync task
+        # populated from Redis data we just synced.
+
+        # 1. Load Exchange -> Provider map
+        self.exchange_to_provider = await self.redis_mapper.get_exchange_provider_map()
+        self.exchange_id_to_code = await self.redis_mapper.get_exchange_code_map()
+
+        # 2. Load Symbol Routing maps
+        self.symbol_to_provider = await self.redis_mapper.get_symbol_provider_map()
+        self.symbol_to_exchange = await self.redis_mapper.get_symbol_exchange_map()
+        self.symbol_to_instrument_type = await self.redis_mapper.get_symbol_type_map()
+
+        # Initialize provider instances based on populated map
+        unique_providers = set(self.exchange_to_provider.values())
+        for provider_code in unique_providers:
+            # Check if provider is actually active/known before recreating
+            # (In redis_mapper code we only synced active providers, so this is safe)
+            self.providers[provider_code] = self._create_provider_instance(
+                provider_code
             )
-
-            mappings = result.all()
-
-            # Build exchange -> provider mapping
-            for mapping in mappings:
-                self.exchange_to_provider[mapping.id] = mapping.provider_code
-                self.exchange_id_to_code[mapping.id] = mapping.code
-                logger.info(f"Mapped {mapping.code} → {mapping.provider_code}")
-
-            # Initialize provider instances
-            unique_providers = set(self.exchange_to_provider.values())
-            for provider_code in unique_providers:
-                self.providers[provider_code] = self._create_provider_instance(
-                    provider_code
-                )
-                logger.info(f"Initialized provider: {provider_code}")
+            logger.info(f"Initialized provider: {provider_code}")
 
         self._initialized = True
         logger.info(f"ProviderManager initialized with {len(self.providers)} providers")
+
+        # Automatically start providers with default recordable symbols
+        logger.info("Auto-starting providers with recordable symbols...")
+        symbols_by_provider = await self.get_symbols_by_provider(check_should_record=True)
+        await self.start_all_providers(symbols_by_provider)
+
+        # Start the dynamic subscription sync task
+        await self.start_sync_task()
 
     def _create_provider_instance(
         self, provider_code: str
     ) -> Optional[BaseMarketDataProvider]:
         """Factory method to create provider instances"""
 
-        if not self.callback:
-            logger.error(
-                "ProviderManager callback not set before provider initialization"
-            )
-            raise ValueError(
-                "ProviderManager callback must be set before initializing providers"
-            )
-
         if provider_code == "YF":
-            return YahooFinanceProvider(callback=self.callback)
+            return YahooFinanceProvider()
         elif provider_code == "DHAN":
-            return DhanProvider(callback=self.callback, provider_manager=self)
+            return DhanProvider(provider_manager=self)
         else:
             logger.error(
                 f"Unknown provider code: {provider_code} - skipping initialization"
@@ -143,214 +116,28 @@ class ProviderManager:
                 f"Unknown provider code: {provider_code}. Please add it to the factory method."
             )
 
-    async def get_symbols_by_provider(self) -> Dict[str, list[str]]:
+    async def get_symbols_by_provider(self, check_should_record: bool = False) -> Dict[str, list[str]]:
         """
         Query database to get all instruments grouped by provider.
         Returns: {"YF": ["AAPL", "TSLA"], "DHAN": ["RELIANCE-EQ", "TCS-EQ"]}
 
         Side effects:
         - Populates symbol_to_provider & symbol_to_exchange for quick lookups.
-        - Populates provider_symbol_map with provider-specific search codes mapped back to internal instrument symbols.
         """
-        # Try loading from Redis first
-        if await self._load_from_redis():
-            # Reconstruct symbols_by_provider from internal maps for return value
-            symbols_by_provider = {}
-            for provider_code, search_map in self.provider_symbol_map.items():
-                symbols_by_provider[provider_code] = list(search_map.keys())
-            return symbols_by_provider
-
-        symbols_by_provider: Dict[str, list[str]] = {}
-
-        async for session in get_db_session():
-            # Query instruments with their exchanges and provider mappings
-            result = await session.execute(
-                select(
-                    Instrument.id,
-                    Instrument.symbol,  # internal canonical symbol
-                    Instrument.exchange_id,
-                    Instrument.instrument_type_id,
-                    ProviderInstrumentMapping.provider_instrument_search_code,  # provider specific search code
-                    Provider.code.label("provider_code"),
-                )
-                .join(
-                    ProviderInstrumentMapping,
-                    Instrument.id == ProviderInstrumentMapping.instrument_id,
-                )
-                .join(Provider, Provider.id == ProviderInstrumentMapping.provider_id)
-                .join(
-                    ExchangeProviderMapping,
-                    (ExchangeProviderMapping.provider_id == Provider.id)
-                    & (ExchangeProviderMapping.exchange_id == Instrument.exchange_id),
-                )
-                .where(
-                    Instrument.is_active == True,
-                    Instrument.blacklisted == False,
-                    Instrument.delisted == False,
-                    ExchangeProviderMapping.is_active == True,
-                    ExchangeProviderMapping.is_primary == True,
-                    Provider.is_active == True,
-                )
-            )
-
-            rows = result.all()
-
-            for row in rows:
-                provider_code = row.provider_code
-                provider_search_code = row.provider_instrument_search_code
-                internal_symbol = row.symbol
-                instrument_type_id = row.instrument_type_id
-
-                if provider_code not in symbols_by_provider:
-                    symbols_by_provider[provider_code] = []
-                if provider_code not in self.provider_symbol_map:
-                    self.provider_symbol_map[provider_code] = {}
-                if provider_code not in self.internal_to_search_map:
-                    self.internal_to_search_map[provider_code] = {}
-
-                # Append provider specific search code to subscription list
-                symbols_by_provider[provider_code].append(provider_search_code)
-
-                # Cache mappings
-                # Note: symbol_to_provider and symbol_to_exchange are keyed by provider_search_code
-                # This might be problematic if different providers use the same search code for different instruments
-                # But for now, we assume uniqueness or that we look up by provider context
-
-                # IMPORTANT: We should also map the internal symbol to provider/exchange for reverse lookups
-                self.symbol_to_provider[internal_symbol] = provider_code
-                self.symbol_to_exchange[internal_symbol] = row.exchange_id
-                self.symbol_to_instrument_type[internal_symbol] = instrument_type_id
-
-                self.symbol_to_provider[provider_search_code] = provider_code
-                self.symbol_to_exchange[provider_search_code] = row.exchange_id
-                self.symbol_to_instrument_type[provider_search_code] = instrument_type_id
-
-                # provider_symbol_map holds provider search code -> internal instrument symbol
-                self.provider_symbol_map[provider_code][provider_search_code] = (
-                    internal_symbol
-                )
-                # internal_to_search_map holds internal instrument symbol -> provider search code
-                self.internal_to_search_map[provider_code][internal_symbol] = provider_search_code
-
-            # Log statistics
-            logger.info(
-                f"Loaded {sum(len(v) for v in symbols_by_provider.values())} total symbols"
-            )
-            for provider_code, symbols in symbols_by_provider.items():
-                logger.info(f"  {provider_code}: {len(symbols)} symbols")
-
-            # Cache the newly loaded data
-            await self._save_to_redis()
-
-        return symbols_by_provider
-
-    async def _load_from_redis(self) -> bool:
-        """Attempt to load symbol maps from Redis"""
-        if not get_redis:
-            return False
-
-        try:
-            redis = await get_redis()
-            cached_symbols = await redis.get(self.REDIS_KEY_SYMBOL_MAP)
-            cached_types = await redis.get(self.REDIS_KEY_TYPE_MAP)
-
-            if cached_symbols and cached_types:
-                data = json.loads(cached_symbols)
-
-                # Restore state
-                self.symbol_to_provider = data.get('symbol_to_provider', {})
-                self.symbol_to_exchange = data.get('symbol_to_exchange', {})
-                self.provider_symbol_map = data.get('provider_symbol_map', {})
-                self.internal_to_search_map = data.get('internal_to_search_map', {})
-
-                self.symbol_to_instrument_type = json.loads(cached_types)
-                logger.info("Loaded symbol mappings and instrument types from Redis cache.")
-                return True
-        except Exception as e:
-            logger.error(f"Failed to load from Redis: {e}")
-
-        return False
-
-    async def _save_to_redis(self):
-        """Save current symbol maps to Redis"""
-        if not get_redis:
-            return
-
-        try:
-            redis = get_redis()
-
-            symbol_data = {
-                'symbol_to_provider': self.symbol_to_provider,
-                'symbol_to_exchange': self.symbol_to_exchange,
-                'provider_symbol_map': self.provider_symbol_map,
-                'internal_to_search_map': self.internal_to_search_map
-            }
-
-            await redis.set(self.REDIS_KEY_SYMBOL_MAP, json.dumps(symbol_data), ex=86400) # 24h ex
-            await redis.set(self.REDIS_KEY_TYPE_MAP, json.dumps(self.symbol_to_instrument_type), ex=86400)
-            logger.info("Saved symbol mappings to Redis.")
-        except Exception as e:
-            logger.error(f"Failed to save to Redis: {e}")
-
-    async def invalidate_cache(self):
-        """Clear the instrument cache in Redis"""
-        if not get_redis:
-            return
-        try:
-            redis = get_redis()
-            await redis.delete(self.REDIS_KEY_SYMBOL_MAP, self.REDIS_KEY_TYPE_MAP)
-            logger.info("Invalidated Redis symbol cache.")
-        except Exception as e:
-            logger.error(f"Error invalidating cache: {e}")
-
-    async def get_provider_symbol_mapping(self) -> Dict[str, Dict[str, str]]:
-        """
-        Returns provider_symbol_map: provider_code -> provider_search_code -> internal instrument symbol.
-        Ensures cache is populated (loads symbols if empty).
-        Example: {"YF": {"AAPL": "AAPL", "TSLA": "TSLA"}, "DHAN": {"RELIANCE-EQ": "RELIANCE"}}
-        """
-        if not self.provider_symbol_map:
-            await self.get_symbols_by_provider()
-        return self.provider_symbol_map
-
-    async def resolve_internal_symbol(
-        self, provider_code: str, provider_search_code: str
-    ) -> Optional[str]:
-        """
-        Resolve an internal instrument symbol from a provider code & provider search code.
-        Lazy-loads mapping if needed.
-        Returns None if not found.
-        """
-        if not self.provider_symbol_map:
-            await self.get_symbols_by_provider()
-        return self.provider_symbol_map.get(provider_code, {}).get(provider_search_code)
-
-    def get_internal_symbol_sync(
-        self, provider_code: str, provider_search_code: str
-    ) -> Optional[str]:
-        """
-        Synchronous version of resolve_internal_symbol for hot paths (like data ingestion).
-        Assumes provider_symbol_map is already populated.
-        """
-        if not self.provider_symbol_map:
-            return None
-        return self.provider_symbol_map.get(provider_code, {}).get(provider_search_code)
-
-    async def get_search_code(self, provider_code: str, internal_symbol: str) -> Optional[str]:
-        """
-        Get provider specific search code for an internal symbol.
-        Lazy-loads mapping if needed.
-        """
-        if not self.internal_to_search_map:
-            await self.get_symbols_by_provider()
-        
-        return self.internal_to_search_map.get(provider_code, {}).get(internal_symbol)
+        # Logic shifted to RedisMappingHelper
+        return await self.redis_mapper.get_symbols_by_provider(check_should_record=check_should_record)
 
     async def start_all_providers(self, symbols_by_provider: Dict[str, list[str]]):
         """Connect all providers with their respective symbols"""
         logger.info("Starting all provider connections...")
 
         from fastapi.concurrency import run_in_threadpool
+
+        # from fastapi.concurrency import run_in_threadpool # removing unused import
+
+        if not symbols_by_provider:
+            # We now support empty launch effectively, but let's log
+            pass
 
         tasks = []
         for provider_code, symbols in symbols_by_provider.items():
@@ -445,40 +232,112 @@ class ProviderManager:
                 except Exception as e:
                     logger.error(f"Error unsubscribing from {provider_code}: {e}")
 
-    def get_provider_status(self) -> Dict[str, dict]:
-        """Get status of all providers for monitoring"""
-        status = {}
-        for provider_code, provider in self.providers.items():
-            if provider:
-                status[provider_code] = provider.get_status()
-            else:
-                status[provider_code] = {
-                    "provider_code": provider_code,
-                    "connected": False,
-                    "subscribed_count": 0,
-                    "symbols": [],
-                }
-        return status
+    # NEW: Sync Logic moved from DataIngestion
+    def _on_subscription_change(self):
+        """Callback for when websocket subscriptions change."""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.call_soon_threadsafe(self._subscription_change_event.set)
+        except RuntimeError:
+            pass # No running loop
 
-    def get_provider_for_symbol(self, symbol: str) -> Optional[str]:
-        """Get the provider code for a given symbol"""
-        return self.symbol_to_provider.get(symbol)
+    async def start_sync_task(self):
+        """Start dynamic subscription synchronization task."""
+        if hasattr(self, "_sync_task") and self._sync_task:
+            return
 
-    def get_instrument_type_id(self, symbol: str) -> Optional[int]:
-        """Get instrument type ID for a symbol"""
-        return self.symbol_to_instrument_type.get(symbol)
+        from services.websocket_manager import get_websocket_manager
 
-    def get_exchange_id_for_symbol(self, symbol: str) -> Optional[int]:
-        """Get exchange ID for a symbol"""
-        return self.symbol_to_exchange.get(symbol)
+        self._subscription_change_event = asyncio.Event()
+        self._sync_task = asyncio.create_task(self._sync_subscriptions_loop())
 
-    def get_exchange_code(self, exchange_id: int) -> Optional[str]:
-        """Get exchange code (NSE, BSE, etc.) by ID"""
-        return self.exchange_id_to_code.get(exchange_id)
+        # Register callback
+        get_websocket_manager().register_callback(self._on_subscription_change)
+        logger.info("ProviderManager: sync task started.")
 
-    def is_initialized(self) -> bool:
-        """Check if provider manager is initialized"""
-        return self._initialized
+    def stop_sync_task(self):
+        """Stop dynamic subscription synchronization task."""
+        if hasattr(self, "_sync_task") and self._sync_task:
+            self._sync_task.cancel()
+            self._sync_task = None
+            logger.info("ProviderManager: sync task stopped.")
+
+    async def _sync_subscriptions_loop(self):
+        """
+        Periodically sync provider subscriptions with active client channels.
+        This ensures we only fetch data for symbols that clients are watching.
+        """
+        logger.info("ProviderManager: Starting dynamic subscription sync loop...")
+        from services.websocket_manager import get_websocket_manager
+
+        while True:
+            try:
+                # Wait for event or timeout (heartbeat)
+                try:
+                    await asyncio.wait_for(self._subscription_change_event.wait(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    pass
+
+                self._subscription_change_event.clear()
+
+                # Get symbols clients are actively watching
+                websocket_manager = get_websocket_manager()
+                active_channels = websocket_manager.get_active_channels()
+
+                # Calculate target subscriptions based to active client channels AND recordable symbols
+                # We must ensuring we don't unsubscribe from recordable symbols
+                recordable_map = await self.redis_mapper.get_symbol_record_map()
+
+                # Start with active channels (internal symbols)
+                target_internal_symbols = set(active_channels)
+
+                # Add all recordable symbols to target list
+                for sym, should_record in recordable_map.items():
+                    if should_record:
+                        target_internal_symbols.add(sym)
+
+                # Cache mappings to avoid repeated Redis calls
+                provider_i2p_maps = {}
+                target_subscriptions = set()
+
+                for internal_symbol in target_internal_symbols:
+                    # Find provider for this symbol
+                    provider_code = self.symbol_to_provider.get(internal_symbol)
+
+                    if provider_code:
+                        if provider_code not in provider_i2p_maps:
+                            provider_i2p_maps[provider_code] = await self.redis_mapper.get_all_i2p_mappings(provider_code)
+
+                        search_code = provider_i2p_maps[provider_code].get(internal_symbol)
+                        if search_code:
+                            target_subscriptions.add(search_code)
+
+                # Get currently subscribed symbols across all providers
+                current_subscriptions = set()
+                for provider_code, provider in self.providers.items():
+                    if provider:
+                        current_subscriptions.update(provider.subscribed_symbols)
+
+                # Calculate diff
+                to_subscribe = target_subscriptions - current_subscriptions
+                to_unsubscribe = current_subscriptions - target_subscriptions
+
+                # Apply changes
+                if to_subscribe:
+                    await self.subscribe_to_symbols(list(to_subscribe))
+                    logger.info(f"📈 Subscribed to {len(to_subscribe)} new symbols")
+
+                if to_unsubscribe:
+                    await self.unsubscribe_from_symbols(
+                        list(to_unsubscribe)
+                    )
+                    logger.info(f"📉 Unsubscribed from {len(to_unsubscribe)} symbols")
+
+            except asyncio.CancelledError:
+                logger.info("Subscription sync task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error syncing subscriptions: {e}")
 
     async def get_intraday_prices(
         self, instrument: Instrument,
@@ -515,6 +374,36 @@ class ProviderManager:
 
         result = await provider.get_daily_prices([instrument])
         return result.get(instrument.symbol, [])
+
+    ### HELPER METHODS ###
+
+    def get_instrument_type_id(self, symbol: str) -> Optional[int]:
+        """Get instrument type ID for a symbol"""
+        return self.symbol_to_instrument_type.get(symbol)
+
+    def get_exchange_id_for_symbol(self, symbol: str) -> Optional[int]:
+        """Get exchange ID for a symbol"""
+        return self.symbol_to_exchange.get(symbol)
+
+    def get_exchange_code(self, exchange_id: int) -> Optional[str]:
+        """Get exchange code (NSE, BSE, etc.) by ID"""
+        return self.exchange_id_to_code.get(exchange_id)
+
+    async def resolve_internal_symbol(
+        self, provider_code: str, provider_search_code: str
+    ) -> Optional[str]:
+        """
+        Resolve an internal instrument symbol from a provider code & provider search code.
+        Uses RedisMappingHelper.
+        """
+        return await self.redis_mapper.get_internal_symbol(provider_code, provider_search_code)
+
+    async def get_search_code(self, provider_code: str, internal_symbol: str) -> Optional[str]:
+        """
+        Get provider specific search code for an internal symbol.
+        Uses RedisMappingHelper.
+        """
+        return await self.redis_mapper.get_provider_symbol(provider_code, internal_symbol)
 
 # Global reference for dependency injection
 _provider_manager_instance = None

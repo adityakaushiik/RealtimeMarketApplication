@@ -23,7 +23,7 @@ import json
 import struct
 import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 import pytz
 
 import websockets
@@ -35,6 +35,7 @@ from models import Instrument, PriceHistoryDaily, PriceHistoryIntraday
 from services.provider.base_provider import BaseMarketDataProvider
 from utils.common_constants import DataIngestionFormat
 from enum import IntEnum
+from services.data.redis_mapping import get_redis_mapping_helper
 
 
 class FeedRequestCode(IntEnum):
@@ -95,9 +96,14 @@ class DhanProvider(BaseMarketDataProvider):
     
     REST_URL = "https://api.dhan.co/v2"
 
-    def __init__(self, callback=None, provider_manager=None):
-        super().__init__(provider_code="DHAN", callback=callback)
+    def __init__(self, provider_manager=None):
+        super().__init__(provider_code="DHAN")
         self.provider_manager = provider_manager
+
+        # Redis mapping helper
+        self.redis_mapper = get_redis_mapping_helper()
+        # Local cache for fast lookup: {provider_symbol_code: internal_symbol}
+        self.symbol_map: Dict[str, str] = {}
 
         # Get credentials from settings
         settings = get_settings()
@@ -113,10 +119,10 @@ class DhanProvider(BaseMarketDataProvider):
         self._last_request_time = 0
         self._request_interval = 0.2  # 5 requests per second max
 
-        if not self.callback:
-            raise ValueError(
-                "Callback function must be provided for handling messages."
-            )
+        # if not self.callback:
+        #     raise ValueError(
+        #         "Callback function must be provided for handling messages."
+        #     )
 
     async def _refresh_token_loop(self):
         """
@@ -247,16 +253,26 @@ class DhanProvider(BaseMarketDataProvider):
         """Main WebSocket loop handling connection, subscription and data processing"""
         url = f"{self.WS_URL}?version=2&token={self.access_token}&clientId={self.client_id}&authType=2"
         reconnect_delay = 5
-        
+        last_connected_time: Optional[int] = None  # Track disconnect time for gap detection
+
         while self._running:
+            disconnect_time = int(time.time() * 1000) if last_connected_time else None
+
             try:
                 logger.info("Connecting to Dhan WebSocket...")
                 async with websockets.connect(url, ping_interval=30, ping_timeout=10) as websocket:
                     self.ws = websocket
                     self.is_connected = True
                     reconnect_delay = 5  # Reset delay on successful connection
+                    reconnect_time = int(time.time() * 1000)
                     logger.info("Dhan WebSocket connection established.")
                     
+                    # Gap detection on reconnect
+                    if disconnect_time and last_connected_time:
+                        await self._handle_reconnect_gap_detection(disconnect_time, reconnect_time)
+
+                    last_connected_time = reconnect_time
+
                     # Wait a moment to ensure connection is stable before subscribing
                     await asyncio.sleep(1)
                     
@@ -288,6 +304,29 @@ class DhanProvider(BaseMarketDataProvider):
                 await asyncio.sleep(reconnect_delay)
                 reconnect_delay = min(reconnect_delay * 2, 60)  # Exponential backoff up to 60s
 
+    async def _handle_reconnect_gap_detection(self, disconnect_ts: int, reconnect_ts: int):
+        """Handle gap detection after a WebSocket reconnect."""
+        try:
+            # Import here to avoid circular imports
+            from services.data.gap_detection import get_gap_detection_service
+
+            gap_service = get_gap_detection_service()
+
+            # Only run gap detection if we have provider_manager (needed for gap filling)
+            if gap_service.provider_manager:
+                gaps = await gap_service.detect_gaps_on_reconnect(
+                    disconnect_ts=disconnect_ts,
+                    reconnect_ts=reconnect_ts,
+                    symbols=self.subscribed_symbols
+                )
+
+                if gaps:
+                    logger.info(f"🔄 Filling {len(gaps)} gaps from WebSocket reconnect...")
+                    # Run gap filling in background to not block message processing
+                    asyncio.create_task(gap_service.fill_gaps(gaps))
+        except Exception as e:
+            logger.error(f"Error in reconnect gap detection: {e}")
+
     async def _subscribe_batch(self, symbols: list[str]):
         """Subscribe to a batch of symbols"""
         if not self.ws or not self.is_connected:
@@ -301,9 +340,28 @@ class DhanProvider(BaseMarketDataProvider):
             if asyncio.iscoroutine(internal_symbol):
                 internal_symbol = await internal_symbol
 
-            instrument_tuple = self._prepare_single_instrument(symbol, internal_symbol)
-            if instrument_tuple:
-                instruments.append(instrument_tuple)
+            # --- START CHANGED CODE ---
+            # Try to get segment from Redis mapping first (fastest and most accurate)
+            segment = await self.redis_mapper.get_provider_segment("DHAN", internal_symbol)
+
+            if segment:
+                 # If we have the segment from DB/Redis, use it directly
+                 security_id = await self.redis_mapper.get_provider_symbol("DHAN", internal_symbol)
+                 if security_id:
+                     instruments.append((segment, security_id))
+                     self.symbol_map[str(security_id)] = internal_symbol
+                 else:
+                     logger.warning(f"Segment found but no SecurityID for {internal_symbol} in Redis")
+            else:
+                # Fallback to old logic if no segment in Redis
+                instrument_tuple = self._prepare_single_instrument(symbol, internal_symbol)
+                if instrument_tuple:
+                    instruments.append(instrument_tuple)
+                    # Populate map: SecurityID -> Internal Symbol
+                    # instrument_tuple is (ExchangeSegment, SecurityId)
+                    sec_id_str = str(instrument_tuple[1])
+                    self.symbol_map[sec_id_str] = internal_symbol
+            # --- END CHANGED CODE ---
 
         if not instruments:
             logger.warning("No valid instruments to subscribe")
@@ -365,9 +423,35 @@ class DhanProvider(BaseMarketDataProvider):
             # Map exchange segment code to string
             exchange_str = self.EXCHANGE_MAP.get(exchange_segment, str(exchange_segment))
             
+            # Resolve to internal symbol using local cache
+            p_symbol = str(security_id)
+            final_symbol = self.symbol_map.get(p_symbol)
+
+            # Fallback: Try to resolve using provider manager if not in local map
+            # This handles cases where symbol_map wasn't populated (e.g. restart) or incomplete
+            if not final_symbol and self.provider_manager:
+                try:
+                    # Note: We don't have the exchange code easily available here without reverse mapping
+                    # But we can try to find if any symbol maps to this security_id
+                    # This is hard without an efficient reverse map in provider_manager.
+                    # However, we can log it and maybe try a direct search code lookup if supported.
+                    # For now, let's rely on the map being correct from subscribe.
+                    pass
+                except Exception:
+                    pass
+
+            if not final_symbol:
+                # CRITICAL: If we can't map Security ID to a symbol, we MUST NOT save it with the ID.
+                # Saving "3432:tick:price" creates garbage keys.
+                # Better to drop the packet and warn.
+                # Limit logging to avoid flooding
+                if int(time.time()) % 60 == 0:  # Log once per minute max per ID roughly (or just standard log throttling)
+                     logger.warning(f"⚠️ Dropped msg for unknown SecurityID: {p_symbol} (Ex: {exchange_segment})")
+                return
+
             # Parse payload based on response code
             data = {}
-            
+
             if response_code == FeedResponseCode.TICKER:
                 # Ticker Packet (16 bytes)
                 # 0-8: Header
@@ -381,29 +465,16 @@ class DhanProvider(BaseMarketDataProvider):
                 ltt = struct.unpack('<i', message[12:16])[0] # Using <i for signed int32 (Epoch)
 
                 data = {
-                    "symbol": str(security_id),
+                    "symbol": final_symbol,
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
                     "volume": 0
                 }
-                
+
             elif response_code == FeedResponseCode.QUOTE:
                 # Quote packet structure (50 bytes):
-                # 0-1: Response code + length
-                # 2-3: Exchange segment
-                # 4-7: Security ID
-                # 8-11: LTP (float32)
-                # 12-13: LTQ (uint16)
-                # 14-17: LTT (uint32)
-                # 18-21: ATP (float32)
-                # 22-25: Volume (uint32)
-                # 26-29: Total Sell Qty (uint32)
-                # 30-33: Total Buy Qty (uint32)
-                # 34-37: Open (float32)
-                # 38-41: Close (float32)
-                # 42-45: High (float32)
-                # 46-49: Low (float32)
+                # ... existing comments ...
 
                 ltp = struct.unpack('<f', message[8:12])[0]
                 ltq = struct.unpack('<H', message[12:14])[0] # Using <H for unsigned int16
@@ -413,7 +484,7 @@ class DhanProvider(BaseMarketDataProvider):
                 volume_full = struct.unpack('<I', message[22:26])[0]  # Total volume for the day
 
                 data = {
-                    "symbol": str(security_id),
+                    "symbol": final_symbol,
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
@@ -464,7 +535,7 @@ class DhanProvider(BaseMarketDataProvider):
                 low_price = struct.unpack('<f', message[58:62])[0]
 
                 data = {
-                    "symbol": str(security_id),
+                    "symbol": final_symbol,
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
@@ -483,11 +554,25 @@ class DhanProvider(BaseMarketDataProvider):
                 # 3. No IST/UTC offset issues
                 ts = int(time.time() * 1000)
 
-                # Use total_volume if available for better accuracy, but RedisTimeseries expects "interval volume".
-                # For now we stick to tick volume (volume) but expose total_volume for debugging/future use.
-                vol_to_use = float(data.get('volume', 0))
+                # B2: Use cumulative volume (total_volume) instead of tick volume (ltq)
+                # If total_volume is 0 (e.g. TICKER packet), we might want to skip volume update or use 0?
+                # Best to use 0 if not available, Redis will handle based on duplicate policy 'max'
+                # (if we send 0 it might be ignored if prev was higher? No, 'max' policy compares new value with *existing value at that timestamp*.
+                # Actually duplicate_policy acts on value at SAME timestamp.
+                # But here we generate fresh timestamp (time.time()).
+                # So we just append.
+                # But wait, if we send 0, and later calculate delta (max - min), we might get strange results if it dips to 0.
+                # However, TICKER packets often don't have volume.
+                # If we send 0, it records 0.
+                # If we want to maintain the "last known cumulative volume", we should probably not send 0 if we don't know it.
+                # But we don't know the last volume here.
+                # Let's use 'total_volume' if present, else 0.
 
-                self.callback(
+                vol_to_use = float(data.get('total_volume', 0))
+                if vol_to_use == 0:
+                     vol_to_use = float(data.get('volume', 0))
+
+                await self.data_queue.add_data(
                     DataIngestionFormat(
                         symbol=data['symbol'],
                         price=float(data['price']),

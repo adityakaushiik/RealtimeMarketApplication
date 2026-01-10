@@ -2,11 +2,12 @@ import asyncio
 import time
 import pytz
 from datetime import datetime, timedelta, timezone
+from datetime import date as DateType
 from typing import List, Optional, Dict
 from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.redis_timeseries import get_redis_timeseries
+from services.redis_timeseries import get_redis_timeseries, RedisTimeSeries
 from services.provider.provider_manager import get_provider_manager
 from services.data.data_resolver import DataResolver
 from models.exchange import Exchange
@@ -21,12 +22,16 @@ from utils.data_validation import validate_ohlc, validate_volume
 
 class DataSaver:
     """
-    DataSaver handles periodic updates of market data from Redis TimeSeries to the database.
-    It updates existing records created by DataCreationService.
+    DataSaver handles end-of-day transfer of market data from Redis TimeSeries to TimescaleDB.
+
+    New Strategy:
+    - During trading hours: Data stays in Redis 5m downsampled keys (not written to DB)
+    - After market close: Transfer all Redis 5m data to TimescaleDB for permanent storage
+    - Historical queries use TimescaleDB; today's queries use Redis
     """
 
     def __init__(self):
-        self.redis_timeseries = get_redis_timeseries()
+        self.redis_timeseries: RedisTimeSeries = get_redis_timeseries()
         self.redis = get_redis()
         self.exchanges: List[Exchange] = []
         self._running_tasks: Dict[str, asyncio.Task] = {}
@@ -171,21 +176,19 @@ class DataSaver:
                 return
 
             logger.info(
-                f"[{exchange.name}] Found {len(keys)} keys. Fetching OHLCV aligned to {align_to_ts}..."
+                f"[{exchange.name}] Found {len(keys)} keys. Fetching OHLCV for last {interval_minutes} minutes..."
             )
 
-            # Fetch OHLCV data for the last interval
-            # We want the bucket starting at align_to_ts (e.g. 13:10).
-            # get_ohlcv_window looks backwards from the provided timestamp.
-            # So we need to align to the END of the bucket (e.g. 13:15) and look back 5 minutes.
-            query_align_ts = align_to_ts + (interval_minutes * 60 * 1000)
+            # Fetch the last N minutes of 5m candles from downsampled keys
+            # For a 15m interval, we get the last 3 x 5m candles
+            now_ts = int(time.time() * 1000)
+            from_ts = align_to_ts  # Start of the period we want to save
 
             tasks = [
-                self.redis_timeseries.get_ohlcv_window(
-                    key,
-                    window_minutes=interval_minutes,
-                    bucket_minutes=interval_minutes,
-                    align_to_ts=query_align_ts,
+                self.redis_timeseries.get_5m_candles(
+                    symbol=key,
+                    from_ts=from_ts,
+                    to_ts=now_ts,
                 )
                 for key in keys
             ]
@@ -194,8 +197,8 @@ class DataSaver:
             valid_data = {}
             missing_data_symbols = []
             for key, result in zip(keys, results):
-                # Check if we have valid data
-                if result and result.get("ts"):
+                # Check if we have valid data (at least one candle)
+                if result and result.get("timestamp") and len(result["timestamp"]) > 0:
                     valid_data[key] = result
                 else:
                     missing_data_symbols.append(key)
@@ -274,146 +277,158 @@ class DataSaver:
                     # Sort by instrument_id
                     valid_items.sort(key=lambda x: x[0])
 
-                    for instrument_id, symbol, data in valid_items:
-                        # Extract scalar values
-                        ts = data["ts"]
-                        open_val = data["open"]
-                        high_val = data["high"]
-                        low_val = data["low"]
-                        close_val = data["close"]
-                        vol_val = (
-                            int(data["volume"]) if data["volume"] is not None else 0
-                        )
-                        tick_count = data.get("count", 0)
+                    for instrument_id, symbol, candles_data in valid_items:
+                        # Process each candle in the list
+                        timestamps = candles_data.get("timestamp", [])
+                        opens = candles_data.get("open", [])
+                        highs = candles_data.get("high", [])
+                        lows = candles_data.get("low", [])
+                        closes = candles_data.get("close", [])
+                        volumes = candles_data.get("volume", [])
 
-                        if open_val is None:  # Skip if no data in this bucket
-                            continue
+                        for i, ts in enumerate(timestamps):
+                            open_val = opens[i] if i < len(opens) else None
+                            high_val = highs[i] if i < len(highs) else None
+                            low_val = lows[i] if i < len(lows) else None
+                            close_val = closes[i] if i < len(closes) else None
+                            vol_val = int(volumes[i]) if i < len(volumes) and volumes[i] is not None else 0
 
-                        # C2: Validate and fix OHLC data
-                        ohlc_result = validate_ohlc(open_val, high_val, low_val, close_val, vol_val, fix=True)
-                        if not ohlc_result['valid'] and ohlc_result['fixed']:
-                            logger.warning(f"[{exchange.name}] Fixed OHLC for {symbol}: {ohlc_result['errors']}")
-                            open_val = ohlc_result['data']['open']
-                            high_val = ohlc_result['data']['high']
-                            low_val = ohlc_result['data']['low']
-                            close_val = ohlc_result['data']['close']
+                            if open_val is None:  # Skip if no data in this bucket
+                                continue
 
-                        # B4: Validate volume
-                        vol_result = validate_volume(vol_val)
-                        if vol_result['warnings']:
-                            logger.warning(f"[{exchange.name}] Volume warning for {symbol}: {vol_result['warnings']}")
-                        vol_val = vol_result['volume']
+                            # C2: Validate and fix OHLC data
+                            ohlc_result = validate_ohlc(open_val, high_val, low_val, close_val, vol_val, fix=True)
+                            if not ohlc_result['valid'] and ohlc_result['fixed']:
+                                logger.warning(f"[{exchange.name}] Fixed OHLC for {symbol}: {ohlc_result['errors']}")
+                                open_val = ohlc_result['data']['open']
+                                high_val = ohlc_result['data']['high']
+                                low_val = ohlc_result['data']['low']
+                                close_val = ohlc_result['data']['close']
 
-                        record_dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                            # B4: Validate volume
+                            vol_result = validate_volume(vol_val)
+                            if vol_result['warnings']:
+                                logger.warning(f"[{exchange.name}] Volume warning for {symbol}: {vol_result['warnings']}")
+                            vol_val = vol_result['volume']
 
-                        # Log tick count for monitoring data quality
-                        if tick_count < 10:
-                            logger.warning(f"[{exchange.name}] Low tick count for {symbol} at {record_dt}: {tick_count} ticks")
+                            record_dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
 
-                        # Update Intraday Record
-                        stmt = (
-                            update(PriceHistoryIntraday)
-                            .where(
+                            # Update Intraday Record
+                            stmt = (
+                                update(PriceHistoryIntraday)
+                                .where(
+                                    PriceHistoryIntraday.instrument_id == instrument_id,
+                                    PriceHistoryIntraday.datetime == record_dt,
+                                )
+                                .values(
+                                    open=open_val,
+                                    high=high_val,
+                                    low=low_val,
+                                    close=close_val,
+                                    volume=vol_val,
+                                    resolve_required=False,
+                                )
+                            )
+                            result = await session.execute(stmt)
+                            if result.rowcount == 0:
+                                # Upsert: Insert if update failed (record doesn't exist)
+                                logger.debug(
+                                    f"Creating new intraday record for {symbol} at {record_dt}"
+                                )
+                                new_record = PriceHistoryIntraday(
+                                    instrument_id=instrument_id,
+                                    datetime=record_dt,
+                                    open=open_val,
+                                    high=high_val,
+                                    low=low_val,
+                                    close=close_val,
+                                    volume=vol_val,
+                                    interval="5m",
+                                    resolve_required=False,
+                                )
+                                session.add(new_record)
+
+                        # Update Daily Record using the last candle's close
+                        if timestamps and closes:
+                            last_ts = timestamps[-1]
+                            last_close = closes[-1]
+                            record_dt = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
+                            record_dt_local = record_dt.astimezone(
+                                pytz.timezone(exchange.timezone)
+                            )
+
+                            daily_dt = datetime.fromtimestamp(
+                                exchange._compute_timestamp(
+                                    record_dt_local.date(), exchange.market_open_time
+                                )
+                                / 1000,
+                                tz=timezone.utc,
+                            )
+
+                            daily_stmt = select(PriceHistoryDaily).where(
+                                PriceHistoryDaily.instrument_id == instrument_id,
+                                PriceHistoryDaily.datetime == daily_dt,
+                            )
+                            daily_result = await session.execute(daily_stmt)
+                            daily_record = daily_result.scalar_one_or_none()
+
+                            # Get aggregated values from all candles for daily update
+                            valid_opens = [o for o in opens if o is not None]
+                            valid_highs = [h for h in highs if h is not None]
+                            valid_lows = [l for l in lows if l is not None]
+                            valid_closes = [c for c in closes if c is not None]
+
+                            daily_open = valid_opens[0] if valid_opens else None
+                            daily_high = max(valid_highs) if valid_highs else None
+                            daily_low = min(valid_lows) if valid_lows else None
+                            daily_close = valid_closes[-1] if valid_closes else None
+
+                            if not daily_record:
+                                logger.debug(
+                                    f"Creating new daily record for {symbol} at {daily_dt}"
+                                )
+                                daily_record = PriceHistoryDaily(
+                                    instrument_id=instrument_id,
+                                    datetime=daily_dt,
+                                    open=daily_open,
+                                    high=daily_high,
+                                    low=daily_low,
+                                    close=daily_close,
+                                    volume=0,
+                                    resolve_required=False,
+                                )
+                                session.add(daily_record)
+
+                            # Update Daily Record values
+                            daily_record.resolve_required = False
+                            if daily_close is not None:
+                                daily_record.close = daily_close
+
+                            if daily_record.open is None and daily_open is not None:
+                                daily_record.open = daily_open
+
+                            if daily_high is not None and (daily_record.high is None or daily_high > daily_record.high):
+                                daily_record.high = daily_high
+
+                            if daily_low is not None and (daily_record.low is None or daily_low < daily_record.low):
+                                daily_record.low = daily_low
+
+                            # Recalculate daily volume from intraday records
+                            day_start = daily_dt
+                            day_end = day_start + timedelta(days=1)
+
+                            await session.flush()
+
+                            vol_stmt = select(func.sum(PriceHistoryIntraday.volume)).where(
                                 PriceHistoryIntraday.instrument_id == instrument_id,
-                                PriceHistoryIntraday.datetime == record_dt,
+                                PriceHistoryIntraday.datetime >= day_start,
+                                PriceHistoryIntraday.datetime < day_end
                             )
-                            .values(
-                                open=open_val,
-                                high=high_val,
-                                low=low_val,
-                                close=close_val,
-                                volume=vol_val,
-                                resolve_required=False,
-                            )
-                        )
-                        result = await session.execute(stmt)
-                        if result.rowcount == 0:
-                            # Upsert: Insert if update failed (record doesn't exist)
-                            logger.info(
-                                f"Creating new intraday record for {symbol} at {record_dt}"
-                            )
-                            new_record = PriceHistoryIntraday(
-                                instrument_id=instrument_id,
-                                datetime=record_dt,
-                                open=open_val,
-                                high=high_val,
-                                low=low_val,
-                                close=close_val,
-                                volume=vol_val,
-                                resolve_required=False,
-                            )
-                            session.add(new_record)
+                            vol_result = await session.execute(vol_stmt)
+                            total_vol = vol_result.scalar() or 0
 
-                        # Update Daily Record
-                        record_dt_local = record_dt.astimezone(
-                            pytz.timezone(exchange.timezone)
-                        )
-
-                        daily_dt = datetime.fromtimestamp(
-                            exchange._compute_timestamp(
-                                record_dt_local.date(), exchange.market_open_time
-                            )
-                            / 1000,
-                            tz=timezone.utc,
-                        )
-
-                        daily_stmt = select(PriceHistoryDaily).where(
-                            PriceHistoryDaily.instrument_id == instrument_id,
-                            PriceHistoryDaily.datetime == daily_dt,
-                        )
-                        daily_result = await session.execute(daily_stmt)
-                        daily_record = daily_result.scalar_one_or_none()
-
-                        if not daily_record:
-                            # Upsert: Create daily record if it doesn't exist
-                            logger.info(
-                                f"Creating new daily record for {symbol} at {daily_dt}"
-                            )
-                            daily_record = PriceHistoryDaily(
-                                instrument_id=instrument_id,
-                                datetime=daily_dt,
-                                open=open_val,
-                                high=high_val,
-                                low=low_val,
-                                close=close_val,
-                                volume=0, # Will be updated below
-                                resolve_required=False,
-                            )
+                            daily_record.volume = total_vol
                             session.add(daily_record)
-
-                        # Update Daily Record values
-                        daily_record.resolve_required = False
-                        daily_record.close = close_val
-
-                        if daily_record.open is None:
-                            daily_record.open = open_val
-
-                        if (
-                            daily_record.high is None
-                            or high_val > daily_record.high
-                        ):
-                            daily_record.high = high_val
-
-                        if daily_record.low is None or low_val < daily_record.low:
-                            daily_record.low = low_val
-
-                        # Recalculate daily volume from intraday records to ensure accuracy and avoid double counting
-                        day_start = daily_dt
-                        day_end = day_start + timedelta(days=1)
-
-                        # We need to flush the session to ensure the new intraday record is visible for the sum query
-                        await session.flush()
-
-                        vol_stmt = select(func.sum(PriceHistoryIntraday.volume)).where(
-                            PriceHistoryIntraday.instrument_id == instrument_id,
-                            PriceHistoryIntraday.datetime >= day_start,
-                            PriceHistoryIntraday.datetime < day_end
-                        )
-                        vol_result = await session.execute(vol_stmt)
-                        total_vol = vol_result.scalar() or 0
-
-                        daily_record.volume = total_vol
-                        session.add(daily_record)
 
                     await session.commit()
 
@@ -462,3 +477,304 @@ class DataSaver:
 
         return mapping
 
+    # ============================================================
+    # END-OF-DAY TRANSFER: Redis 5m data -> TimescaleDB
+    # ============================================================
+
+    async def run_end_of_day_save(self, exchange: Exchange) -> None:
+        """
+        Run end-of-day save for an exchange.
+        Waits for market close + buffer, then transfers Redis 5m data to TimescaleDB.
+        """
+        exchange_name = exchange.name
+        logger.info(f"Starting end-of-day save monitor for {exchange_name}")
+
+        tz = pytz.timezone(exchange.timezone)
+        buffer_minutes = 15  # Wait 15 minutes after market close
+
+        try:
+            while not self._stop_flags.get(exchange_name, False):
+                current_time_ms = int(time.time() * 1000)
+
+                # Update exchange timestamps for current date
+                current_date = datetime.now(tz).date()
+                exchange.update_timestamps_for_date(current_date)
+
+                # Check if we're past market close + buffer
+                save_trigger_time = exchange.end_time + (buffer_minutes * 60 * 1000)
+
+                if current_time_ms >= save_trigger_time:
+                    # Check if we already saved for today
+                    save_key = f"eod_saved:{exchange_name}:{current_date.isoformat()}"
+                    if self.redis:
+                        already_saved = await self.redis.get(save_key)
+                        if already_saved:
+                            # Already saved for today, wait for tomorrow
+                            next_date = current_date + timedelta(days=1)
+                            exchange.update_timestamps_for_date(next_date)
+                            wait_seconds = (exchange.end_time + (buffer_minutes * 60 * 1000) - current_time_ms) / 1000
+                            wait_seconds = max(60.0, min(wait_seconds, 3600.0))  # At least 1 min, at most 1 hour
+                            await asyncio.sleep(wait_seconds)
+                            continue
+
+                    # Perform end-of-day save
+                    logger.info(f"🌙 Starting end-of-day save for {exchange_name} ({current_date})")
+                    await self.transfer_redis_to_db(exchange, current_date)
+
+                    # Mark as saved
+                    if self.redis:
+                        await self.redis.set(save_key, "1", ex=24*60*60)  # Expire in 24 hours
+
+                    logger.info(f"✅ End-of-day save completed for {exchange_name}")
+
+                    # Wait for next day
+                    await asyncio.sleep(3600)  # Check again in 1 hour
+                else:
+                    # Market still open or in pre-close period, wait
+                    wait_ms = save_trigger_time - current_time_ms
+                    wait_seconds = min(wait_ms / 1000, 300)  # Check at least every 5 minutes
+                    await asyncio.sleep(wait_seconds)
+
+        except asyncio.CancelledError:
+            logger.info(f"End-of-day save cancelled for {exchange_name}")
+        except Exception as e:
+            logger.error(f"Error in end-of-day save for {exchange_name}: {e}", exc_info=True)
+
+    async def transfer_redis_to_db(self, exchange: Exchange, trade_date: DateType) -> int:
+        """
+        Transfer all Redis 5m candle data to TimescaleDB for a given trading day.
+
+        Args:
+            exchange: The exchange to transfer data for
+            trade_date: The trading date to transfer
+
+        Returns:
+            Number of candles transferred
+        """
+        logger.info(f"📦 Transferring Redis data to TimescaleDB for {exchange.name} on {trade_date}")
+
+        tz = pytz.timezone(exchange.timezone)
+
+        # Calculate time range for the trading day
+        if exchange.market_open_time and exchange.market_close_time:
+            day_start_local = tz.localize(datetime.combine(trade_date, exchange.market_open_time))
+            day_end_local = tz.localize(datetime.combine(trade_date, exchange.market_close_time))
+        else:
+            day_start_local = tz.localize(datetime.combine(trade_date, datetime.strptime("09:00", "%H:%M").time()))
+            day_end_local = tz.localize(datetime.combine(trade_date, datetime.strptime("16:00", "%H:%M").time()))
+
+        from_ts = int(day_start_local.timestamp() * 1000)
+        to_ts = int(day_end_local.timestamp() * 1000)
+
+        total_transferred = 0
+
+        # Get recordable symbols from Redis
+        recordable_symbols = await self.redis_timeseries.get_recordable_symbols()
+        if not recordable_symbols:
+            logger.warning(f"No recordable symbols found in Redis for {exchange.name}")
+            return 0
+
+        async for session in get_db_session():
+            try:
+                # Get symbol -> instrument_id mapping (only for this exchange)
+                symbol_map = await self._get_symbol_to_instrument_mapping(
+                    session, recordable_symbols, exchange.id
+                )
+
+                for symbol, instrument_id in symbol_map.items():
+                    try:
+                        # Fetch 5m candles from Redis
+                        candles = await self.redis_timeseries.get_5m_candles(
+                            symbol=symbol,
+                            from_ts=from_ts,
+                            to_ts=to_ts,
+                        )
+
+                        if not candles or not candles.get("timestamp"):
+                            continue
+
+                        timestamps = candles["timestamp"]
+                        opens = candles["open"]
+                        highs = candles["high"]
+                        lows = candles["low"]
+                        closes = candles["close"]
+                        volumes = candles["volume"]
+
+                        candles_inserted = 0
+
+                        for i, ts in enumerate(timestamps):
+                            candle_dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+
+                            open_val = opens[i]
+                            high_val = highs[i]
+                            low_val = lows[i]
+                            close_val = closes[i]
+                            vol_val = int(volumes[i]) if volumes[i] else 0
+
+                            if open_val is None:
+                                continue
+
+                            # Validate OHLC
+                            ohlc_result = validate_ohlc(open_val, high_val, low_val, close_val, vol_val, fix=True)
+                            if ohlc_result.get('fixed'):
+                                open_val = ohlc_result['data']['open']
+                                high_val = ohlc_result['data']['high']
+                                low_val = ohlc_result['data']['low']
+                                close_val = ohlc_result['data']['close']
+
+                            # Check if record already exists
+                            existing = await session.execute(
+                                select(PriceHistoryIntraday).where(
+                                    PriceHistoryIntraday.instrument_id == instrument_id,
+                                    PriceHistoryIntraday.datetime == candle_dt,
+                                )
+                            )
+                            existing_record = existing.scalar_one_or_none()
+
+                            if existing_record:
+                                # Update existing record
+                                existing_record.open = open_val
+                                existing_record.high = high_val
+                                existing_record.low = low_val
+                                existing_record.close = close_val
+                                existing_record.volume = vol_val
+                                existing_record.resolve_required = False
+                            else:
+                                # Insert new record
+                                new_record = PriceHistoryIntraday(
+                                    instrument_id=instrument_id,
+                                    datetime=candle_dt,
+                                    open=open_val,
+                                    high=high_val,
+                                    low=low_val,
+                                    close=close_val,
+                                    volume=vol_val,
+                                    interval="5m",
+                                    resolve_required=False,
+                                )
+                                session.add(new_record)
+
+                            candles_inserted += 1
+
+                        if candles_inserted > 0:
+                            total_transferred += candles_inserted
+                            logger.debug(f"Transferred {candles_inserted} candles for {symbol}")
+
+                    except Exception as e:
+                        logger.error(f"Error transferring {symbol}: {e}")
+                        continue
+
+                # Update daily records from intraday data
+                await self._update_daily_records_from_intraday(session, exchange, trade_date, symbol_map)
+
+                await session.commit()
+                logger.info(f"📦 Transferred {total_transferred} total candles for {exchange.name}")
+
+            except Exception as e:
+                logger.error(f"Error in transfer_redis_to_db: {e}", exc_info=True)
+                await session.rollback()
+                raise
+
+        return total_transferred
+
+    async def _update_daily_records_from_intraday(
+        self,
+        session: AsyncSession,
+        exchange: Exchange,
+        trade_date: DateType,
+        symbol_map: Dict[str, int],
+    ) -> None:
+        """
+        Update or create daily records by aggregating intraday data.
+        """
+        tz = pytz.timezone(exchange.timezone)
+
+        # Calculate the daily record datetime (typically market open time)
+        if exchange.market_open_time:
+            daily_dt_local = tz.localize(datetime.combine(trade_date, exchange.market_open_time))
+        else:
+            daily_dt_local = tz.localize(datetime.combine(trade_date, datetime.strptime("09:00", "%H:%M").time()))
+
+        daily_dt_utc = daily_dt_local.astimezone(timezone.utc)
+        day_end_utc = daily_dt_utc + timedelta(days=1)
+
+        for symbol, instrument_id in symbol_map.items():
+            try:
+                # Aggregate intraday data
+                agg_stmt = select(
+                    func.min(PriceHistoryIntraday.open).label("first_open"),
+                    func.max(PriceHistoryIntraday.high).label("high"),
+                    func.min(PriceHistoryIntraday.low).label("low"),
+                    func.sum(PriceHistoryIntraday.volume).label("volume"),
+                ).where(
+                    PriceHistoryIntraday.instrument_id == instrument_id,
+                    PriceHistoryIntraday.datetime >= daily_dt_utc,
+                    PriceHistoryIntraday.datetime < day_end_utc,
+                )
+                agg_result = await session.execute(agg_stmt)
+                agg_row = agg_result.one_or_none()
+
+                if not agg_row or agg_row.high is None:
+                    continue
+
+                # Get open (first candle)
+                open_stmt = select(PriceHistoryIntraday.open).where(
+                    PriceHistoryIntraday.instrument_id == instrument_id,
+                    PriceHistoryIntraday.datetime >= daily_dt_utc,
+                    PriceHistoryIntraday.datetime < day_end_utc,
+                    PriceHistoryIntraday.open.isnot(None),
+                ).order_by(PriceHistoryIntraday.datetime.asc()).limit(1)
+                open_val = (await session.execute(open_stmt)).scalar_one_or_none()
+
+                # Get close (last candle)
+                close_stmt = select(PriceHistoryIntraday.close).where(
+                    PriceHistoryIntraday.instrument_id == instrument_id,
+                    PriceHistoryIntraday.datetime >= daily_dt_utc,
+                    PriceHistoryIntraday.datetime < day_end_utc,
+                    PriceHistoryIntraday.close.isnot(None),
+                ).order_by(PriceHistoryIntraday.datetime.desc()).limit(1)
+                close_val = (await session.execute(close_stmt)).scalar_one_or_none()
+
+                # Find or create daily record
+                daily_stmt = select(PriceHistoryDaily).where(
+                    PriceHistoryDaily.instrument_id == instrument_id,
+                    PriceHistoryDaily.datetime == daily_dt_utc,
+                )
+                daily_result = await session.execute(daily_stmt)
+                daily_record = daily_result.scalar_one_or_none()
+
+                if daily_record:
+                    daily_record.open = open_val
+                    daily_record.high = agg_row.high
+                    daily_record.low = agg_row.low
+                    daily_record.close = close_val
+                    daily_record.volume = int(agg_row.volume) if agg_row.volume else 0
+                    daily_record.resolve_required = False
+                else:
+                    daily_record = PriceHistoryDaily(
+                        instrument_id=instrument_id,
+                        datetime=daily_dt_utc,
+                        open=open_val,
+                        high=agg_row.high,
+                        low=agg_row.low,
+                        close=close_val,
+                        volume=int(agg_row.volume) if agg_row.volume else 0,
+                        resolve_required=False,
+                    )
+                    session.add(daily_record)
+
+            except Exception as e:
+                logger.error(f"Error updating daily record for {symbol}: {e}")
+                continue
+
+    async def start_end_of_day_monitors(self) -> None:
+        """Start end-of-day save monitors for all exchanges."""
+        if not self.exchanges:
+            logger.warning("No exchanges registered for end-of-day monitoring")
+            return
+
+        for exchange in self.exchanges:
+            task = asyncio.create_task(self.run_end_of_day_save(exchange))
+            self._running_tasks[f"{exchange.name}_eod"] = task
+
+        logger.info(f"Started end-of-day monitors for {len(self.exchanges)} exchange(s)")

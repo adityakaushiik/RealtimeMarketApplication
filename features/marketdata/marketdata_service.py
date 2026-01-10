@@ -1,9 +1,11 @@
 import datetime
-from typing import Optional
+from typing import Optional, List
 import json
+import pytz
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from config.redis_config import get_redis
 from config.logger import logger
@@ -21,6 +23,25 @@ from features.marketdata.marketdata_schema import (
 from models import PriceHistoryIntraday, PriceHistoryDaily, Instrument
 from services.data.data_ingestion import get_provider_manager
 from services.redis_timeseries import get_redis_timeseries
+
+
+def _get_today_boundary_utc(exchange_timezone: str) -> datetime.datetime:
+    """
+    Get the start of "today" in exchange timezone, converted to UTC.
+    Used to determine what data to fetch from Redis vs TimescaleDB.
+    """
+    tz = pytz.timezone(exchange_timezone or "UTC")
+    now_local = datetime.datetime.now(tz)
+    today_start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return today_start_local.astimezone(datetime.timezone.utc)
+
+
+def _is_today_in_exchange_tz(dt: datetime.datetime, exchange_timezone: str) -> bool:
+    """Check if a datetime is 'today' in the exchange's timezone."""
+    tz = pytz.timezone(exchange_timezone or "UTC")
+    now_local = datetime.datetime.now(tz)
+    dt_local = dt.astimezone(tz) if dt.tzinfo else tz.localize(dt)
+    return dt_local.date() == now_local.date()
 
 
 # PriceHistoryIntraday CRUD
@@ -237,27 +258,98 @@ async def get_price_history_intraday(
     start_date: Optional[int] = None,
     end_date: Optional[int] = None,
 ) -> list[PriceHistoryIntradayInDb]:
-    """Get intraday price history for a given instrument"""
-    current_time_utc = datetime.datetime.now(datetime.UTC)
+    """
+    Get intraday price history for a given instrument.
 
-    # Build the query
+    Data Source Strategy:
+    - Today's data (in exchange timezone): Fetch from Redis 5m downsampled keys
+    - Historical data (before today): Fetch from TimescaleDB
+    - Merge and return sorted by datetime descending
+    """
+    current_time_utc = datetime.datetime.now(datetime.timezone.utc)
+    result_list: List[PriceHistoryIntradayInDb] = []
+
+    # Get instrument with exchange info
+    stmt_instrument = (
+        select(Instrument)
+        .options(joinedload(Instrument.exchange))
+        .where(Instrument.id == instrument_id)
+    )
+    result = await session.execute(stmt_instrument)
+    instrument = result.scalar_one_or_none()
+
+    if not instrument:
+        return []
+
+    # Get exchange timezone
+    exchange_tz = instrument.exchange.timezone if instrument.exchange else "UTC"
+    today_boundary_utc = _get_today_boundary_utc(exchange_tz)
+
+    rts = get_redis_timeseries()
+
+    # ========================================
+    # 1. Get TODAY's data from Redis (5m candles + current ongoing candle)
+    # ========================================
+    if instrument.should_record_data:
+        try:
+            today_start_ms = int(today_boundary_utc.timestamp() * 1000)
+            now_ms = int(current_time_utc.timestamp() * 1000)
+
+            # Use get_all_intraday_candles which includes both completed and current candle
+            redis_candles = await rts.get_all_intraday_candles(
+                symbol=instrument.symbol,
+                from_ts=today_start_ms,
+                to_ts=now_ms,
+            )
+
+            if redis_candles and redis_candles.get("timestamp"):
+                timestamps = redis_candles["timestamp"]
+                opens = redis_candles["open"]
+                highs = redis_candles["high"]
+                lows = redis_candles["low"]
+                closes = redis_candles["close"]
+                volumes = redis_candles["volume"]
+
+                for i, ts in enumerate(timestamps):
+                    dt = datetime.datetime.fromtimestamp(ts / 1000, tz=datetime.timezone.utc)
+                    result_list.append(PriceHistoryIntradayInDb(
+                        id=-1,  # Synthetic ID for Redis data
+                        instrument_id=instrument_id,
+                        datetime=dt,
+                        open=opens[i],
+                        high=highs[i],
+                        low=lows[i],
+                        close=closes[i],
+                        volume=int(volumes[i]) if volumes[i] else 0,
+                        resolve_required=False,
+                        interval=interval or "5m",
+                        previous_close=None,
+                        adj_close=None,
+                        deliver_percentage=None,
+                    ))
+
+        except Exception as e:
+            logger.error(f"Error fetching today's data from Redis for {instrument.symbol}: {e}")
+
+
+    # ========================================
+    # 2. Get HISTORICAL data from TimescaleDB
+    # ========================================
     stmt = select(PriceHistoryIntraday).where(
-        (PriceHistoryIntraday.instrument_id == instrument_id)
-        & (PriceHistoryIntraday.datetime <= current_time_utc)
+        (PriceHistoryIntraday.instrument_id == instrument_id) &
+        (PriceHistoryIntraday.datetime < today_boundary_utc)  # Only historical data
     )
 
-    # Only filter by interval if it's provided and not None/Empty
     if interval:
         stmt = stmt.where(PriceHistoryIntraday.interval == interval)
 
     stmt = stmt.order_by(PriceHistoryIntraday.datetime.desc())
 
-    result = await session.execute(stmt)
-    records = result.scalars().all()
+    db_result = await session.execute(stmt)
+    db_records = db_result.scalars().all()
 
-    # Convert to Pydantic models
-    result_list = [
-        PriceHistoryIntradayInDb(
+    for r in db_records:
+        result_list.append(PriceHistoryIntradayInDb(
             id=r.id,
             instrument_id=r.instrument_id,
             datetime=r.datetime,
@@ -271,48 +363,10 @@ async def get_price_history_intraday(
             deliver_percentage=r.deliver_percentage,
             resolve_required=r.resolve_required,
             interval=r.interval,
-        )
-        for r in records
-    ]
+        ))
 
-    # Merge with ongoing candle from Redis
-    instrument = await session.get(Instrument, instrument_id)
-    if instrument:
-        rts = get_redis_timeseries()
-        # Get latest 5m candle (ongoing)
-        latest_candle = await rts.get_ohlcv_last_5m(instrument.symbol)
-
-        if latest_candle:
-            ts = latest_candle['ts']
-            dt = datetime.datetime.fromtimestamp(ts / 1000, tz=datetime.timezone.utc)
-
-            if not result_list or result_list[0].datetime < dt:
-                new_rec = PriceHistoryIntradayInDb(
-                    id=-1,
-                    instrument_id=instrument_id,
-                    datetime=dt,
-                    open=latest_candle['open'],
-                    high=latest_candle['high'],
-                    low=latest_candle['low'],
-                    close=latest_candle['close'],
-                    volume=int(latest_candle['volume']),
-                    resolve_required=False,
-                    interval=interval or "5m",
-                    previous_close=None,
-                    adj_close=None,
-                    deliver_percentage=None
-                )
-                result_list.insert(0, new_rec)
-            elif result_list and result_list[0].datetime == dt:
-                # Update existing record with fresher data from Redis
-                rec = result_list[0]
-                rec.open = latest_candle['open']
-                rec.high = latest_candle['high']
-                rec.low = latest_candle['low']
-                rec.close = latest_candle['close']
-                # For volume, we should use the Redis volume as it is the most up-to-date for the current bucket
-                # The DB record might be lagging or incomplete if we are in the middle of the bucket
-                rec.volume = int(latest_candle['volume'])
+    # Sort by datetime descending (most recent first)
+    result_list.sort(key=lambda x: x.datetime, reverse=True)
 
     return result_list
 
@@ -364,7 +418,7 @@ async def get_price_history_daily(
     instrument = await session.get(Instrument, instrument_id)
     if instrument and result_list:
         rts = get_redis_timeseries()
-        latest_candle = await rts.get_ohlcv_last_5m(instrument.symbol)
+        latest_candle = await rts.get_current_5m_candle(instrument.symbol)
 
         if latest_candle:
             # We assume the first record is for the current day

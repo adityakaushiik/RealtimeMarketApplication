@@ -1,7 +1,8 @@
 import asyncio
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from config.redis_config import get_redis
+from config.logger import logger
 from redis.exceptions import ResponseError
 
 from utils.common_constants import DataBroadcastFormat
@@ -11,452 +12,319 @@ class RedisTimeSeries:
     """
     Helper around RedisTimeSeries module to store tick data (price, volume) and query OHLCV.
 
-    Keys created:
-      <key>:price  - price ticks
-      <key>:volume - size/volume per tick (cumulative volume, stored as last value)
-      <key>:volume_delta - volume delta per tick (for accurate aggregation)
+    Key Structure:
+      Raw Ticks (15 minute retention):
+        <symbol>:tick:price  - raw price ticks
+        <symbol>:tick:volume - raw volume ticks (cumulative, uses max policy)
 
-    Retention: 60 minutes (extended from 15 for robustness).
+      Downsampled 5m Candles (full trading day retention ~18 hours):
+        <symbol>:5m:open   - first price in 5m bucket
+        <symbol>:5m:high   - max price in 5m bucket
+        <symbol>:5m:low    - min price in 5m bucket
+        <symbol>:5m:close  - last price in 5m bucket
+        <symbol>:5m:volume - sum of volume in 5m bucket (or max-min for cumulative)
+
+    Downsampling is handled automatically via TS.CREATERULE for instruments
+    with should_record_data=True.
+
+    PRIMARY CANDLE READING METHODS:
+      - get_5m_candles(symbol, from_ts, to_ts) - Get historical 5m candles from downsampled keys
+      - get_current_5m_candle(symbol) - Get ongoing candle from tick data (real-time)
+      - get_current_daily_candle(symbol, day_start_ts) - Aggregate today's candles into daily OHLCV
+      - get_all_intraday_candles(symbol, from_ts, to_ts) - Get 5m candles + current ongoing candle
     """
 
-    def __init__(self, retention_minutes: int = 60, redis_client=None) -> None:
-        self.retention_ms = retention_minutes * 60 * 1000
-        # Track last known cumulative volume for delta calculation (B2)
+    # Retention periods
+    TICK_RETENTION_MS = 15 * 60 * 1000  # 15 minutes for raw ticks
+    CANDLE_5M_RETENTION_MS = 18 * 60 * 60 * 1000  # 18 hours for 5m candles (covers full trading day)
+    BUCKET_5M_MS = 5 * 60 * 1000  # 5 minute buckets
+
+    def __init__(self, redis_client=None) -> None:
         self._last_cumulative_volume: Dict[str, int] = {}
-        # Allow dependency injection of a redis client; else lazy init on first use
         self._redis = redis_client
+        self._downsampling_initialized: Set[str] = set()
 
     def _get_client(self):
         if self._redis is None:
             self._redis = get_redis()
         return self._redis
 
-    def _align_to_interval_slot(
-        self, timestamp_ms: int, interval_minutes: int = 5, ceiling: bool = False
-    ) -> int:
-        """
-        Align a timestamp to the nearest interval slot boundary.
-
-        Args:
-            timestamp_ms: Timestamp in milliseconds
-            interval_minutes: Interval in minutes (e.g., 1, 5, 15)
-            ceiling: If True, align to next slot (ceiling); if False, align to current slot (floor)
-
-        Returns:
-            Aligned timestamp in milliseconds
-        """
-        interval_ms = interval_minutes * 60 * 1000
+    def _align_to_5m_slot(self, timestamp_ms: int, ceiling: bool = False) -> int:
+        """Align a timestamp to the nearest 5-minute slot boundary."""
+        interval_ms = self.BUCKET_5M_MS
         if ceiling:
-            # Ceiling: round up to next interval boundary (unless already on boundary)
             remainder = timestamp_ms % interval_ms
             if remainder == 0:
                 return timestamp_ms
             return timestamp_ms + (interval_ms - remainder)
         else:
-            # Floor: round down to current interval boundary
             return (timestamp_ms // interval_ms) * interval_ms
 
-    async def create_timeseries(self, key: str) -> None:
-        """Create price and volume time series for a symbol with retention of 15 minutes.
-        If the series already exist, the calls are ignored.
-        """
-        r = self._get_client()
-        price_key = f"{key}:price"
-        vol_key = f"{key}:volume"
+    # ============================================================
+    # KEY NAMING HELPERS
+    # ============================================================
 
-        # Use pipeline to create both keys in one go
-        async with r.pipeline() as pipe:
+    def _tick_price_key(self, symbol: str) -> str:
+        return f"{symbol}:tick:price"
+
+    def _tick_volume_key(self, symbol: str) -> str:
+        return f"{symbol}:tick:volume"
+
+    def _5m_open_key(self, symbol: str) -> str:
+        return f"{symbol}:5m:open"
+
+    def _5m_high_key(self, symbol: str) -> str:
+        return f"{symbol}:5m:high"
+
+    def _5m_low_key(self, symbol: str) -> str:
+        return f"{symbol}:5m:low"
+
+    def _5m_close_key(self, symbol: str) -> str:
+        return f"{symbol}:5m:close"
+
+    def _5m_volume_key(self, symbol: str) -> str:
+        return f"{symbol}:5m:volume"
+
+    # ============================================================
+    # TIMESERIES CREATION & DOWNSAMPLING RULES
+    # ============================================================
+
+    async def create_tick_timeseries(self, symbol: str) -> None:
+        """Create raw tick time series for a symbol with 15 minute retention."""
+        r = self._get_client()
+        price_key = self._tick_price_key(symbol)
+        vol_key = self._tick_volume_key(symbol)
+
+        # Create price series
+        try:
+            await r.ts().create(
+                price_key,
+                retention_msecs=self.TICK_RETENTION_MS,
+                labels={"type": "tick", "field": "price", "symbol": symbol},
+                duplicate_policy="last",
+            )
+        except ResponseError as e:
+            if "key already exists" not in str(e).lower():
+                logger.warning(f"Error creating timeseries {price_key}: {e}")
+
+        # Create volume series
+        try:
+            await r.ts().create(
+                vol_key,
+                retention_msecs=self.TICK_RETENTION_MS,
+                labels={"type": "tick", "field": "volume", "symbol": symbol},
+                duplicate_policy="max",
+            )
+        except ResponseError as e:
+            if "key already exists" not in str(e).lower():
+                logger.warning(f"Error creating timeseries {vol_key}: {e}")
+
+    async def create_5m_timeseries(self, symbol: str) -> None:
+        """Create 5-minute downsampled time series for a symbol with full-day retention."""
+        r = self._get_client()
+
+        keys_config = [
+            (self._5m_open_key(symbol), "open"),
+            (self._5m_high_key(symbol), "high"),
+            (self._5m_low_key(symbol), "low"),
+            (self._5m_close_key(symbol), "close"),
+            (self._5m_volume_key(symbol), "volume"),
+        ]
+
+        for key, field in keys_config:
+            dup_policy = "sum" if field == "volume" else "last"
             try:
-                pipe.ts().create(
-                    price_key,
-                    retention_msecs=self.retention_ms,
-                    labels={"ts": "price", "key": key},
-                    duplicate_policy="last",
+                await r.ts().create(
+                    key,
+                    retention_msecs=self.CANDLE_5M_RETENTION_MS,
+                    labels={"type": "5m", "field": field, "symbol": symbol},
+                    duplicate_policy=dup_policy,
                 )
-                pipe.ts().create(
-                    vol_key,
-                    retention_msecs=self.retention_ms,
-                    labels={"ts": "volume", "key": key},
-                    duplicate_policy="sum",
-                )
-                await pipe.execute()
             except ResponseError as e:
-                # Ignore "key already exists" errors, raise others
+                # Ignore "key already exists" errors
                 if "key already exists" not in str(e).lower():
-                    raise
+                     logger.warning(f"Error creating 5m timeseries {key}: {e}")
 
-    async def add_to_timeseries(
-        self, key: str, timestamp: float, price: float, volume: float = 0.0
-    ) -> None:
-        """
-        Add tick data to timeseries.
+    async def setup_downsampling_rules(self, symbol: str) -> None:
+        """Create TS.CREATERULE to automatically downsample ticks into 5m candles."""
+        if symbol in self._downsampling_initialized:
+            return
 
-        B2: Volume handling - if volume appears to be cumulative (larger than previous),
-        calculate delta for accurate aggregation. Otherwise treat as incremental.
-        """
         r = self._get_client()
-        price_key = f"{key}:price"
-        vol_key = f"{key}:volume"
+        tick_price = self._tick_price_key(symbol)
+        tick_volume = self._tick_volume_key(symbol)
 
-        # B2: Calculate volume delta for cumulative volumes
-        volume_to_store = float(volume)
-        last_vol = self._last_cumulative_volume.get(key, 0)
+        rules = [
+            (tick_price, self._5m_open_key(symbol), "first"),
+            (tick_price, self._5m_high_key(symbol), "max"),
+            (tick_price, self._5m_low_key(symbol), "min"),
+            (tick_price, self._5m_close_key(symbol), "last"),
+            (tick_volume, self._5m_volume_key(symbol), "range"),
+        ]
 
-        if volume > 0:
-            # If volume is greater than last known, treat as cumulative and calc delta
-            if volume > last_vol:
-                volume_to_store = float(volume - last_vol)
-                self._last_cumulative_volume[key] = int(volume)
-            elif volume < last_vol * 0.1:
-                # Volume much smaller likely means new day/reset - use as-is
-                volume_to_store = float(volume)
-                self._last_cumulative_volume[key] = int(volume)
-            # else: volume same or slightly less, use as incremental
+        for source_key, dest_key, agg_type in rules:
+            try:
+                await r.ts().createrule(
+                    source_key,
+                    dest_key,
+                    aggregation_type=agg_type,
+                    bucket_size_msec=self.BUCKET_5M_MS,
+                )
+            except ResponseError as e:
+                err_msg = str(e).lower()
+                if "rule already exists" not in err_msg and "destination key already has a src rule" not in err_msg:
+                    logger.warning(f"Error creating rule {source_key} -> {dest_key}: {e}")
 
-        # Optimistic add: try to add first. If it fails because key doesn't exist, create and retry.
+        self._downsampling_initialized.add(symbol)
+        logger.debug(f"Downsampling rules created for {symbol}")
+
+    async def initialize_recordable_instruments(self, symbols: List[str]) -> None:
+        """Initialize tick and 5m time series with downsampling rules for all recordable instruments."""
+        logger.info(f"Initializing Redis TimeSeries for {len(symbols)} recordable instruments...")
+
+        for symbol in symbols:
+            try:
+                await self.create_tick_timeseries(symbol)
+                await self.create_5m_timeseries(symbol)
+                await self.setup_downsampling_rules(symbol)
+            except Exception as e:
+                logger.error(f"Error initializing timeseries for {symbol}: {e}")
+
+        logger.info(f"✅ Initialized Redis TimeSeries for {len(symbols)} instruments")
+
+    # ============================================================
+    # TICK DATA INGESTION
+    # ============================================================
+
+    async def add_tick(
+        self, symbol: str, timestamp: int, price: float, volume: float = 0.0
+    ) -> None:
+        """Add a raw tick to the tick time series."""
+        r = self._get_client()
+        price_key = self._tick_price_key(symbol)
+        vol_key = self._tick_volume_key(symbol)
+
         try:
             async with r.pipeline() as pipe:
                 pipe.ts().add(price_key, timestamp, float(price), on_duplicate="last")
-                pipe.ts().add(vol_key, timestamp, volume_to_store, on_duplicate="sum")
+                pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate="max")
                 await pipe.execute()
         except ResponseError as e:
             err_str = str(e).lower()
             if "key does not exist" in err_str:
-                await self.create_timeseries(key)
+                await self.create_tick_timeseries(symbol)
                 async with r.pipeline() as pipe:
                     pipe.ts().add(price_key, timestamp, float(price), on_duplicate="last")
-                    pipe.ts().add(vol_key, timestamp, volume_to_store, on_duplicate="sum")
+                    pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate="max")
                     await pipe.execute()
             elif "timestamp cannot be older" in err_str:
-                pass  # Ignore out-of-order data
+                pass
             else:
                 raise
 
-    async def get_ohlcv_last_5m(self, key: str) -> Optional[Dict[str, float]]:
-        """Return the OHLCV for the last 5 minutes as a single bucket, including the ongoing candle."""
-        now = int(time.time() * 1000)
-        # Align to next 5-minute slot (ceiling) to include ongoing candle
-        aligned_now = self._align_to_interval_slot(
-            now, interval_minutes=5, ceiling=True
-        )
-        return await self.get_ohlcv_window(
-            key, window_minutes=5, align_to_ts=aligned_now
-        )
+    async def add_to_timeseries(
+        self, key: str, timestamp: float, price: float, volume: float = 0.0
+    ) -> None:
+        """Legacy method - redirects to add_tick."""
+        await self.add_tick(key, int(timestamp), price, volume)
 
-    async def get_last_traded_price(self, key: str) -> Optional[DataBroadcastFormat]:
-        """Return the last traded price, timestamp, and volume for the given key.
+    # ============================================================
+    # DIRECT 5M CANDLE INSERTION (for gap filling)
+    # ============================================================
 
-        Uses TS.GET which is optimized for retrieving the latest sample.
-        Returns a dict with timestamp, price, and volume, or None if no data exists.
-
-        Returns:
-            Dict with keys: 'timestamp', 'price', 'volume' or None
-            Example: {"timestamp": 1700000000000, "price": 150.25, "volume": 1000}
-        """
+    async def add_5m_candle(
+        self,
+        symbol: str,
+        timestamp_ms: int,
+        open_price: float,
+        high_price: float,
+        low_price: float,
+        close_price: float,
+        volume: float,
+    ) -> None:
+        """Directly insert a 5m candle (used for gap filling from historical API)."""
         r = self._get_client()
-        price_key = f"{key}:price"
-        vol_key = f"{key}:volume"
 
         try:
-            # Fetch price and volume in parallel using TS.GET
-            price_result, vol_result = await asyncio.gather(
-                r.ts().get(price_key), r.ts().get(vol_key), return_exceptions=True
-            )
-
-            # Handle price result
-            if isinstance(price_result, Exception):
-                return None
-            if not price_result or len(price_result) < 2:
-                return None
-
-            timestamp = int(price_result[0])
-            price = float(price_result[1])
-
-            # Handle volume result (may not exist or have errors)
-            volume = 0.0
-            if (
-                not isinstance(vol_result, Exception)
-                and vol_result
-                and len(vol_result) >= 2
-            ):
-                volume = float(vol_result[1])
-
-            return DataBroadcastFormat(
-                timestamp=timestamp, symbol=key, price=price, volume=volume
-            )
-
+            async with r.pipeline() as pipe:
+                pipe.ts().add(self._5m_open_key(symbol), timestamp_ms, float(open_price), on_duplicate="first")
+                pipe.ts().add(self._5m_high_key(symbol), timestamp_ms, float(high_price), on_duplicate="max")
+                pipe.ts().add(self._5m_low_key(symbol), timestamp_ms, float(low_price), on_duplicate="min")
+                pipe.ts().add(self._5m_close_key(symbol), timestamp_ms, float(close_price), on_duplicate="last")
+                pipe.ts().add(self._5m_volume_key(symbol), timestamp_ms, float(volume), on_duplicate="sum")
+                await pipe.execute()
         except ResponseError as e:
-            # Handle case where key doesn't exist
-            if "key does not exist" in str(
-                e
-            ).lower() or "TSDB: the key does not exist" in str(e):
-                return None
-            raise
+            err_str = str(e).lower()
+            if "key does not exist" in err_str:
+                await self.create_5m_timeseries(symbol)
+                async with r.pipeline() as pipe:
+                    pipe.ts().add(self._5m_open_key(symbol), timestamp_ms, float(open_price), on_duplicate="first")
+                    pipe.ts().add(self._5m_high_key(symbol), timestamp_ms, float(high_price), on_duplicate="max")
+                    pipe.ts().add(self._5m_low_key(symbol), timestamp_ms, float(low_price), on_duplicate="min")
+                    pipe.ts().add(self._5m_close_key(symbol), timestamp_ms, float(close_price), on_duplicate="last")
+                    pipe.ts().add(self._5m_volume_key(symbol), timestamp_ms, float(volume), on_duplicate="sum")
+                    await pipe.execute()
+            elif "timestamp cannot be older" in err_str:
+                pass
+            else:
+                raise
 
-    async def get_multiple_last_traded_prices(
-        self, keys: List[str]
-    ) -> List[DataBroadcastFormat]:
-        """Return last traded price, timestamp, and volume for multiple symbols.
+    # ============================================================
+    # PRIMARY CANDLE READING METHODS
+    # ============================================================
 
-        Performs concurrent TS.GET operations for each symbol's price and volume series.
-        Any symbol without a valid latest price sample is skipped. Volume defaults to 0.0 if
-        missing or errored.
+    async def get_5m_candles(
+        self,
+        symbol: str,
+        from_ts: Optional[int] = None,
+        to_ts: Optional[int] = None,
+    ) -> Dict[str, List]:
+        """
+        Get 5m candle data from downsampled keys.
 
         Args:
-            keys: List of symbol keys (e.g. ["AAPL", "MSFT"]).
+            symbol: Instrument symbol
+            from_ts: Start timestamp in milliseconds (default: 18 hours ago)
+            to_ts: End timestamp in milliseconds (default: now)
 
         Returns:
-            List[DataBroadcastFormat] where each entry contains timestamp, symbol, price, volume.
+            Dict with keys: timestamp, open, high, low, close, volume
+            Each value is a list, ordered by timestamp ascending.
         """
-        if not keys:
-            return []
         r = self._get_client()
 
-        # Use pipeline to batch all GET commands in a single RTT
-        async with r.pipeline() as pipe:
-            for k in keys:
-                pipe.ts().get(f"{k}:price")
-                pipe.ts().get(f"{k}:volume")
-
-            # Execute all commands in one batch
-            # Results will be [price1, vol1, price2, vol2, ...]
-            # raise_on_error=False ensures that if one key is missing, the whole pipeline doesn't fail
-            results = await pipe.execute(raise_on_error=False)
-
-        broadcast_data: List[DataBroadcastFormat] = []
-
-        # Iterate through results in pairs (price, volume)
-        for i in range(0, len(results), 2):
-            key = keys[i // 2]
-            p_res = results[i]
-            v_res = results[i + 1]
-
-            # Skip if price retrieval failed or invalid
-            if isinstance(p_res, Exception) or not p_res or len(p_res) < 2:
-                continue
-
-            try:
-                ts = int(p_res[0])
-                price_val = float(p_res[1])
-            except Exception:
-                continue
-
-            volume_val = 0.0
-            if not isinstance(v_res, Exception) and v_res and len(v_res) >= 2:
-                try:
-                    volume_val = float(v_res[1])
-                except Exception:
-                    volume_val = 0.0
-
-            broadcast_data.append(
-                DataBroadcastFormat(
-                    timestamp=ts,
-                    symbol=key,
-                    price=price_val,
-                    volume=volume_val,
-                )
-            )
-
-        return broadcast_data
-
-    async def get_ohlcv_window(
-        self,
-        key: str,
-        window_minutes: int,
-        align_to_ts: Optional[int] = None,
-        bucket_minutes: Optional[int] = None,
-    ) -> Optional[Dict[str, float]]:
-        """Return OHLCV for the last window_minutes as a single bucket aligned to align_to_ts (default now)."""
-        if align_to_ts is None:
-            align_to_ts = int(time.time() * 1000)
-
-        if bucket_minutes is None:
-            bucket_minutes = window_minutes
-
-        to_ts = align_to_ts
-        from_ts = to_ts - window_minutes * 60 * 1000
-
-        ohlcv_data = await self.get_ohlcv_series(
-            key,
-            window_minutes=window_minutes,
-            bucket_minutes=bucket_minutes,
-            align_to_ts=to_ts,
-        )
-        if not ohlcv_data or not ohlcv_data.get("timestamp"):
-            return None
-        # Since bucket equals window, we expect a single entry - return the last one
-        idx = -1
-        return {
-            "ts": ohlcv_data["timestamp"][idx],
-            "open": ohlcv_data["open"][idx],
-            "high": ohlcv_data["high"][idx],
-            "low": ohlcv_data["low"][idx],
-            "close": ohlcv_data["close"][idx],
-            "volume": ohlcv_data["volume"][idx],
-            "count": ohlcv_data.get("count", [0])[idx] if ohlcv_data.get("count") else 0,
-        }
-
-    async def get_ohlcv_series(
-        self,
-        key: str,
-        window_minutes: int = 15,
-        bucket_minutes: int = 5,
-        align_to_ts: Optional[int] = None,
-    ) -> Dict[str, List[float]]:
-        """
-        Return OHLCV buckets for the previous window_minutes, aggregated in bucket_minutes buckets.
-
-        All timestamps are aligned to bucket_minutes slot boundaries. For example, if current time is 10:08 and bucket_minutes=5:
-        - The query range end aligns to 10:10 (next slot, ceiling)
-        - With 15 min window, query from 9:55 to 10:10
-        - This returns 3 candles: 10:05 (ongoing), 10:00, 9:55
-
-        For 1-minute buckets at 10:07:30:
-        - Aligns to 10:08 (next minute, ceiling)
-        - With 15 min window, query from 9:53 to 10:08
-        - Returns 15 one-minute candles
-
-        Returns data in columnar format for better performance and smaller payload:
-        {
-            "timestamp": [t1, t2, t3, ...],
-            "open": [o1, o2, o3, ...],
-            "high": [h1, h2, h3, ...],
-            "low": [l1, l2, l3, ...],
-            "close": [c1, c2, c3, ...],
-            "volume": [v1, v2, v3, ...]
-        }
-        """
-        if align_to_ts is None:
-            align_to_ts = int(time.time() * 1000)
-
-        # Align to the NEXT bucket interval slot (ceiling) to include the ongoing candle
-        aligned_ts = self._align_to_interval_slot(
-            align_to_ts, interval_minutes=bucket_minutes, ceiling=True
-        )
-        to_ts = aligned_ts
-        from_ts = to_ts - window_minutes * 60 * 1000
-        bucket = bucket_minutes * 60 * 1000
-
-        r = self._get_client()
-        price_key = f"{key}:price"
-        vol_key = f"{key}:volume"
+        if to_ts is None:
+            to_ts = int(time.time() * 1000)
+        if from_ts is None:
+            from_ts = to_ts - self.CANDLE_5M_RETENTION_MS
 
         try:
-            # Query aggregations for the same buckets (aligned to the end time) in parallel
-            # logger.debug(f"TS.RANGE {price_key} {from_ts} {to_ts} bucket={bucket} align={to_ts}")
-            first, last, high, low, vol, count = await asyncio.gather(
-                r.ts().range(
-                    price_key,
-                    from_ts,
-                    to_ts,
-                    aggregation_type="first",
-                    bucket_size_msec=bucket,
-                    align=to_ts,
-                ),
-                r.ts().range(
-                    price_key,
-                    from_ts,
-                    to_ts,
-                    aggregation_type="last",
-                    bucket_size_msec=bucket,
-                    align=to_ts,
-                ),
-                r.ts().range(
-                    price_key,
-                    from_ts,
-                    to_ts,
-                    aggregation_type="max",
-                    bucket_size_msec=bucket,
-                    align=to_ts,
-                ),
-                r.ts().range(
-                    price_key,
-                    from_ts,
-                    to_ts,
-                    aggregation_type="min",
-                    bucket_size_msec=bucket,
-                    align=to_ts,
-                ),
-                r.ts().range(
-                    vol_key,
-                    from_ts,
-                    to_ts,
-                    aggregation_type="sum",
-                    bucket_size_msec=bucket,
-                    align=to_ts,
-                ),
-                r.ts().range(
-                    price_key,
-                    from_ts,
-                    to_ts,
-                    aggregation_type="count",
-                    bucket_size_msec=bucket,
-                    align=to_ts,
-                ),
+            open_data, high_data, low_data, close_data, vol_data = await asyncio.gather(
+                r.ts().range(self._5m_open_key(symbol), from_ts, to_ts),
+                r.ts().range(self._5m_high_key(symbol), from_ts, to_ts),
+                r.ts().range(self._5m_low_key(symbol), from_ts, to_ts),
+                r.ts().range(self._5m_close_key(symbol), from_ts, to_ts),
+                r.ts().range(self._5m_volume_key(symbol), from_ts, to_ts),
             )
         except ResponseError as e:
-            # Handle case where key might have been deleted or expired
-            if "key does not exist" in str(
-                e
-            ).lower() or "TSDB: the key does not exist" in str(e):
-                return {
-                    "timestamp": [],
-                    "open": [],
-                    "high": [],
-                    "low": [],
-                    "close": [],
-                    "volume": [],
-                    "count": [],
-                }
+            if "key does not exist" in str(e).lower():
+                return {"timestamp": [], "open": [], "high": [], "low": [], "close": [], "volume": []}
             raise
 
-        # if not first:
-        #    logger.debug(f"Empty result for {price_key} range {from_ts}-{to_ts}")
-
-        # Convert lists like [[ts, val], ...] into a dict keyed by ts
         def to_map(lst):
-            m = {}
-            for item in lst or []:
-                if not item:
-                    continue
-                ts, val = item
-                try:
-                    ts_int = int(ts)
-                except Exception:
-                    # When decode_responses=True, ts may already be int/str
-                    ts_int = int(ts)
-                m[ts_int] = float(val)
-            return m
+            return {int(ts): float(val) for ts, val in (lst or []) if ts is not None}
 
-        o_map = to_map(first)
-        h_map = to_map(high)
-        l_map = to_map(low)
-        c_map = to_map(last)
-        v_map = to_map(vol)
-        cnt_map = to_map(count)
+        o_map = to_map(open_data)
+        h_map = to_map(high_data)
+        l_map = to_map(low_data)
+        c_map = to_map(close_data)
+        v_map = to_map(vol_data)
 
-        # Build a sorted list of bucket end timestamps (union of keys present)
-        all_ts = sorted(
-            set(o_map.keys())
-            | set(h_map.keys())
-            | set(l_map.keys())
-            | set(c_map.keys())
-            | set(v_map.keys())
-            | set(cnt_map.keys())
-        )
+        all_ts = sorted(set(o_map.keys()) | set(h_map.keys()) | set(l_map.keys()) | set(c_map.keys()) | set(v_map.keys()))
 
-        # Build columnar format for better performance and smaller payload
-        # Format: { timestamp: [t1, t2, ...], open: [o1, o2, ...], ... }
-        timestamps = []
-        opens = []
-        highs = []
-        lows = []
-        closes = []
-        volumes = []
-        counts = []
+        timestamps, opens, highs, lows, closes, volumes = [], [], [], [], [], []
 
         for ts in all_ts:
-            # Only include buckets where we at least have O and C; H/L/V may be absent if no data
             if ts not in o_map and ts not in c_map:
                 continue
             timestamps.append(ts)
@@ -465,120 +333,271 @@ class RedisTimeSeries:
             lows.append(l_map.get(ts))
             closes.append(c_map.get(ts))
             volumes.append(v_map.get(ts, 0.0))
-            counts.append(int(cnt_map.get(ts, 0)))
 
-        return {
-            "timestamp": timestamps,
-            "open": opens,
-            "high": highs,
-            "low": lows,
-            "close": closes,
-            "volume": volumes,
-            "count": counts,
-        }
+        return {"timestamp": timestamps, "open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes}
 
-    async def get_all_ohlcv_last_5m(
-        self, keys: List[str], interval_minutes: int = 5
-    ) -> Dict[str, Optional[Dict[str, float]]]:
-        """Return OHLCV for the last N minutes for multiple symbols.
+    async def get_current_5m_candle(self, symbol: str) -> Optional[Dict[str, float]]:
+        """
+        Get the current ongoing 5m candle from raw tick data.
+        This represents the incomplete candle being formed right now.
 
         Args:
-            keys: List of symbol keys
-            interval_minutes: Interval in minutes for OHLCV aggregation (default: 5)
-                Supports 1, 5, 15, or any custom minute interval
+            symbol: Instrument symbol
 
         Returns:
-            Dictionary mapping symbol to OHLCV data or None
+            Dict with keys: timestamp, open, high, low, close, volume, count
+            Or None if no tick data available.
         """
-
-        results: Dict[str, Optional[Dict[str, float]]] = {}
-
-        # Use get_ohlcv_window to support custom intervals
+        r = self._get_client()
         now = int(time.time() * 1000)
-        # Align to the interval slot (e.g., 1-min, 5-min, or 15-min)
-        aligned_now = self._align_to_interval_slot(
-            now, interval_minutes=interval_minutes, ceiling=True
-        )
 
-        tasks = [
-            self.get_ohlcv_window(
-                key, window_minutes=interval_minutes, align_to_ts=aligned_now
+        # Current 5m bucket: floor to 5m boundary
+        bucket_start = self._align_to_5m_slot(now, ceiling=False)
+        bucket_end = bucket_start + self.BUCKET_5M_MS
+
+        price_key = self._tick_price_key(symbol)
+        vol_key = self._tick_volume_key(symbol)
+
+        try:
+            first, last, high, low, vol_min, vol_max, count = await asyncio.gather(
+                r.ts().range(price_key, bucket_start, bucket_end, aggregation_type="first", bucket_size_msec=self.BUCKET_5M_MS),
+                r.ts().range(price_key, bucket_start, bucket_end, aggregation_type="last", bucket_size_msec=self.BUCKET_5M_MS),
+                r.ts().range(price_key, bucket_start, bucket_end, aggregation_type="max", bucket_size_msec=self.BUCKET_5M_MS),
+                r.ts().range(price_key, bucket_start, bucket_end, aggregation_type="min", bucket_size_msec=self.BUCKET_5M_MS),
+                r.ts().range(vol_key, bucket_start, bucket_end, aggregation_type="min", bucket_size_msec=self.BUCKET_5M_MS),
+                r.ts().range(vol_key, bucket_start, bucket_end, aggregation_type="max", bucket_size_msec=self.BUCKET_5M_MS),
+                r.ts().range(price_key, bucket_start, bucket_end, aggregation_type="count", bucket_size_msec=self.BUCKET_5M_MS),
             )
-            for key in keys
-        ]
-        ohlcv_list = await asyncio.gather(*tasks)
-        for key, ohlcv in zip(keys, ohlcv_list):
-            results[key] = ohlcv
-        return results
+        except ResponseError as e:
+            if "key does not exist" in str(e).lower():
+                return None
+            raise
+
+        # Extract values from results (each is a list like [[ts, val]])
+        def extract_val(result):
+            if result and len(result) > 0 and len(result[0]) > 1:
+                return float(result[0][1])
+            return None
+
+        open_val = extract_val(first)
+        close_val = extract_val(last)
+        high_val = extract_val(high)
+        low_val = extract_val(low)
+        vol_min_val = extract_val(vol_min) or 0.0
+        vol_max_val = extract_val(vol_max) or 0.0
+        count_val = int(extract_val(count) or 0)
+
+        if open_val is None:
+            return None
+
+        return {
+            "timestamp": bucket_start,
+            "open": open_val,
+            "high": high_val,
+            "low": low_val,
+            "close": close_val,
+            "volume": max(0.0, vol_max_val - vol_min_val),
+            "count": count_val,
+        }
+
+    async def get_current_daily_candle(
+        self, symbol: str, day_start_ts: int
+    ) -> Optional[Dict[str, float]]:
+        """
+        Get the current daily candle by aggregating all 5m candles from day_start_ts until now,
+        plus the current ongoing 5m candle.
+
+        Args:
+            symbol: Instrument symbol
+            day_start_ts: Start of trading day in milliseconds (e.g., market open time)
+
+        Returns:
+            Dict with keys: timestamp, open, high, low, close, volume
+            Or None if no data available.
+        """
+        now = int(time.time() * 1000)
+
+        # Get all completed 5m candles for today
+        candles = await self.get_5m_candles(symbol, from_ts=day_start_ts, to_ts=now)
+
+        # Get current ongoing candle
+        current_candle = await self.get_current_5m_candle(symbol)
+
+        # Combine data
+        timestamps = candles.get("timestamp", [])
+        opens = candles.get("open", [])
+        highs = candles.get("high", [])
+        lows = candles.get("low", [])
+        closes = candles.get("close", [])
+        volumes = candles.get("volume", [])
+
+        # Add current candle if it exists and is not already in the list
+        if current_candle:
+            current_ts = current_candle["timestamp"]
+            if current_ts not in timestamps:
+                timestamps.append(current_ts)
+                opens.append(current_candle["open"])
+                highs.append(current_candle["high"])
+                lows.append(current_candle["low"])
+                closes.append(current_candle["close"])
+                volumes.append(current_candle["volume"])
+
+        if not timestamps:
+            return None
+
+        # Aggregate into daily candle
+        valid_highs = [h for h in highs if h is not None]
+        valid_lows = [l for l in lows if l is not None]
+        valid_volumes = [v for v in volumes if v is not None]
+
+        # Open: first non-None open value
+        daily_open = next((o for o in opens if o is not None), None)
+        # Close: last non-None close value
+        daily_close = next((c for c in reversed(closes) if c is not None), None)
+
+        return {
+            "timestamp": day_start_ts,
+            "open": daily_open,
+            "high": max(valid_highs) if valid_highs else None,
+            "low": min(valid_lows) if valid_lows else None,
+            "close": daily_close,
+            "volume": sum(valid_volumes) if valid_volumes else 0,
+        }
+
+    async def get_all_intraday_candles(
+        self,
+        symbol: str,
+        from_ts: Optional[int] = None,
+        to_ts: Optional[int] = None,
+    ) -> Dict[str, List]:
+        """
+        Get all 5m candles including the current ongoing candle.
+        This is the primary method for fetching intraday data for display.
+
+        Args:
+            symbol: Instrument symbol
+            from_ts: Start timestamp in milliseconds
+            to_ts: End timestamp in milliseconds (default: now)
+
+        Returns:
+            Dict with keys: timestamp, open, high, low, close, volume
+            Includes the current ongoing candle merged at the end.
+        """
+        if to_ts is None:
+            to_ts = int(time.time() * 1000)
+
+        # Get completed 5m candles
+        candles = await self.get_5m_candles(symbol, from_ts=from_ts, to_ts=to_ts)
+
+        # Get current ongoing candle
+        current_candle = await self.get_current_5m_candle(symbol)
+
+        if current_candle:
+            current_ts = current_candle["timestamp"]
+            timestamps = candles.get("timestamp", [])
+
+            # Check if current candle is within our time range
+            if from_ts is None or current_ts >= from_ts:
+                if current_ts in timestamps:
+                    # Update existing entry with current data
+                    idx = timestamps.index(current_ts)
+                    candles["open"][idx] = current_candle["open"]
+                    candles["high"][idx] = current_candle["high"]
+                    candles["low"][idx] = current_candle["low"]
+                    candles["close"][idx] = current_candle["close"]
+                    candles["volume"][idx] = current_candle["volume"]
+                else:
+                    # Append current candle
+                    candles["timestamp"].append(current_ts)
+                    candles["open"].append(current_candle["open"])
+                    candles["high"].append(current_candle["high"])
+                    candles["low"].append(current_candle["low"])
+                    candles["close"].append(current_candle["close"])
+                    candles["volume"].append(current_candle["volume"])
+
+        return candles
+
+    # ============================================================
+    # UTILITY METHODS
+    # ============================================================
+
+    async def get_latest_5m_timestamp(self, symbol: str) -> Optional[int]:
+        """Get the latest timestamp in the 5m candle series for a symbol. Used for gap detection."""
+        r = self._get_client()
+        try:
+            info = await r.ts().info(self._5m_close_key(symbol))
+            if info and info.last_timestamp:
+                return int(info.last_timestamp)
+        except ResponseError as e:
+            if "key does not exist" in str(e).lower():
+                return None
+            raise
+        return None
 
     async def get_all_keys(self) -> List[str]:
-        """Return all symbol keys that have price time series in Redis."""
-
+        """Return all symbol keys that have tick time series in Redis."""
         r = self._get_client()
         keys = []
 
-        # Use TS.QUERYINDEX to find all keys with label ts=price
         try:
-            # TS.QUERYINDEX returns a list of keys matching the filter
-            price_keys = await r.ts().queryindex(["ts=price"])
-
-            if price_keys:
-                for key in price_keys:
-                    # Handle both string and bytes
-                    key_str = (
-                        key.decode("utf-8") if isinstance(key, bytes) else str(key)
-                    )
-                    if key_str.endswith(":price"):
-                        symbol = key_str[:-6]  # Remove ":price" suffix
+            tick_keys = await r.ts().queryindex(["type=tick", "field=price"])
+            if tick_keys:
+                for key in tick_keys:
+                    key_str = key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                    if key_str.endswith(":tick:price"):
+                        symbol = key_str[:-11]
                         keys.append(symbol)
-        except Exception as e:
-            # Log error but continue to fallback
+        except Exception:
             pass
 
-        # Fallback to KEYS pattern matching if TS.QUERYINDEX returned nothing or failed
         if not keys:
             try:
-                price_keys = await r.keys("*:price")
-                for key in price_keys:
-                    key_str = (
-                        key.decode("utf-8") if isinstance(key, bytes) else str(key)
-                    )
-                    if key_str.endswith(":price"):
-                        symbol = key_str[:-6]
+                tick_keys = await r.keys("*:tick:price")
+                for key in tick_keys:
+                    key_str = key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                    if key_str.endswith(":tick:price"):
+                        symbol = key_str[:-11]
                         keys.append(symbol)
-            except Exception as fallback_error:
-                # If both methods fail, return empty list
+            except Exception:
                 return []
-
-        # Filter out any keys that might be provider-specific search codes if they differ from internal symbols
-        # This is tricky because Redis doesn't know about internal vs provider symbols.
-        # However, the DataSaver logic relies on these keys being mappable to internal symbols.
-        # If the keys in Redis are provider search codes (e.g. "RELIANCE-EQ"), but our DB expects "RELIANCE",
-        # then DataSaver will fail to map them.
-        # Ideally, Redis keys should be INTERNAL symbols.
 
         return keys
 
-    async def set_daily_stats(self, key: str, stats: Dict[str, float]) -> None:
-        """
-        Set daily statistics (e.g., previous close) for a symbol in a Redis Hash.
-        Key: <symbol>:stats
-        """
+    async def get_recordable_symbols(self) -> List[str]:
+        """Return all symbols that have 5m downsampled keys (i.e., recordable instruments)."""
         r = self._get_client()
-        stats_key = f"{key}:stats"
-        # Set with expiration (e.g., 24 hours) to avoid stale data if symbol becomes inactive
-        async with r.pipeline() as pipe:
-            pipe.hset(stats_key, mapping=stats)
-            pipe.expire(stats_key, 24 * 60 * 60)  # 24 hours
-            await pipe.execute()
+        keys = []
 
-    async def get_daily_stats(self, key: str) -> Dict[str, float]:
-        """
-        Get daily statistics for a symbol.
-        """
+        try:
+            close_keys = await r.ts().queryindex(["type=5m", "field=close"])
+            if close_keys:
+                for key in close_keys:
+                    key_str = key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                    if key_str.endswith(":5m:close"):
+                        symbol = key_str[:-9]
+                        keys.append(symbol)
+        except Exception:
+            pass
+
+        return keys
+
+    async def delete_symbol_keys(self, symbol: str) -> None:
+        """Delete all Redis keys for a symbol (tick and 5m)."""
         r = self._get_client()
-        stats_key = f"{key}:stats"
-        return await r.hgetall(stats_key)
+        keys_to_delete = [
+            self._tick_price_key(symbol),
+            self._tick_volume_key(symbol),
+            self._5m_open_key(symbol),
+            self._5m_high_key(symbol),
+            self._5m_low_key(symbol),
+            self._5m_close_key(symbol),
+            self._5m_volume_key(symbol),
+            f"{symbol}:stats",
+        ]
+        try:
+            await r.delete(*keys_to_delete)
+        except Exception as e:
+            logger.warning(f"Error deleting keys for {symbol}: {e}")
 
 
 redis_ts = None

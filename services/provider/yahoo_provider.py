@@ -1,7 +1,7 @@
 import asyncio
 import time
 from datetime import timezone, datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import pandas as pd
 import yfinance as yf
@@ -10,65 +10,90 @@ from config.logger import logger
 from models import Instrument, PriceHistoryDaily, PriceHistoryIntraday
 from services.provider.base_provider import BaseMarketDataProvider
 from utils.common_constants import DataIngestionFormat
+from services.data.redis_mapping import get_redis_mapping_helper
 
 
 class YahooFinanceProvider(BaseMarketDataProvider):
-    def __init__(self, callback=None):
-        super().__init__(provider_code="YF", callback=callback)
+    def __init__(self):
+        super().__init__(provider_code="YF")
+        self.redis_mapper = get_redis_mapping_helper()
+        self.symbol_map: Dict[str, str] = {}
 
-    def connect_websocket(self, symbols: list[str]):
-        """Connect to Yahoo Finance WebSocket for live data."""
+    async def connect_websocket(self, symbols: list[str]):
+        """Connect to Yahoo Finance WebSocket for live data using AsyncWebSocket."""
         try:
-            self.websocket_connection = yf.WebSocket()
-            self.websocket_connection.subscribe(symbols)
+            # Load mappings
+            try:
+                 self.symbol_map = await self.redis_mapper.get_all_p2i_mappings("YF")
+                 logger.info(f"Loaded {len(self.symbol_map)} symbol mappings for Yahoo")
+            except Exception as e:
+                logger.error(f"Failed to load symbol mappings: {e}")
+
+            # Initialize AsyncWebSocket
+            self.websocket_connection = yf.AsyncWebSocket()
+
+            # Subscribe to symbols
+            await self.websocket_connection.subscribe(symbols)
             self.subscribed_symbols.update(symbols)
-
-            if not self.callback:
-                raise ValueError(
-                    "Callback function must be provided for handling messages."
-                )
-
             self.is_connected = True
             logger.info(f"Yahoo Finance connected with {len(symbols)} symbols")
 
-            # Run the listener in a separate thread to avoid blocking the main initialization flow
-            import threading
-
-            self._listen_thread = threading.Thread(
-                target=self.websocket_connection.listen, args=(self.message_handler,)
-            )
-            self._listen_thread.daemon = True
-            self._listen_thread.start()
+            # Start the listener task
+            self._listen_task = asyncio.create_task(self._run_listener())
 
         except Exception as e:
             self.is_connected = False
             logger.error(f"Error connecting Yahoo Finance WebSocket: {e}")
             raise
 
-    def message_handler(self, message: dict):
+    async def _run_listener(self):
+        """Run the WebSocket listener."""
+        try:
+            await self.websocket_connection.listen(self.message_handler)
+        except Exception as e:
+            logger.error(f"Yahoo Finance WebSocket listener stopped: {e}")
+            self.is_connected = False
+
+    async def message_handler(self, message: dict):
         """Handle incoming messages from Yahoo Finance WebSocket."""
         try:
             ts = int(time.time() * 1000)
 
             # print(f"Yahoo Finance message received: {message}")
-            self.callback(
-                DataIngestionFormat(
-                    symbol=message["id"],
-                    price=message["price"],
-                    volume=message.get("day_volume", 0),
-                    timestamp=ts,
-                    provider_code="YF",
-                )
+            p_symbol = message["id"]
+            final_symbol = self.symbol_map.get(p_symbol, p_symbol)
+
+            data = DataIngestionFormat(
+                symbol=final_symbol,
+                price=message["price"],
+                volume=message.get("day_volume", 0),
+                timestamp=ts,
+                provider_code="YF",
             )
+
+            # Directly await since we are in the same loop
+            await self.data_queue.add_data(data)
+
         except Exception as e:
             logger.error(f"Error handling Yahoo Finance message: {e}")
 
-    def disconnect_websocket(self):
+    async def disconnect_websocket(self):
         """Disconnect from Yahoo Finance WebSocket."""
         if self.websocket_connection:
             try:
                 if self.subscribed_symbols:
-                    self.websocket_connection.unsubscribe(list(self.subscribed_symbols))
+                    # Depending on yfinance version, unsubscribe might be needed or just closing
+                    # The library might strictly require a list, converting set to list
+                    await self.websocket_connection.unsubscribe(list(self.subscribed_symbols))
+
+                # Cancel the listener task if running
+                if hasattr(self, '_listen_task') and self._listen_task:
+                    self._listen_task.cancel()
+                    try:
+                        await self._listen_task
+                    except asyncio.CancelledError:
+                        pass
+
                 self.websocket_connection = None
                 self.subscribed_symbols.clear()
                 self.is_connected = False
@@ -76,21 +101,21 @@ class YahooFinanceProvider(BaseMarketDataProvider):
             except Exception as e:
                 logger.error(f"Error disconnecting Yahoo Finance: {e}")
 
-    def subscribe_symbols(self, symbols: list[str]):
+    async def subscribe_symbols(self, symbols: list[str]):
         """Add new symbols to existing Yahoo Finance subscription."""
         if self.websocket_connection and symbols:
             try:
-                self.websocket_connection.subscribe(symbols)
+                await self.websocket_connection.subscribe(symbols)
                 self.subscribed_symbols.update(symbols)
                 logger.info(f"Yahoo Finance subscribed to {len(symbols)} new symbols")
             except Exception as e:
                 logger.error(f"Error subscribing to Yahoo Finance symbols: {e}")
 
-    def unsubscribe_symbols(self, symbols: list[str]):
+    async def unsubscribe_symbols(self, symbols: list[str]):
         """Remove symbols from Yahoo Finance subscription."""
         if self.websocket_connection and symbols:
             try:
-                self.websocket_connection.unsubscribe(symbols)
+                await self.websocket_connection.unsubscribe(symbols)
                 self.subscribed_symbols.difference_update(symbols)
                 logger.info(f"Yahoo Finance unsubscribed from {len(symbols)} symbols")
             except Exception as e:
@@ -123,6 +148,10 @@ class YahooFinanceProvider(BaseMarketDataProvider):
             # But we try to use start/end if provided.
             # Note: yfinance 5m data is limited to last 60 days.
 
+            # YF download might fail with "No timezone found" if symbol is delisted or incorrect.
+            # ignore_tz=False is default but sometimes issues arise.
+            # Let's try to fetch with error handling.
+
             df = await asyncio.to_thread(
                 yf.download,
                 tickers=symbols,
@@ -133,7 +162,7 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                 threads=True,
                 progress=False,
                 auto_adjust=False,
-                ignore_tz=False,
+                ignore_tz=True, # Attempt to fix "no timezone found" by ignoring tz alignment during download
             )
 
             if df.empty:
@@ -239,6 +268,7 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                 progress=False,
                 actions=True,  # To get Dividends and Splits if needed
                 auto_adjust=False,
+                ignore_tz=True, # Fix for "no timezone found" errors
             )
 
             if df.empty:
