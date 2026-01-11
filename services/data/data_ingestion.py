@@ -20,11 +20,6 @@ class LiveDataIngestion:
         self.redis_timeseries = get_redis_timeseries()
         self.websocket_manager = get_websocket_manager()
         self.redis = get_redis()
-
-        # NEW: Use ProviderManager instead of single provider
-        self.provider_manager = None
-        if not get_provider_manager():
-            self.provider_manager = get_provider_manager()
         
         # Stats tracking
         self.stats_processed_count = 0
@@ -194,14 +189,10 @@ class LiveDataIngestion:
             self._stats_task.cancel()
             logger.info("Stopped stats logging task")
 
-        # Stop sync task via manager
-        self.provider_manager.stop_sync_task()
-
         if self._worker_task:
             self._worker_task.cancel()
             logger.info("Stopped ingestion worker task")
 
-        self.provider_manager.stop_all_providers()
         logger.info("Data ingestion stopped.")
 
     async def _log_stats(self):

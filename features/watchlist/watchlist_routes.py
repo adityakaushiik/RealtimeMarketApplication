@@ -47,6 +47,18 @@ async def list_watchlists(
 
 
 @watchlist_router.get(
+    "/dashboard",
+    response_model=list[WatchlistInDb],
+)
+async def get_dashboard_watchlists(
+    user_claims: dict = Depends(require_auth()),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Get watchlists marked to show on dashboard for the current user"""
+    user_id = int(user_claims.get("id"))
+    return await watchlist_service.get_dashboard_watchlists(session, user_id)
+
+@watchlist_router.get(
     "/{watchlist_id}",
     response_model=WatchlistInDb,
 )
@@ -162,3 +174,25 @@ async def remove_item_from_watchlist(
             detail="Item not found in watchlist",
         )
     return None
+
+@watchlist_router.put(
+    "show_on_dashboard/{watchlist_id}",
+    response_model=WatchlistInDb,
+)
+async def set_watchlist_show_on_dashboard(
+    watchlist_id: int,
+    show_on_dashboard: bool,
+    user_claims: dict = Depends(require_auth()),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Set a watchlist to show on dashboard, unsetting others"""
+    user_id = int(user_claims.get("id"))
+    watchlist = await watchlist_service.set_watchlist_show_on_dashboard(
+        session, watchlist_id, user_id, show_on_dashboard
+    )
+    if not watchlist:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Watchlist not found",
+        )
+    return watchlist

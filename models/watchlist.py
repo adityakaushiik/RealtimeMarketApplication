@@ -19,6 +19,7 @@ class Watchlist(Base, BaseMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
+    show_on_dashboard: Mapped[bool] = mapped_column(nullable=True, default=False)
 
     user: Mapped["User"] = relationship(back_populates="watchlists")
     items: Mapped[list["WatchlistItem"]] = relationship(back_populates="watchlist", cascade="all, delete-orphan")

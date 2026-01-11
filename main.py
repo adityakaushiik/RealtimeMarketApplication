@@ -128,7 +128,6 @@ async def lifespan(app: FastAPI):
     # Create Provider Manager and set callback
     provider_manager = get_provider_manager()
 
-
     # Task - 1.5: Initialize Redis TimeSeries downsampling for recordable instruments
     logger.info("Task - 1.5: Initializing Redis TimeSeries for recordable instruments...")
     try:
@@ -144,12 +143,10 @@ async def lifespan(app: FastAPI):
 
         if recordable_symbols:
             await redis_ts.initialize_recordable_instruments(recordable_symbols)
-            logger.info(f"✅ Initialized Redis TimeSeries for {len(recordable_symbols)} recordable instruments")
     except Exception as e:
         logger.error(f"Failed to initialize Redis TimeSeries: {e}")
 
     await provider_manager.initialize() # Ensure mappings are loaded before use
-    live_data_ingestion.provider_manager = provider_manager
 
     asyncio.create_task(live_data_ingestion.start_ingestion())
 
@@ -166,8 +163,8 @@ async def lifespan(app: FastAPI):
 
     # Task - 1.1. Checking for data gaps...
     # Moved to scheduled_jobs to prevent race condition/double logging at startup
-    data_resolver = DataResolver(live_data_ingestion.provider_manager)
-    asyncio.create_task(data_resolver.check_and_fill_gaps())
+    data_resolver = DataResolver(provider_manager)
+    # asyncio.create_task(data_resolver.check_and_fill_gaps())
 
     # Start Subscriber
     logger.info("Task - 2. Starting Redis subscriber...")

@@ -1,4 +1,6 @@
 from typing import Optional
+
+from features.instruments.instrument_schema import InstrumentInDb
 from models.base_model_py import BaseModelPy
 
 
@@ -17,6 +19,7 @@ class WatchlistItemInDb(WatchlistItemBase):
 
 class WatchlistBase(BaseModelPy):
     name: str
+    show_on_dashboard: bool
 
 
 class WatchlistCreate(WatchlistBase):
@@ -30,4 +33,4 @@ class WatchlistUpdate(BaseModelPy):
 class WatchlistInDb(WatchlistBase):
     id: int
     user_id: int
-    items: list[WatchlistItemInDb] = []
+    items: list[InstrumentInDb] = []

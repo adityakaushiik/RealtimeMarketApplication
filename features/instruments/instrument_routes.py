@@ -201,3 +201,12 @@ async def update_instrument(
             status_code=status.HTTP_404_NOT_FOUND, detail="Instrument not found"
         )
     return instrument
+
+
+@instrument_router.get("/recording/all")
+async def list_recording_instruments(
+    user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """List all instruments that have data recording enabled"""
+    return await instrument_service.get_recording_instruments(session)

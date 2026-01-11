@@ -9,7 +9,7 @@ from features.instruments.instrument_schema import (
     InstrumentUpdate,
     InstrumentInDb
 )
-from models import Instrument, InstrumentType, ProviderInstrumentMapping, PriceHistoryIntraday, PriceHistoryDaily
+from models import Instrument, ProviderInstrumentMapping, PriceHistoryIntraday, PriceHistoryDaily
 
 
 # Instrument CRUD
@@ -236,6 +236,7 @@ async def update_instrument(
         blacklisted=instrument.blacklisted,
         delisted=instrument.delisted,
         is_active=instrument.is_active,
+        should_record_data=bool(instrument.should_record_data),
     )
 
 
@@ -355,6 +356,30 @@ async def toggle_instrument_recording(
         sector_id=instrument.sector_id,
         blacklisted=instrument.blacklisted,
         delisted=instrument.delisted,
-        should_record_data=instrument.should_record_data,
+        should_record_data=bool(instrument.should_record_data),
         is_active=instrument.is_active,
     )
+
+
+async def get_recording_instruments(
+    session: AsyncSession,
+) -> list[InstrumentInDb]:
+    """Get all instruments that have data recording enabled"""
+    stmt = select(Instrument).where(Instrument.should_record_data == True)
+    result = await session.execute(stmt)
+    instruments = result.scalars().all()
+    return [
+        InstrumentInDb(
+            id=i.id,
+            symbol=i.symbol,
+            name=i.name,
+            exchange_id=i.exchange_id,
+            instrument_type_id=i.instrument_type_id,
+            sector_id=i.sector_id,
+            blacklisted=i.blacklisted,
+            delisted=i.delisted,
+            should_record_data=i.should_record_data,
+            is_active=i.is_active,
+        )
+        for i in instruments
+    ]

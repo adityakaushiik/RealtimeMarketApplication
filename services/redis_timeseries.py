@@ -180,7 +180,6 @@ class RedisTimeSeries:
 
     async def initialize_recordable_instruments(self, symbols: List[str]) -> None:
         """Initialize tick and 5m time series with downsampling rules for all recordable instruments."""
-        logger.info(f"Initializing Redis TimeSeries for {len(symbols)} recordable instruments...")
 
         for symbol in symbols:
             try:
