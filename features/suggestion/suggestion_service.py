@@ -1,4 +1,5 @@
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from models import Suggestion, SuggestionType
 from features.suggestion.suggestion_schema import (
@@ -7,7 +8,8 @@ from features.suggestion.suggestion_schema import (
     SuggestionTypeCreate,
     SuggestionTypeUpdate,
     SuggestionInDb,
-    SuggestionTypeInDb
+    SuggestionTypeInDb,
+    SuggestionResponse
 )
 
 # Suggestion Type CRUD
@@ -61,15 +63,22 @@ async def create_suggestion(session: AsyncSession, user_id: int, suggestion_data
     await session.refresh(new_suggestion)
     return SuggestionInDb.model_validate(new_suggestion)
 
-async def get_all_suggestions(session: AsyncSession) -> list[SuggestionInDb]:
-    result = await session.execute(select(Suggestion))
+async def get_all_suggestions(session: AsyncSession) -> list[SuggestionResponse]:
+    result = await session.execute(
+        select(Suggestion)
+        .options(selectinload(Suggestion.user), selectinload(Suggestion.suggestion_type))
+    )
     suggestions = result.scalars().all()
-    return [SuggestionInDb.model_validate(s) for s in suggestions]
+    return [SuggestionResponse.model_validate(s) for s in suggestions]
 
-async def get_suggestions_by_user(session: AsyncSession, user_id: int) -> list[SuggestionInDb]:
-    result = await session.execute(select(Suggestion).where(Suggestion.user_id == user_id))
+async def get_suggestions_by_user(session: AsyncSession, user_id: int) -> list[SuggestionResponse]:
+    result = await session.execute(
+        select(Suggestion)
+        .where(Suggestion.user_id == user_id)
+        .options(selectinload(Suggestion.user), selectinload(Suggestion.suggestion_type))
+    )
     suggestions = result.scalars().all()
-    return [SuggestionInDb.model_validate(s) for s in suggestions]
+    return [SuggestionResponse.model_validate(s) for s in suggestions]
 
 async def get_suggestion_by_id(session: AsyncSession, suggestion_id: int) -> SuggestionInDb | None:
     result = await session.execute(select(Suggestion).where(Suggestion.id == suggestion_id))

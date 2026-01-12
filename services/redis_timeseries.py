@@ -335,6 +335,19 @@ class RedisTimeSeries:
 
         return {"timestamp": timestamps, "open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes}
 
+    async def get_last_price(self, symbol: str) -> Optional[float]:
+        """Get the latest price from the tick series."""
+        r = self._get_client()
+        try:
+            # get returns (timestamp, value)
+            res = await r.ts().get(self._tick_price_key(symbol))
+            if res:
+                return float(res[1])
+        except ResponseError as e:
+            if "key does not exist" not in str(e).lower():
+                raise
+        return None
+
     async def get_current_5m_candle(self, symbol: str) -> Optional[Dict[str, float]]:
         """
         Get the current ongoing 5m candle from raw tick data.

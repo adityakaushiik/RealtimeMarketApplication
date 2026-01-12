@@ -1,10 +1,11 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from features.auth.auth_service import hash_password
+from features.auth.auth_service import hash_password, verify_password
 from models import User
 from features.user.user_schema import UserInDb, UserCreate, UserUpdate
 from utils.common_constants import UserRoles, UserStatus
+from fastapi import HTTPException, status
 
 
 async def create_user(
@@ -211,4 +212,46 @@ async def update_user_status(
         is_active=user.is_active,
         status=user.status,
     )
+
+
+async def change_user_password(
+        session: AsyncSession,
+        user_id: int,
+        old_password: str,
+        new_password: str
+) -> bool:
+    """Change user's own password"""
+    result = await session.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+        
+    if not verify_password(old_password, user.hashed_password):
+        return False
+        
+    user.hashed_password = hash_password(new_password)
+    await session.commit()
+    return True
+
+
+async def reset_user_password(
+        session: AsyncSession,
+        user_id: int,
+        new_password: str
+) -> bool:
+    """Reset user password (Admin only)"""
+    result = await session.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+        
+    user.hashed_password = hash_password(new_password)
+    await session.commit()
+    return True
 

@@ -36,3 +36,12 @@ class UserInDb(UserBase):
     role_id: Optional[int] = None
     is_active: bool
     status: int
+
+
+class ChangePasswordRequest(BaseModelPy):
+    old_password: str
+    new_password: str
+
+
+class ResetPasswordRequest(BaseModelPy):
+    new_password: str

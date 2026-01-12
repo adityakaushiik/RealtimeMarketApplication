@@ -202,6 +202,21 @@ class RedisMappingHelper:
             if row.provider_instrument_segment
         }
 
+        # Special handling for DHAN to avoid collisions: use "SEGMENT:ID" as key
+        if provider.code == "DHAN":
+            p2i_map = {}
+            i2p_map = {}
+            for row in mappings:
+                # If segment is available, prepend it. Else fallback to ID only (shouldn't happen for Dhan if properly configured)
+                if row.provider_instrument_segment:
+                    combined_key = f"{row.provider_instrument_segment}:{row.provider_instrument_search_code}"
+                    p2i_map[combined_key] = row.internal_symbol
+                    i2p_map[row.internal_symbol] = combined_key
+                else:
+                    # Fallback
+                    p2i_map[str(row.provider_instrument_search_code)] = row.internal_symbol
+                    i2p_map[row.internal_symbol] = str(row.provider_instrument_search_code)
+        
         # Write to Redis
         p2i_key = self.get_p2i_key(provider.code)
         i2p_key = self.get_i2p_key(provider.code)

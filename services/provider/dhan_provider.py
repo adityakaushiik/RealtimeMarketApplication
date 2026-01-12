@@ -8,7 +8,7 @@ Findings about Dhan API:
    Example: If it's 10:00 AM UTC, Dhan sends a timestamp that corresponds to 10:00 AM + 5.5 hours = 3:30 PM UTC.
    Fix: We subtract 19800 seconds from the received timestamp to get the correct UTC timestamp.
 
-2. Symbol Mapping: Dhan uses numeric Security IDs (e.g., "1333" for HDFCBANK-EQ).
+2. Symbol Mapping: Dhan uses numeric Security IDs (e.g., "1333" for HDFCBANK-EQ").
    The application needs to map these IDs back to internal symbols (e.g., "HDFCBANK") for storage and processing.
    This mapping is handled in ProviderManager, which now maintains a bidirectional map.
 
@@ -81,19 +81,7 @@ class DhanProvider(BaseMarketDataProvider):
         11: "NSE_EQ", # Added mapping for NSE
         12: "BSE_EQ", # Added mapping for BSE
     }
-    
-    # Reverse map for subscription
-    EXCHANGE_MAP_REV = {v: k for k, v in EXCHANGE_MAP.items()}
 
-    # Common mappings for convenience
-    EXCHANGE_ALIAS = {
-        "NSE": "NSE_EQ",
-        "BSE": "BSE_EQ",
-        "NFO": "NSE_FNO",
-        "CDS": "NSE_CURRENCY",
-        "MCX": "MCX_COMM",
-    }
-    
     REST_URL = "https://api.dhan.co/v2"
 
     def __init__(self, provider_manager=None):
@@ -119,10 +107,6 @@ class DhanProvider(BaseMarketDataProvider):
         self._last_request_time = 0
         self._request_interval = 0.2  # 5 requests per second max
 
-        # if not self.callback:
-        #     raise ValueError(
-        #         "Callback function must be provided for handling messages."
-        #     )
 
     async def _refresh_token_loop(self):
         """
@@ -344,12 +328,27 @@ class DhanProvider(BaseMarketDataProvider):
             # Try to get segment from Redis mapping first (fastest and most accurate)
             segment = await self.redis_mapper.get_provider_segment("DHAN", internal_symbol)
 
+            # DEBUG LOGGING
+            if self.provider_manager:
+                 t_id = self.provider_manager.get_instrument_type_id(internal_symbol)
+                 if t_id == 2:
+                     logger.info(f"DEBUG: Processing Index {internal_symbol} (Type 2). Segment from Redis: {segment}")
+
             if segment:
                  # If we have the segment from DB/Redis, use it directly
-                 security_id = await self.redis_mapper.get_provider_symbol("DHAN", internal_symbol)
-                 if security_id:
-                     instruments.append((segment, security_id))
-                     self.symbol_map[str(security_id)] = internal_symbol
+                 # security_id might be "SEGMENT:ID" or just "ID"
+                 security_id_raw = await self.redis_mapper.get_provider_symbol("DHAN", internal_symbol)
+                 
+                 if security_id_raw:
+                     # Parse potentially composite ID
+                     if ":" in str(security_id_raw):
+                         _, sec_id_val = str(security_id_raw).split(":", 1)
+                     else:
+                         sec_id_val = str(security_id_raw)
+
+                     instruments.append((segment, sec_id_val))
+                     # Map using composite key for uniqueness: SEGMENT:ID
+                     self.symbol_map[f"{segment}:{sec_id_val}"] = internal_symbol
                  else:
                      logger.warning(f"Segment found but no SecurityID for {internal_symbol} in Redis")
             else:
@@ -357,10 +356,10 @@ class DhanProvider(BaseMarketDataProvider):
                 instrument_tuple = self._prepare_single_instrument(symbol, internal_symbol)
                 if instrument_tuple:
                     instruments.append(instrument_tuple)
-                    # Populate map: SecurityID -> Internal Symbol
+                    # Populate map using composite key
                     # instrument_tuple is (ExchangeSegment, SecurityId)
-                    sec_id_str = str(instrument_tuple[1])
-                    self.symbol_map[sec_id_str] = internal_symbol
+                    ex_seg, sec_id = instrument_tuple
+                    self.symbol_map[f"{ex_seg}:{sec_id}"] = internal_symbol
             # --- END CHANGED CODE ---
 
         if not instruments:
@@ -422,10 +421,15 @@ class DhanProvider(BaseMarketDataProvider):
 
             # Map exchange segment code to string
             exchange_str = self.EXCHANGE_MAP.get(exchange_segment, str(exchange_segment))
-            
+
             # Resolve to internal symbol using local cache
-            p_symbol = str(security_id)
-            final_symbol = self.symbol_map.get(p_symbol)
+            # Use composite key "SEGMENT:ID" to avoid collisions
+            p_symbol_composite = f"{exchange_str}:{security_id}"
+            final_symbol = self.symbol_map.get(p_symbol_composite)
+            
+            # Fallback for backward compatibility or ID-only maps
+            if not final_symbol:
+                 final_symbol = self.symbol_map.get(str(security_id))
 
             # Fallback: Try to resolve using provider manager if not in local map
             # This handles cases where symbol_map wasn't populated (e.g. restart) or incomplete
@@ -473,8 +477,6 @@ class DhanProvider(BaseMarketDataProvider):
                 }
 
             elif response_code == FeedResponseCode.QUOTE:
-                # Quote packet structure (50 bytes):
-                # ... existing comments ...
 
                 ltp = struct.unpack('<f', message[8:12])[0]
                 ltq = struct.unpack('<H', message[12:14])[0] # Using <H for unsigned int16
@@ -493,27 +495,6 @@ class DhanProvider(BaseMarketDataProvider):
                 }
                 
             elif response_code == FeedResponseCode.FULL:
-                # Full packet structure (162 bytes):
-                # Format: '<BHBIfHIfIIIIIIffff100s'
-                # 0: Response code (B - 1 byte)
-                # 1-2: Message length (H - 2 bytes)
-                # 3: Exchange segment (B - 1 byte)
-                # 4-7: Security ID (I - 4 bytes)
-                # 8-11: LTP (f - 4 bytes)
-                # 12-13: LTQ (H - 2 bytes)
-                # 14-17: LTT (I - 4 bytes)
-                # 18-21: ATP (f - 4 bytes)
-                # 22-25: Volume (I - 4 bytes)
-                # 26-29: Total Sell Qty (I - 4 bytes)
-                # 30-33: Total Buy Qty (I - 4 bytes)
-                # 34-37: OI (I - 4 bytes)
-                # 38-41: OI Day High (I - 4 bytes)
-                # 42-45: OI Day Low (I - 4 bytes)
-                # 46-49: Open (f - 4 bytes)
-                # 50-53: Close (f - 4 bytes)
-                # 54-57: High (f - 4 bytes)
-                # 58-61: Low (f - 4 bytes)
-                # 62-161: Market Depth (100 bytes)
 
                 if len(message) < 62:
                     logger.warning(f"Full packet too short: {len(message)} bytes")
@@ -609,6 +590,10 @@ class DhanProvider(BaseMarketDataProvider):
                 # We need to know which exchange this symbol belongs to (NSE, BSE, MCX)
                 exchange_id = self.provider_manager.get_exchange_id_for_symbol(internal_symbol)
                 exchange_code = self.provider_manager.get_exchange_code(exchange_id) if exchange_id else "NSE"
+
+                # DEBUG info for Index type
+                if inst_type_id == 2:
+                     logger.info(f"DEBUG: Prepare Instrument - {internal_symbol} | Type: {inst_type_id} | ExCode: {exchange_code}")
 
                 # 3. Map based on SQL logic
                 # |1 |EQ |Equity | -> NSE_EQ / BSE_EQ

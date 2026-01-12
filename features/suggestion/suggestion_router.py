@@ -9,7 +9,8 @@ from features.suggestion.suggestion_schema import (
     SuggestionInDb,
     SuggestionTypeCreate,
     SuggestionTypeUpdate,
-    SuggestionTypeInDb
+    SuggestionTypeInDb,
+    SuggestionResponse
 )
 from features.suggestion import suggestion_service
 
@@ -79,7 +80,7 @@ async def create_suggestion(
     user_id = int(user_claims.get("id"))
     return await suggestion_service.create_suggestion(session, user_id, suggestion_data)
 
-@router.get("/", response_model=list[SuggestionInDb])
+@router.get("/", response_model=list[SuggestionResponse])
 async def get_suggestions(
     session: AsyncSession = Depends(get_db_session),
     user_claims: dict = Depends(require_auth())
@@ -90,7 +91,7 @@ async def get_suggestions(
     user_id = int(user_claims.get("id"))
     return await suggestion_service.get_suggestions_by_user(session, user_id)
 
-@router.get("/my", response_model=list[SuggestionInDb])
+@router.get("/my", response_model=list[SuggestionResponse])
 async def get_my_suggestions(
     session: AsyncSession = Depends(get_db_session),
     user_claims: dict = Depends(require_auth())

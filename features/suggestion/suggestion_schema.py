@@ -1,6 +1,7 @@
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
 from typing import Optional
+from features.user.user_schema import UserInDb
 
 class SuggestionTypeBase(BaseModel):
     name: str
@@ -42,6 +43,13 @@ class SuggestionInDb(SuggestionBase):
     created_at: datetime
     updated_at: datetime
     is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SuggestionResponse(SuggestionInDb):
+    user: UserInDb
+    suggestion_type: SuggestionTypeInDb
 
     model_config = ConfigDict(from_attributes=True)
 
