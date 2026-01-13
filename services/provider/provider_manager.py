@@ -197,6 +197,7 @@ class ProviderManager:
         for provider_code, provider_symbols in symbols_by_provider.items():
             if provider_code in self.providers and self.providers[provider_code]:
                 try:
+                    print('Subscribing to', provider_code, provider_symbols)
                     self.providers[provider_code].subscribe_symbols(provider_symbols)
                     logger.info(
                         f"Subscribed to {len(provider_symbols)} symbols on {provider_code}"
@@ -298,6 +299,7 @@ class ProviderManager:
 
                 # Cache mappings to avoid repeated Redis calls
                 provider_i2p_maps = {}
+                provider_p2i_maps = {}  # NEW: Reverse map cache
                 target_subscriptions = set()
 
                 for internal_symbol in target_internal_symbols:
@@ -307,25 +309,59 @@ class ProviderManager:
                     if provider_code:
                         if provider_code not in provider_i2p_maps:
                             provider_i2p_maps[provider_code] = await self.redis_mapper.get_all_i2p_mappings(provider_code)
+                            # Prefetch reverse map too
+                            provider_p2i_maps[provider_code] = await self.redis_mapper.get_all_p2i_mappings(provider_code)
 
                         search_code = provider_i2p_maps[provider_code].get(internal_symbol)
+                        # We track internal symbols that successfully resolved to a search code
                         if search_code:
-                            target_subscriptions.add(search_code)
+                            # We don't add search_code to target_subscriptions anymore
+                            # We keep target_internal_symbols as the source of truth
+                            pass
 
-                # Get currently subscribed symbols across all providers
-                current_subscriptions = set()
+                # Calculate Current Subscriptions (Internal)
+                current_internal_subscriptions = set()
+
                 for provider_code, provider in self.providers.items():
                     if provider:
-                        current_subscriptions.update(provider.subscribed_symbols)
+                        # If we haven't fetched p2i map yet (because no target needed it?), fetch it now
+                        if provider_code not in provider_p2i_maps:
+                             provider_p2i_maps[provider_code] = await self.redis_mapper.get_all_p2i_mappings(provider_code)
 
-                # Calculate diff
-                to_subscribe = target_subscriptions - current_subscriptions
-                to_unsubscribe = current_subscriptions - target_subscriptions
+                        p2i = provider_p2i_maps.get(provider_code, {})
+
+                        for sub_code in provider.subscribed_symbols:
+                            internal = p2i.get(sub_code)
+                            if internal:
+                                current_internal_subscriptions.add(internal)
+                            elif sub_code in self.symbol_to_provider:
+                                # It's already an internal symbol!
+                                current_internal_subscriptions.add(sub_code)
+                            else:
+                                # This happens if provider has a subscription that we don't have a mapping for locally
+                                # e.g. manual subscription? Or stale?
+                                # We can't manage it if we don't know who it is. Ignore.
+                                pass
+
+                # Calculate diff using INTERNAL SYMBOLS
+                to_subscribe = target_internal_symbols - current_internal_subscriptions
+                to_unsubscribe = current_internal_subscriptions - target_internal_symbols
+
+                # Filter to_subscribe: ensure they map to valid providers/search_codes
+                # We can't subscribe to something with no provider mapping
+                valid_to_subscribe = []
+                for sym in to_subscribe:
+                    p_code = self.symbol_to_provider.get(sym)
+                    if p_code:
+                         if p_code not in provider_i2p_maps:
+                              provider_i2p_maps[p_code] = await self.redis_mapper.get_all_i2p_mappings(p_code)
+                         if provider_i2p_maps[p_code].get(sym):
+                              valid_to_subscribe.append(sym)
 
                 # Apply changes
-                if to_subscribe:
-                    await self.subscribe_to_symbols(list(to_subscribe))
-                    logger.info(f"📈 Subscribed to {len(to_subscribe)} new symbols")
+                if valid_to_subscribe:
+                    await self.subscribe_to_symbols(valid_to_subscribe)
+                    logger.info(f"📈 Subscribed to {len(valid_to_subscribe)} new symbols")
 
                 if to_unsubscribe:
                     await self.unsubscribe_from_symbols(

@@ -525,6 +525,16 @@ async def get_previous_closes_by_exchange(session: AsyncSession, exchange_code: 
             # Serialize with Pydantic's model_dump_json or similar, but list of models needs manual handling
             json_data = json.dumps([item.model_dump(mode='json') for item in response])
             await redis.set(cache_key, json_data, ex=3600)
+
+            # NEW: Also populate the Hash Map for O(1) access
+            # Key: prev_close_map:{exchange_code}
+            hash_key = f"prev_close_map:{exchange_code}"
+            mapping = {item.symbol: str(item.price) for item in response}
+            if mapping:
+                await redis.hset(hash_key, mapping=mapping)
+                # Set expiry same as list cache effectively (refresh resets it)
+                await redis.expire(hash_key, 3600)
+
         except Exception as e:
             logger.error(f"Error caching prev_close to Redis: {e}")
 

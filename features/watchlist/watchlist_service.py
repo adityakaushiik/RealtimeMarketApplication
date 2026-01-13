@@ -228,14 +228,29 @@ async def set_watchlist_show_on_dashboard(
         user_id: int,
         show_on_dashboard: bool
 ):
-    watchlist = await get_watchlist_by_id(session, watchlist_id=watchlist_id, user_id=user_id)
+    result = await session.execute(
+        select(Watchlist)
+        .where((Watchlist.id == watchlist_id) & (Watchlist.user_id == user_id))
+        .options(selectinload(Watchlist.items))
+    )
+    watchlist = result.scalar_one_or_none()
+
     if not watchlist:
         return None
 
     watchlist.show_on_dashboard = show_on_dashboard
     await session.commit()
     await session.refresh(watchlist)
-    return watchlist
+
+    instruments = await get_instruments_from_items(session, watchlist.items)
+
+    return WatchlistInDb(
+        id=watchlist.id,
+        user_id=watchlist.user_id,
+        name=watchlist.name,
+        show_on_dashboard=watchlist.show_on_dashboard,
+        items=instruments
+    )
 
 
 async def get_dashboard_watchlists(

@@ -75,6 +75,17 @@ async def websocket_endpoint(
                                     except Exception:
                                         pass
 
+                            # NEW: Try fetching from Hash Map (O(1)) if not found in list
+                            if not found_in_cache and redis:
+                                 hash_key = f"prev_close_map:{exchange.code}"
+                                 price_str = await redis.hget(hash_key, channel)
+                                 if price_str:
+                                     try:
+                                         prev_close = float(price_str)
+                                         found_in_cache = True
+                                     except:
+                                         pass
+
                             if not found_in_cache:
                                 # Fallback to service
                                 pcs = await get_previous_closes_by_exchange(session, exchange.code)
@@ -88,9 +99,9 @@ async def websocket_endpoint(
                     {
                         "message_type": WebSocketMessageType.SNAPSHOT.value,
                         "symbol": channel,
-                        "prev_close": prev_close,
-                        "ltp": ltp,
-                        "open": open_price
+                        "prev_close": prev_close if prev_close is not None else -1,
+                        "ltp": ltp if ltp is not None else -1,
+                        "open": open_price if open_price is not None else -1
                     }
                 )
 

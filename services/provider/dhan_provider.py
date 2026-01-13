@@ -320,9 +320,15 @@ class DhanProvider(BaseMarketDataProvider):
         instruments = []
         for symbol in symbols:
             # We need to resolve the internal symbol first to get instrument_type_id
-            internal_symbol = self.provider_manager.resolve_internal_symbol("DHAN", symbol) if self.provider_manager else symbol
-            if asyncio.iscoroutine(internal_symbol):
-                internal_symbol = await internal_symbol
+            # Modified: Handle case where symbol is ALREADY internal (returns None from resolve)
+            internal_symbol = symbol
+            if self.provider_manager:
+                 resolved = self.provider_manager.resolve_internal_symbol("DHAN", symbol)
+                 if asyncio.iscoroutine(resolved):
+                     resolved = await resolved
+
+                 if resolved:
+                     internal_symbol = resolved
 
             # --- START CHANGED CODE ---
             # Try to get segment from Redis mapping first (fastest and most accurate)
@@ -450,7 +456,7 @@ class DhanProvider(BaseMarketDataProvider):
                 # Better to drop the packet and warn.
                 # Limit logging to avoid flooding
                 if int(time.time()) % 60 == 0:  # Log once per minute max per ID roughly (or just standard log throttling)
-                     logger.warning(f"⚠️ Dropped msg for unknown SecurityID: {p_symbol} (Ex: {exchange_segment})")
+                     logger.warning(f"⚠️ Dropped msg for unknown SecurityID: {p_symbol_composite} (Ex: {exchange_segment})")
                 return
 
             # Parse payload based on response code
@@ -524,6 +530,36 @@ class DhanProvider(BaseMarketDataProvider):
                     "total_volume": float(volume), # Cumulative volume
                 }
 
+                # Full packet implies we might get prev close (close_price is prev close in the Full packet spec usually)
+                # But let's check Packet ID 6 PREV_CLOSE explicitly as requested
+                # If 'close_price' above refers to prev day close, we can update cache here too.
+                # Dhan Spec says Code 8 (Full) has 'Close Price'. Usually this is Prev Close if market is open/pre-open.
+                # Let's save it.
+                if close_price > 0:
+                     asyncio.create_task(self._update_prev_close(exchange_str, final_symbol, close_price))
+
+            elif response_code == FeedResponseCode.PREV_CLOSE:
+                # Value Code 6
+                # 0-8 Header
+                # 9-12 Prev Close (float32)
+                # 13-16 OI (int32)
+
+                print(f'Received PREV_CLOSE packet: {message} for {final_symbol}')
+
+                if len(message) < 16:
+                    return
+
+                prev_close = struct.unpack('<f', message[8:12])[0]
+                oi = struct.unpack('<i', message[12:16])[0]
+
+                # Update Redis Hash for O(1) access
+                if prev_close > 0:
+                    asyncio.create_task(self._update_prev_close(exchange_str, final_symbol, prev_close))
+
+                # We typically don't broadcast Prev Close as a standalone tick,
+                # but we could if UI needs it. The request specifically asked to SAVE it.
+                return
+
             elif response_code == FeedResponseCode.DISCONNECT:
                 logger.warning(f"Received disconnect packet: {message}")
                 return
@@ -565,6 +601,19 @@ class DhanProvider(BaseMarketDataProvider):
                 
         except Exception as e:
             logger.error(f"Error parsing binary message: {e}")
+
+    async def _update_prev_close(self, exchange_code: str, symbol: str, price: float):
+        """Update the prev_close map in Redis for O(1) access"""
+        try:
+            # Need Redis client. Using redis_mapper's client or getting new one.
+            # self.redis_mapper.redis is available
+            key = f"prev_close_map:{exchange_code}"
+            # Use hset
+            await self.redis_mapper.redis.hset(key, symbol, str(price))
+            # Refresh expiry to 1 hour (rolling)
+            await self.redis_mapper.redis.expire(key, 3600)
+        except Exception as e:
+            logger.error(f"Error updating prev_close for {symbol}: {e}")
 
     def _prepare_single_instrument(self, provider_symbol: str, internal_symbol: str) -> Optional[tuple]:
         """
@@ -664,19 +713,36 @@ class DhanProvider(BaseMarketDataProvider):
         instruments = []
         for symbol in symbols:
             # We need to resolve the internal symbol first to get instrument_type_id
-            internal_symbol = self.provider_manager.resolve_internal_symbol("DHAN", symbol) if self.provider_manager else symbol
-            if asyncio.iscoroutine(internal_symbol):
-                internal_symbol = await internal_symbol
+            internal_symbol = symbol
+            if self.provider_manager:
+                 resolved = self.provider_manager.resolve_internal_symbol("DHAN", symbol)
+                 if asyncio.iscoroutine(resolved):
+                     resolved = await resolved
 
-            instrument_tuple = self._prepare_single_instrument(symbol, internal_symbol)
-            if instrument_tuple:
-                instruments.append(instrument_tuple)
+                 if resolved:
+                     internal_symbol = resolved
+
+            # Try to get segment from Redis mapping first (fastest and most accurate)
+            # COPIED logic from _subscribe_batch
+            segment = await self.redis_mapper.get_provider_segment("DHAN", internal_symbol)
+            if segment:
+                 security_id_raw = await self.redis_mapper.get_provider_symbol("DHAN", internal_symbol)
+                 if security_id_raw:
+                     if ":" in str(security_id_raw):
+                         _, sec_id_val = str(security_id_raw).split(":", 1)
+                     else:
+                         sec_id_val = str(security_id_raw)
+                     instruments.append((segment, sec_id_val))
+            else:
+                instrument_tuple = self._prepare_single_instrument(symbol, internal_symbol)
+                if instrument_tuple:
+                    instruments.append(instrument_tuple)
 
         if not instruments:
             return
         
         # Group by request code (16 for Unsubscribe Ticker)
-        request_code = FeedRequestCode.UNSUBSCRIBE_TICKER
+        request_code = FeedRequestCode.UNSUBSCRIBE_QUOTE
         
         # Split into chunks of 100 (API limit)
         chunk_size = 100

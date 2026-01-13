@@ -176,7 +176,7 @@ async def remove_item_from_watchlist(
     return None
 
 @watchlist_router.put(
-    "show_on_dashboard/{watchlist_id}",
+    "/show_on_dashboard/{watchlist_id}",
     response_model=WatchlistInDb,
 )
 async def set_watchlist_show_on_dashboard(

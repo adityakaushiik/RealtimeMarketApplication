@@ -125,7 +125,6 @@ class RedisMappingHelper:
             .join(ExchangeProviderMapping, Instrument.exchange_id == ExchangeProviderMapping.exchange_id)
             .join(Provider, Provider.id == ExchangeProviderMapping.provider_id)
             .where(
-                Instrument.is_active == True,
                 Instrument.blacklisted == False,
                 Instrument.delisted == False,
                 ExchangeProviderMapping.is_active == True,
