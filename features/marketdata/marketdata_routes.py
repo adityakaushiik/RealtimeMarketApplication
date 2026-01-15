@@ -20,15 +20,17 @@ marketdata_router = APIRouter(
 
 @marketdata_router.get("/daily/{symbol}")
 async def get_info_and_price_daily(
-        symbol: str,
-        user_claims: dict = Depends(require_auth()),
-        session: AsyncSession = Depends(get_db_session),
+    symbol: str,
+    user_claims: dict = Depends(require_auth()),
+    session: AsyncSession = Depends(get_db_session),
 ):
     # Determine if only active instruments should be considered
     only_active = not is_admin(user_claims)
 
     # Check if symbol is valid
-    instrument: InstrumentInDb = await get_instrument_by_symbol(session, symbol, only_active=only_active)
+    instrument: InstrumentInDb = await get_instrument_by_symbol(
+        session, symbol, only_active=only_active
+    )
     if instrument is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
 
@@ -37,15 +39,17 @@ async def get_info_and_price_daily(
 
 @marketdata_router.get("/intraday/{symbol}")
 async def get_info_and_price_intraday(
-        symbol: str,
-        user_claims: dict = Depends(require_auth()),
-        session: AsyncSession = Depends(get_db_session),
+    symbol: str,
+    user_claims: dict = Depends(require_auth()),
+    session: AsyncSession = Depends(get_db_session),
 ):
     # Determine if only active instruments should be considered
     only_active = not is_admin(user_claims)
 
     # Check if symbol is valid
-    instrument: InstrumentInDb = await get_instrument_by_symbol(session, symbol, only_active=only_active)
+    instrument: InstrumentInDb = await get_instrument_by_symbol(
+        session, symbol, only_active=only_active
+    )
     if instrument is None:
         raise HTTPException(status_code=404, detail="Instrument not found")
 
@@ -54,9 +58,9 @@ async def get_info_and_price_intraday(
 
 @marketdata_router.get("/prev_close/{exchange_code}")
 async def get_previous_closes(
-        exchange_code: str,
-        user_claims: dict = Depends(require_auth()),
-        session: AsyncSession = Depends(get_db_session),
+    exchange_code: str,
+    user_claims: dict = Depends(require_auth()),
+    session: AsyncSession = Depends(get_db_session),
 ):
     try:
         prev_closes = await marketdata_service.get_previous_closes_by_exchange(

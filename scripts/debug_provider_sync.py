@@ -15,6 +15,7 @@ handler = logging.StreamHandler(sys.stdout)
 handler.setLevel(logging.INFO)
 logger.addHandler(handler)
 
+
 async def debug_sync_logic():
     print("--- Starting Debug ---")
 
@@ -45,7 +46,9 @@ async def debug_sync_logic():
         print(f"Redis get_provider_for_symbol('{target_symbol}') -> {prov_direct}")
 
         # If failure here, check DB mapping sync
-        print("Hint: If Provider is missing, run force_alembic_sync.py or check 'instrument' + 'exchange_provider_mapping' tables.")
+        print(
+            "Hint: If Provider is missing, run force_alembic_sync.py or check 'instrument' + 'exchange_provider_mapping' tables."
+        )
         return
 
     # 2. Check I2P Mapping (Internal to Provider Search Code)
@@ -55,7 +58,9 @@ async def debug_sync_logic():
     print(f"i2p_map.get('{target_symbol}') -> {search_code}")
 
     if not search_code:
-        print(f"❌ FAILURE: Internal symbol '{target_symbol}' has no mapping to provider Search Code in I2P map.")
+        print(
+            f"❌ FAILURE: Internal symbol '{target_symbol}' has no mapping to provider Search Code in I2P map."
+        )
         print("This explains why 'to_subscribe' ignores it.")
 
         # Debug why
@@ -68,10 +73,12 @@ async def debug_sync_logic():
                 found = True
                 break
         if not found:
-             print("❌ Not found in P2I map either.")
+            print("❌ Not found in P2I map either.")
 
         # Check specific single lookup
-        single_i2p = await pm.redis_mapper.get_provider_symbol(provider_code, target_symbol)
+        single_i2p = await pm.redis_mapper.get_provider_symbol(
+            provider_code, target_symbol
+        )
         print(f"Single lookup get_provider_symbol -> {single_i2p}")
         return
 
@@ -96,7 +103,9 @@ async def debug_sync_logic():
                 print(f"Adding to target_subscriptions: {s_code}")
                 target_subscriptions.add(s_code)
             else:
-                print(f"❌ Logic Loop: Failed to find search code for {internal_symbol}")
+                print(
+                    f"❌ Logic Loop: Failed to find search code for {internal_symbol}"
+                )
         else:
             print(f"❌ Logic Loop: Failed to find provider for {internal_symbol}")
 
@@ -120,7 +129,8 @@ async def debug_sync_logic():
     print("\n--- 6. Simulate Loop 2 ---")
     current_subscriptions = set()
     for pc, p in pm.providers.items():
-        if p: current_subscriptions.update(p.subscribed_symbols)
+        if p:
+            current_subscriptions.update(p.subscribed_symbols)
 
     print(f"Current Global Subscriptions: {current_subscriptions}")
 
@@ -132,8 +142,8 @@ async def debug_sync_logic():
     else:
         print("❌ FAILURE: Persistence failed. Loop 2 wants to re-subscribe.")
 
+
 if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(debug_sync_logic())
-

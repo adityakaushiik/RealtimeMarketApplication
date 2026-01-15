@@ -4,6 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.database_config import get_db_session
 from features.auth.auth_service import require_auth
+from features.exchange.exchange_schema import ExchangeInDb
+from features.exchange.exchange_service import get_exchange_by_code
 from features.instruments import instrument_service
 from features.instruments.instrument_schema import (
     InstrumentCreate,
@@ -23,16 +25,15 @@ instrument_router = APIRouter(
 @instrument_router.get("/list/{exchange}")
 async def list_instruments(
     exchange: str,
-    limit: int = 200,
+    recording_only: bool | None = None,
     instrument_type_id: int | None = None,
+    limit: int = 200,
     user_claims: dict = Depends(require_auth()),
     session: AsyncSession = Depends(get_db_session),
 ):
-    # Ideally Fetch from Redis Cache first
-    exchange_result = await session.execute(
-        select(Exchange).where(Exchange.code == exchange)
-    )
-    exchange_obj = exchange_result.scalar_one_or_none()
+    """List instruments for a given exchange"""
+
+    exchange_obj : ExchangeInDb = await get_exchange_by_code(session, exchange)
     if not exchange_obj:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -40,6 +41,10 @@ async def list_instruments(
         )
 
     stmt = select(Instrument).where(Instrument.exchange_id == exchange_obj.id)
+
+    if recording_only:
+        stmt = stmt.where(Instrument.should_record_data == True)
+
     if not is_admin(user_claims):
         stmt = stmt.where(Instrument.is_active == True)
 
@@ -50,6 +55,7 @@ async def list_instruments(
 
     result = await session.execute(stmt)
     instrument_list = result.scalars().all()
+
     return instrument_list
 
 
@@ -88,9 +94,9 @@ async def instrument_details(
 
     result = await session.execute(stmt)
     instrument = result.scalar_one_or_none()
-    
+
     if not instrument:
-        return None 
+        return None
 
     return instrument
 
@@ -108,14 +114,28 @@ async def create_instrument(
     instrument = await instrument_service.create_instrument(session, instrument_data)
     return instrument
 
+
 @instrument_router.get("/search")
 async def search_instruments(
     query: str,
+    exchange: str | None = None,
     session: AsyncSession = Depends(get_db_session),
     user_claims: dict = Depends(require_auth()),
 ):
     only_active = not is_admin(user_claims)
-    return await instrument_service.search_instruments(session, query, only_active=only_active)
+
+
+    exchange_obj : ExchangeInDb = await get_exchange_by_code(session, exchange)
+    if not exchange_obj:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invalid or Unsupported exchange code",
+        )
+
+
+    return await instrument_service.search_instruments(
+        session, query, only_active=only_active, exchange_id=exchange_obj.id
+    )
 
 
 @instrument_router.get("/{instrument_id}", response_model=InstrumentInDb)
@@ -126,7 +146,9 @@ async def get_instrument(
 ):
     """Get instrument by ID"""
     only_active = not is_admin(user_claims)
-    instrument = await instrument_service.get_instrument_by_id(session, instrument_id, only_active=only_active)
+    instrument = await instrument_service.get_instrument_by_id(
+        session, instrument_id, only_active=only_active
+    )
     if not instrument:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Instrument not found"
@@ -142,7 +164,9 @@ async def get_instrument_by_symbol(
 ):
     """Get instrument by symbol (without exchange)"""
     only_active = not is_admin(user_claims)
-    instrument = await instrument_service.get_instrument_by_symbol(session, symbol, only_active=only_active)
+    instrument = await instrument_service.get_instrument_by_symbol(
+        session, symbol, only_active=only_active
+    )
     if not instrument:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Instrument not found"
@@ -181,7 +205,7 @@ async def toggle_recording(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Instrument not found"
         )
-    
+
     return instrument
 
 

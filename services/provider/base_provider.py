@@ -12,6 +12,7 @@ from models import Instrument, PriceHistoryIntraday, PriceHistoryDaily
 
 from services.data.data_queue import get_data_ingestion_queue_instance
 
+
 class BaseMarketDataProvider(ABC):
     """Abstract base class for all market data providers"""
 
@@ -76,11 +77,11 @@ class BaseMarketDataProvider(ABC):
 
     @abstractmethod
     async def get_intraday_prices(
-            self,
-            instruments: List[Instrument],
-            start_date: Optional[datetime] = None,
-            end_date: Optional[datetime] = None,
-            timeframe: str = '5m',
+        self,
+        instruments: List[Instrument],
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        timeframe: str = "5m",
     ) -> dict[str, list[PriceHistoryIntraday]]:
         """
         Fetch intraday price history for given instruments.
@@ -95,11 +96,11 @@ class BaseMarketDataProvider(ABC):
 
     @abstractmethod
     async def get_daily_prices(
-            self,
-            instruments: List[Instrument],
-            start_date: Optional[datetime] = None,
-            end_date: Optional[datetime] = None,
-            timeframe: str = '1d',
+        self,
+        instruments: List[Instrument],
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        timeframe: str = "1d",
     ) -> dict[str, list[PriceHistoryDaily]]:
         """
         Fetch daily price history for given instruments.

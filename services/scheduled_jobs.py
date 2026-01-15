@@ -1,6 +1,7 @@
 """
 Scheduled background jobs for data maintenance.
 """
+
 import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -98,11 +99,11 @@ class ScheduledJobs:
                 stmt = select(
                     func.count(PriceHistoryIntraday.id),
                     func.min(PriceHistoryIntraday.datetime),
-                    func.max(PriceHistoryIntraday.datetime)
+                    func.max(PriceHistoryIntraday.datetime),
                 ).where(
                     PriceHistoryIntraday.datetime >= one_day_ago,
                     PriceHistoryIntraday.resolve_required == True,
-                    PriceHistoryIntraday.resolve_tries >= 3
+                    PriceHistoryIntraday.resolve_tries >= 3,
                 )
                 result = await session.execute(stmt)
                 row = result.one()
@@ -115,16 +116,20 @@ class ScheduledJobs:
                     )
 
                     # Get sample of affected instruments
-                    sample_stmt = select(
-                        PriceHistoryIntraday.instrument_id,
-                        func.count(PriceHistoryIntraday.id).label("cnt")
-                    ).where(
-                        PriceHistoryIntraday.datetime >= one_day_ago,
-                        PriceHistoryIntraday.resolve_required == True,
-                        PriceHistoryIntraday.resolve_tries >= 3
-                    ).group_by(PriceHistoryIntraday.instrument_id).order_by(
-                        func.count(PriceHistoryIntraday.id).desc()
-                    ).limit(5)
+                    sample_stmt = (
+                        select(
+                            PriceHistoryIntraday.instrument_id,
+                            func.count(PriceHistoryIntraday.id).label("cnt"),
+                        )
+                        .where(
+                            PriceHistoryIntraday.datetime >= one_day_ago,
+                            PriceHistoryIntraday.resolve_required == True,
+                            PriceHistoryIntraday.resolve_tries >= 3,
+                        )
+                        .group_by(PriceHistoryIntraday.instrument_id)
+                        .order_by(func.count(PriceHistoryIntraday.id).desc())
+                        .limit(5)
+                    )
 
                     sample_result = await session.execute(sample_stmt)
                     top_affected = sample_result.all()
@@ -147,13 +152,15 @@ class ScheduledJobs:
 
         try:
             async for session in get_db_session():
-                today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                today = datetime.now(timezone.utc).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
                 yesterday = today - timedelta(days=1)
 
                 # Get daily records for yesterday
                 daily_stmt = select(PriceHistoryDaily).where(
                     PriceHistoryDaily.datetime >= yesterday,
-                    PriceHistoryDaily.datetime < today
+                    PriceHistoryDaily.datetime < today,
                 )
                 daily_result = await session.execute(daily_stmt)
                 daily_records = daily_result.scalars().all()
@@ -168,7 +175,7 @@ class ScheduledJobs:
                         PriceHistoryIntraday.instrument_id == daily.instrument_id,
                         PriceHistoryIntraday.datetime >= day_start,
                         PriceHistoryIntraday.datetime < day_end,
-                        PriceHistoryIntraday.volume.isnot(None)
+                        PriceHistoryIntraday.volume.isnot(None),
                     )
                     vol_result = await session.execute(vol_stmt)
                     intraday_sum = vol_result.scalar() or 0
@@ -183,7 +190,9 @@ class ScheduledJobs:
 
                 if updated_count > 0:
                     await session.commit()
-                    logger.info(f"✅ Reconciled volume for {updated_count} daily records")
+                    logger.info(
+                        f"✅ Reconciled volume for {updated_count} daily records"
+                    )
                 else:
                     logger.info("✅ All daily volumes are consistent")
 
@@ -200,4 +209,3 @@ def get_scheduled_jobs() -> ScheduledJobs:
     if _scheduled_jobs is None:
         _scheduled_jobs = ScheduledJobs()
     return _scheduled_jobs
-

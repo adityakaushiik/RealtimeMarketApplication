@@ -2,7 +2,10 @@ import asyncio
 
 from config.logger import logger
 from config.redis_config import get_redis
-from services.data.data_queue import get_data_ingestion_queue_instance, DataIngestionQueue
+from services.data.data_queue import (
+    get_data_ingestion_queue_instance,
+    DataIngestionQueue,
+)
 from services.provider.provider_manager import get_provider_manager
 from services.redis_timeseries import get_redis_timeseries
 from services.websocket_manager import get_websocket_manager
@@ -13,14 +16,16 @@ from utils.common_constants import DataIngestionFormat
 class LiveDataIngestion:
     def __init__(self):
         self._loop = None
-        self.queue : DataIngestionQueue = get_data_ingestion_queue_instance()  # Use the shared singleton queue
+        self.queue: DataIngestionQueue = (
+            get_data_ingestion_queue_instance()
+        )  # Use the shared singleton queue
         self._worker_task = None
         self._stats_task = None  # Added stats task
 
         self.redis_timeseries = get_redis_timeseries()
         self.websocket_manager = get_websocket_manager()
         self.redis = get_redis()
-        
+
         # Stats tracking
         self.stats_processed_count = 0
         self.stats_symbol_counts = {}
@@ -72,7 +77,9 @@ class LiveDataIngestion:
 
         # Update stats
         self.stats_processed_count += 1
-        self.stats_symbol_counts[message.symbol] = self.stats_symbol_counts.get(message.symbol, 0) + 1
+        self.stats_symbol_counts[message.symbol] = (
+            self.stats_symbol_counts.get(message.symbol, 0) + 1
+        )
 
         # NOTE: Providers now push NORMALIZED internal symbols to the queue.
         # No need to resolve here anymore.
@@ -103,7 +110,7 @@ class LiveDataIngestion:
                 symbol=symbol_to_use,
                 timestamp=message.timestamp,
                 price=message.price,
-                volume=message.volume, # Storing Cumulative in DB is usually correct for consistency
+                volume=message.volume,  # Storing Cumulative in DB is usually correct for consistency
                 provider_code=message.provider_code,
             ),
             # Broadcast to clients
@@ -111,8 +118,8 @@ class LiveDataIngestion:
                 symbol=symbol_to_use,
                 timestamp=message.timestamp,
                 price=message.price,
-                volume=message.volume, # Total Daily Volume (for UI Labels)
-                tick_volume=tick_volume, # Delta Volume (for Charts/Candles)
+                volume=message.volume,  # Total Daily Volume (for UI Labels)
+                tick_volume=tick_volume,  # Delta Volume (for Charts/Candles)
                 provider_code=message.provider_code,
             ),
         ]
@@ -163,7 +170,9 @@ class LiveDataIngestion:
                         "timestamp": timestamp,
                         "price": price,
                         "volume": int(volume),
-                        "size": int(tick_volume), # "size" is a standard name for trade quantity
+                        "size": int(
+                            tick_volume
+                        ),  # "size" is a standard name for trade quantity
                     }
                 ),
             )
@@ -207,13 +216,17 @@ class LiveDataIngestion:
                 active_tasks = len(asyncio.all_tasks())
 
                 # Get top 5 active symbols
-                top_symbols = sorted(self.stats_symbol_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+                top_symbols = sorted(
+                    self.stats_symbol_counts.items(), key=lambda x: x[1], reverse=True
+                )[:5]
 
                 # Reset counters
                 self.stats_processed_count = 0
                 self.stats_symbol_counts = {}
 
-                logger.info(f"📊 Ingestion Stats (10s): Queue={q_size}, Processed={count}, UniqueSymbols={unique_symbols}, ActiveTasks={active_tasks}")
+                logger.info(
+                    f"📊 Ingestion Stats (10s): Queue={q_size}, Processed={count}, UniqueSymbols={unique_symbols}, ActiveTasks={active_tasks}"
+                )
                 # if count > 0:
                 #     logger.info(f"   Top symbols: {top_symbols}")
 

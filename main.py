@@ -24,7 +24,10 @@ from features.health.health_routes import health_router
 from services.data.data_ingestion import LiveDataIngestion, get_provider_manager
 from services.data.data_saver import DataSaver
 from services.data.data_resolver import DataResolver
-from services.data.gap_detection import get_gap_detection_service, set_gap_detection_provider
+from services.data.gap_detection import (
+    get_gap_detection_service,
+    set_gap_detection_provider,
+)
 from services.provider.provider_manager import ProviderManager
 from services.data.redis_mapping import get_redis_mapping_helper
 from services.redis_subscriber import redis_subscriber
@@ -58,7 +61,7 @@ sentry_sdk.init(
 subscriber_task = None
 live_data_ingestion: LiveDataIngestion | None = None
 data_saver: DataSaver | None = None
-provider_manager : ProviderManager | None = None
+provider_manager: ProviderManager | None = None
 scheduled_jobs = None
 gap_detection_service = None
 data_broadcast = None
@@ -118,7 +121,7 @@ async def lifespan(app: FastAPI):
 
     # Sync Redis Mappings
     try:
-         await get_redis_mapping_helper().sync_mappings_from_db()
+        await get_redis_mapping_helper().sync_mappings_from_db()
     except Exception as e:
         logger.error(f"Failed to sync Redis mappings on startup: {e}")
 
@@ -129,7 +132,9 @@ async def lifespan(app: FastAPI):
     provider_manager = get_provider_manager()
 
     # Task - 1.5: Initialize Redis TimeSeries downsampling for recordable instruments
-    logger.info("Task - 1.5: Initializing Redis TimeSeries for recordable instruments...")
+    logger.info(
+        "Task - 1.5: Initializing Redis TimeSeries for recordable instruments..."
+    )
     try:
         redis_ts = get_redis_timeseries()
         # Fetch recordable symbols from Redis mappings (already synced above)
@@ -137,8 +142,7 @@ async def lifespan(app: FastAPI):
         record_map = await mapper.get_symbol_record_map()
 
         recordable_symbols = [
-            symbol for symbol, should_record in record_map.items()
-            if should_record
+            symbol for symbol, should_record in record_map.items() if should_record
         ]
 
         if recordable_symbols:
@@ -146,7 +150,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to initialize Redis TimeSeries: {e}")
 
-    await provider_manager.initialize() # Ensure mappings are loaded before use
+    await provider_manager.initialize()  # Ensure mappings are loaded before use
 
     asyncio.create_task(live_data_ingestion.start_ingestion())
 
@@ -180,9 +184,9 @@ async def lifespan(app: FastAPI):
         exchanges = result.scalars().all()
         for exchange in exchanges:
             if (
-                    exchange.market_open_time is not None
-                    and exchange.market_close_time is not None
-                    and exchange.timezone is not None
+                exchange.market_open_time is not None
+                and exchange.market_close_time is not None
+                and exchange.timezone is not None
             ):
                 # Add exchange directly to data_saver
                 data_saver.add_exchange(exchange)

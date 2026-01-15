@@ -4,7 +4,6 @@ from utils.common_constants import DataIngestionFormat
 
 
 class DataIngestionQueue:
-
     def __init__(self):
         self.queue = asyncio.Queue()
         self._loop = None
@@ -42,6 +41,8 @@ class DataIngestionQueue:
 
 
 data_ingestion_queue_instance = None
+
+
 def get_data_ingestion_queue_instance() -> DataIngestionQueue:
     global data_ingestion_queue_instance
     if data_ingestion_queue_instance is None:

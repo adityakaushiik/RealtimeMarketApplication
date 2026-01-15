@@ -2,6 +2,7 @@
 Redis Mapping Helper Service.
 Responsible for syncing database mappings to Redis hashes and providing efficient lookup methods.
 """
+
 from typing import Dict, Optional, Any, List
 
 from sqlalchemy import select
@@ -9,7 +10,14 @@ from sqlalchemy import select
 from config.logger import logger
 from config.redis_config import get_redis
 from config.database_config import get_db_session
-from models import Provider, Instrument, ProviderInstrumentMapping, Exchange, ExchangeProviderMapping
+from models import (
+    Provider,
+    Instrument,
+    ProviderInstrumentMapping,
+    Exchange,
+    ExchangeProviderMapping,
+)
+
 
 class RedisMappingHelper:
     """
@@ -25,16 +33,16 @@ class RedisMappingHelper:
     - map:global:s2rec -> Hash {internal_symbol: should_record_data boolean}
     """
 
-    KEY_PREFIX_P2I = "map:p2i" # Provider to Internal
-    KEY_PREFIX_I2P = "map:i2p" # Internal to Provider
-    KEY_PREFIX_I2S = "map:i2s" # Internal to Provider Segment (Dhan specific)
+    KEY_PREFIX_P2I = "map:p2i"  # Provider to Internal
+    KEY_PREFIX_I2P = "map:i2p"  # Internal to Provider
+    KEY_PREFIX_I2S = "map:i2s"  # Internal to Provider Segment (Dhan specific)
 
-    KEY_PREFIX_S2P = "map:global:s2p" # Symbol to Provider (Routing)
-    KEY_PREFIX_S2E = "map:global:s2e" # Symbol to Exchange
-    KEY_PREFIX_S2T = "map:global:s2t" # Symbol to Instrument Type
-    KEY_PREFIX_E2P = "map:global:e2p" # Exchange to Provider
-    KEY_PREFIX_E2C = "map:global:e2c" # Exchange to Exchange Code
-    KEY_PREFIX_S2REC = "map:global:s2rec" # Symbol to should_record_data boolean
+    KEY_PREFIX_S2P = "map:global:s2p"  # Symbol to Provider (Routing)
+    KEY_PREFIX_S2E = "map:global:s2e"  # Symbol to Exchange
+    KEY_PREFIX_S2T = "map:global:s2t"  # Symbol to Instrument Type
+    KEY_PREFIX_E2P = "map:global:e2p"  # Exchange to Provider
+    KEY_PREFIX_E2C = "map:global:e2c"  # Exchange to Exchange Code
+    KEY_PREFIX_S2REC = "map:global:s2rec"  # Symbol to should_record_data boolean
 
     def __init__(self):
         self.redis = get_redis()
@@ -92,17 +100,16 @@ class RedisMappingHelper:
 
         # A. Sync Exchange Mappings
         ex_result = await session.execute(
-            select(
-                Exchange.id,
-                Exchange.code,
-                Provider.code.label("provider_code")
+            select(Exchange.id, Exchange.code, Provider.code.label("provider_code"))
+            .join(
+                ExchangeProviderMapping,
+                Exchange.id == ExchangeProviderMapping.exchange_id,
             )
-            .join(ExchangeProviderMapping, Exchange.id == ExchangeProviderMapping.exchange_id)
             .join(Provider, Provider.id == ExchangeProviderMapping.provider_id)
             .where(
                 ExchangeProviderMapping.is_active == True,
                 ExchangeProviderMapping.is_primary == True,
-                Provider.is_active == True
+                Provider.is_active == True,
             )
         )
 
@@ -120,16 +127,19 @@ class RedisMappingHelper:
                 Instrument.exchange_id,
                 Instrument.instrument_type_id,
                 Provider.code.label("provider_code"),
-                Instrument.should_record_data
+                Instrument.should_record_data,
             )
-            .join(ExchangeProviderMapping, Instrument.exchange_id == ExchangeProviderMapping.exchange_id)
+            .join(
+                ExchangeProviderMapping,
+                Instrument.exchange_id == ExchangeProviderMapping.exchange_id,
+            )
             .join(Provider, Provider.id == ExchangeProviderMapping.provider_id)
             .where(
                 Instrument.blacklisted == False,
                 Instrument.delisted == False,
                 ExchangeProviderMapping.is_active == True,
                 ExchangeProviderMapping.is_primary == True,
-                Provider.is_active == True
+                Provider.is_active == True,
             )
         )
 
@@ -145,25 +155,38 @@ class RedisMappingHelper:
             s2e_map[row.symbol] = str(row.exchange_id)
             s2t_map[row.symbol] = str(row.instrument_type_id)
             # Store value string as '1' or '0'
-            s2rec_map[row.symbol] = '1' if row.should_record_data else '0'
+            s2rec_map[row.symbol] = "1" if row.should_record_data else "0"
 
         # Write to Redis
         async with self.redis.pipeline(transaction=True) as pipe:
             # Exchange mappings
             await pipe.delete(self.KEY_PREFIX_E2P, self.KEY_PREFIX_E2C)
-            if e2p_map: await pipe.hset(self.KEY_PREFIX_E2P, mapping=e2p_map)
-            if e2c_map: await pipe.hset(self.KEY_PREFIX_E2C, mapping=e2c_map)
+            if e2p_map:
+                await pipe.hset(self.KEY_PREFIX_E2P, mapping=e2p_map)
+            if e2c_map:
+                await pipe.hset(self.KEY_PREFIX_E2C, mapping=e2c_map)
 
             # Instrument mappings
-            await pipe.delete(self.KEY_PREFIX_S2P, self.KEY_PREFIX_S2E, self.KEY_PREFIX_S2T, self.KEY_PREFIX_S2REC)
-            if s2p_map: await pipe.hset(self.KEY_PREFIX_S2P, mapping=s2p_map)
-            if s2e_map: await pipe.hset(self.KEY_PREFIX_S2E, mapping=s2e_map)
-            if s2t_map: await pipe.hset(self.KEY_PREFIX_S2T, mapping=s2t_map)
-            if s2rec_map: await pipe.hset(self.KEY_PREFIX_S2REC, mapping=s2rec_map)
+            await pipe.delete(
+                self.KEY_PREFIX_S2P,
+                self.KEY_PREFIX_S2E,
+                self.KEY_PREFIX_S2T,
+                self.KEY_PREFIX_S2REC,
+            )
+            if s2p_map:
+                await pipe.hset(self.KEY_PREFIX_S2P, mapping=s2p_map)
+            if s2e_map:
+                await pipe.hset(self.KEY_PREFIX_S2E, mapping=s2e_map)
+            if s2t_map:
+                await pipe.hset(self.KEY_PREFIX_S2T, mapping=s2t_map)
+            if s2rec_map:
+                await pipe.hset(self.KEY_PREFIX_S2REC, mapping=s2rec_map)
 
             await pipe.execute()
 
-        logger.info(f"Synced routing: {len(e2p_map)} exchanges, {len(s2p_map)} instruments")
+        logger.info(
+            f"Synced routing: {len(e2p_map)} exchanges, {len(s2p_map)} instruments"
+        )
 
     async def _sync_provider_mappings(self, session, provider: Provider):
         """Sync mappings for a single provider"""
@@ -174,12 +197,12 @@ class RedisMappingHelper:
             select(
                 ProviderInstrumentMapping.provider_instrument_search_code,
                 ProviderInstrumentMapping.provider_instrument_segment,  # Fetch segment
-                Instrument.symbol.label("internal_symbol")
+                Instrument.symbol.label("internal_symbol"),
             )
             .join(Instrument, Instrument.id == ProviderInstrumentMapping.instrument_id)
             .where(
                 ProviderInstrumentMapping.provider_id == provider.id,
-                ProviderInstrumentMapping.is_active == True
+                ProviderInstrumentMapping.is_active == True,
             )
         )
 
@@ -191,8 +214,12 @@ class RedisMappingHelper:
             return
 
         # Prepare bulk dictionaries
-        p2i_map = {row.provider_instrument_search_code: row.internal_symbol for row in mappings}
-        i2p_map = {row.internal_symbol: row.provider_instrument_search_code for row in mappings}
+        p2i_map = {
+            row.provider_instrument_search_code: row.internal_symbol for row in mappings
+        }
+        i2p_map = {
+            row.internal_symbol: row.provider_instrument_search_code for row in mappings
+        }
 
         # Only populate segment map if segments are present (e.g. for Dhan)
         i2s_map = {
@@ -213,9 +240,13 @@ class RedisMappingHelper:
                     i2p_map[row.internal_symbol] = combined_key
                 else:
                     # Fallback
-                    p2i_map[str(row.provider_instrument_search_code)] = row.internal_symbol
-                    i2p_map[row.internal_symbol] = str(row.provider_instrument_search_code)
-        
+                    p2i_map[str(row.provider_instrument_search_code)] = (
+                        row.internal_symbol
+                    )
+                    i2p_map[row.internal_symbol] = str(
+                        row.provider_instrument_search_code
+                    )
+
         # Write to Redis
         p2i_key = self.get_p2i_key(provider.code)
         i2p_key = self.get_i2p_key(provider.code)
@@ -256,25 +287,33 @@ class RedisMappingHelper:
         data = await self.redis.hgetall(key)
         return {k.decode("utf-8"): v.decode("utf-8") for k, v in data.items()}
 
-    async def get_provider_symbol(self, provider_code: str, internal_symbol: str) -> Optional[str]:
+    async def get_provider_symbol(
+        self, provider_code: str, internal_symbol: str
+    ) -> Optional[str]:
         """Get provider specific symbol code from internal symbol"""
         key = self.get_i2p_key(provider_code)
         val = await self.redis.hget(key, internal_symbol)
         return val.decode("utf-8") if val else None
 
-    async def get_provider_segment(self, provider_code: str, internal_symbol: str) -> Optional[str]:
+    async def get_provider_segment(
+        self, provider_code: str, internal_symbol: str
+    ) -> Optional[str]:
         """Get provider specific instrument segment from internal symbol (e.g. for Dhan)"""
         key = self.get_i2s_key(provider_code)
         val = await self.redis.hget(key, internal_symbol)
         return val.decode("utf-8") if val else None
 
-    async def get_internal_symbol(self, provider_code: str, provider_symbol: str) -> Optional[str]:
+    async def get_internal_symbol(
+        self, provider_code: str, provider_symbol: str
+    ) -> Optional[str]:
         """Get single internal symbol for a provider symbol"""
         key = self.get_p2i_key(provider_code)
         val = await self.redis.hget(key, provider_symbol)
         return val.decode("utf-8") if val else None
 
-    async def get_provider_symbol(self, provider_code: str, internal_symbol: str) -> Optional[str]:
+    async def get_provider_symbol(
+        self, provider_code: str, internal_symbol: str
+    ) -> Optional[str]:
         """Get single provider symbol for an internal symbol"""
         key = self.get_i2p_key(provider_code)
         val = await self.redis.hget(key, internal_symbol)
@@ -303,7 +342,7 @@ class RedisMappingHelper:
         res = {}
         for k, v in data.items():
             val_str = v.decode("utf-8")
-            res[k.decode("utf-8")] = (val_str == 'True' or val_str == '1')
+            res[k.decode("utf-8")] = val_str == "True" or val_str == "1"
         return res
 
     async def get_symbol_exchange_map(self) -> Dict[str, int]:
@@ -326,7 +365,9 @@ class RedisMappingHelper:
         data = await self.redis.hgetall(self.KEY_PREFIX_E2C)
         return {int(k.decode("utf-8")): v.decode("utf-8") for k, v in data.items()}
 
-    async def get_routing_info_for_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
+    async def get_routing_info_for_symbol(
+        self, symbol: str
+    ) -> Optional[Dict[str, Any]]:
         """Get routing info for a single symbol."""
         # Using separate gets for now, could be optimized with pipeline if needed frequently
         provider = await self.redis.hget(self.KEY_PREFIX_S2P, symbol)
@@ -334,18 +375,20 @@ class RedisMappingHelper:
         if not provider:
             return None
 
-        provider_code = provider.decode('utf-8')
+        provider_code = provider.decode("utf-8")
         exchange_id = await self.redis.hget(self.KEY_PREFIX_S2E, symbol)
         search_code = await self.get_provider_symbol(provider_code, symbol)
 
         return {
             "symbol": symbol,
             "provider": provider_code,
-            "exchange_id": int(exchange_id.decode('utf-8')) if exchange_id else None,
-            "search_code": search_code
+            "exchange_id": int(exchange_id.decode("utf-8")) if exchange_id else None,
+            "search_code": search_code,
         }
 
-    async def get_symbols_by_provider(self, check_should_record: bool = False) -> Dict[str, List[str]]:
+    async def get_symbols_by_provider(
+        self, check_should_record: bool = False
+    ) -> Dict[str, List[str]]:
         """
         Returns dictionary of {provider_code: [provider_search_codes]}
         only for symbols that are routed to that provider (Primary).
@@ -387,8 +430,10 @@ class RedisMappingHelper:
 
         return result
 
+
 # Singleton instance
 _redis_mapping_helper = None
+
 
 def get_redis_mapping_helper() -> RedisMappingHelper:
     global _redis_mapping_helper

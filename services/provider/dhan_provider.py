@@ -67,7 +67,7 @@ class DhanProvider(BaseMarketDataProvider):
 
     # Dhan API Constants
     WS_URL = "wss://api-feed.dhan.co"
-    
+
     # Exchange Segment Map
     EXCHANGE_MAP = {
         0: "IDX_I",
@@ -78,8 +78,8 @@ class DhanProvider(BaseMarketDataProvider):
         5: "MCX_COMM",
         7: "NSE_EQ",
         8: "BSE_FNO",
-        11: "NSE_EQ", # Added mapping for NSE
-        12: "BSE_EQ", # Added mapping for BSE
+        11: "NSE_EQ",  # Added mapping for NSE
+        12: "BSE_EQ",  # Added mapping for BSE
     }
 
     REST_URL = "https://api.dhan.co/v2"
@@ -97,16 +97,15 @@ class DhanProvider(BaseMarketDataProvider):
         settings = get_settings()
         self.client_id = settings.DHAN_CLIENT_ID
         self.access_token = settings.DHAN_ACCESS_TOKEN
-        
+
         self.ws: Any = None
         self._connection_task = None
         self._token_refresh_task = None
         self._running = False
-        
+
         # Rate Limiting
         self._last_request_time = 0
         self._request_interval = 0.2  # 5 requests per second max
-
 
     async def _refresh_token_loop(self):
         """
@@ -148,18 +147,26 @@ class DhanProvider(BaseMarketDataProvider):
                         # Check for token in likely locations
                         if "accessToken" in data:
                             new_token = data["accessToken"]
-                        elif "data" in data and isinstance(data["data"], dict) and "accessToken" in data["data"]:
+                        elif (
+                            "data" in data
+                            and isinstance(data["data"], dict)
+                            and "accessToken" in data["data"]
+                        ):
                             new_token = data["data"]["accessToken"]
 
                         if new_token:
                             self.access_token = new_token
                             logger.info("Successfully updated Dhan access token.")
                         else:
-                            logger.warning(f"Token refresh response did not contain accessToken. Response: {data}")
+                            logger.warning(
+                                f"Token refresh response did not contain accessToken. Response: {data}"
+                            )
                     except Exception as e:
                         logger.error(f"Error parsing token refresh response: {e}")
                 else:
-                    logger.error(f"Failed to refresh Dhan token: {response.status_code} - {response.text}")
+                    logger.error(
+                        f"Failed to refresh Dhan token: {response.status_code} - {response.text}"
+                    )
 
             except asyncio.CancelledError:
                 logger.info("Dhan token refresh task cancelled")
@@ -189,14 +196,16 @@ class DhanProvider(BaseMarketDataProvider):
             response = await asyncio.to_thread(
                 requests.post, url, json=payload, headers=headers
             )
-            
+
             if response.status_code == 429:
                 logger.warning("Dhan API Rate Limit Hit (429). Retrying after 1s...")
                 await asyncio.sleep(1)
                 return await self._make_request(endpoint, payload)
 
             if not response.ok:
-                logger.error(f"Dhan API error: {response.status_code} - {response.text} - Payload: {payload}")
+                logger.error(
+                    f"Dhan API error: {response.status_code} - {response.text} - Payload: {payload}"
+                )
 
             response.raise_for_status()
             return response.json()
@@ -212,10 +221,10 @@ class DhanProvider(BaseMarketDataProvider):
 
         self._running = True
         self.subscribed_symbols.update(symbols)
-        
+
         # Start the connection loop in background
         self._connection_task = asyncio.create_task(self._run_websocket_loop())
-        
+
         # Start token refresh task
         self._token_refresh_task = asyncio.create_task(self._refresh_token_loop())
 
@@ -226,7 +235,9 @@ class DhanProvider(BaseMarketDataProvider):
             except asyncio.CancelledError:
                 logger.warning("Dhan connection task cancelled")
             except Exception as e:
-                logger.error(f"Dhan connection task failed with error: {e}", exc_info=True)
+                logger.error(
+                    f"Dhan connection task failed with error: {e}", exc_info=True
+                )
                 self.is_connected = False
                 self._running = False
 
@@ -237,58 +248,74 @@ class DhanProvider(BaseMarketDataProvider):
         """Main WebSocket loop handling connection, subscription and data processing"""
         url = f"{self.WS_URL}?version=2&token={self.access_token}&clientId={self.client_id}&authType=2"
         reconnect_delay = 5
-        last_connected_time: Optional[int] = None  # Track disconnect time for gap detection
+        last_connected_time: Optional[int] = (
+            None  # Track disconnect time for gap detection
+        )
 
         while self._running:
             disconnect_time = int(time.time() * 1000) if last_connected_time else None
 
             try:
                 logger.info("Connecting to Dhan WebSocket...")
-                async with websockets.connect(url, ping_interval=30, ping_timeout=10) as websocket:
+                async with websockets.connect(
+                    url, ping_interval=30, ping_timeout=10
+                ) as websocket:
                     self.ws = websocket
                     self.is_connected = True
                     reconnect_delay = 5  # Reset delay on successful connection
                     reconnect_time = int(time.time() * 1000)
                     logger.info("Dhan WebSocket connection established.")
-                    
+
                     # Gap detection on reconnect
                     if disconnect_time and last_connected_time:
-                        await self._handle_reconnect_gap_detection(disconnect_time, reconnect_time)
+                        await self._handle_reconnect_gap_detection(
+                            disconnect_time, reconnect_time
+                        )
 
                     last_connected_time = reconnect_time
 
                     # Wait a moment to ensure connection is stable before subscribing
                     await asyncio.sleep(1)
-                    
+
                     # Subscribe to initial symbols
                     if self.subscribed_symbols:
-                        logger.info(f"Subscribing to {len(self.subscribed_symbols)} symbols...")
+                        logger.info(
+                            f"Subscribing to {len(self.subscribed_symbols)} symbols..."
+                        )
                         await self._subscribe_batch(list(self.subscribed_symbols))
-                    
+
                     # Message loop
                     while self._running:
                         try:
                             message = await websocket.recv()
                             await self._process_message(message)
                         except websockets.ConnectionClosed as e:
-                            logger.warning(f"Dhan WebSocket connection closed: {e.rcvd.code} - {e.rcvd.reason}")
+                            logger.warning(
+                                f"Dhan WebSocket connection closed: {e.rcvd.code} - {e.rcvd.reason}"
+                            )
                             break
                         except Exception as e:
                             logger.error(f"Error processing message: {e}")
-            
+
             except Exception as e:
                 logger.error(f"Dhan WebSocket connection error: {e}")
-            
+
             finally:
                 self.is_connected = False
                 self.ws = None
-                
-            if self._running:
-                logger.info(f"Reconnecting to Dhan WebSocket in {reconnect_delay} seconds...")
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 2, 60)  # Exponential backoff up to 60s
 
-    async def _handle_reconnect_gap_detection(self, disconnect_ts: int, reconnect_ts: int):
+            if self._running:
+                logger.info(
+                    f"Reconnecting to Dhan WebSocket in {reconnect_delay} seconds..."
+                )
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(
+                    reconnect_delay * 2, 60
+                )  # Exponential backoff up to 60s
+
+    async def _handle_reconnect_gap_detection(
+        self, disconnect_ts: int, reconnect_ts: int
+    ):
         """Handle gap detection after a WebSocket reconnect."""
         try:
             # Import here to avoid circular imports
@@ -301,11 +328,13 @@ class DhanProvider(BaseMarketDataProvider):
                 gaps = await gap_service.detect_gaps_on_reconnect(
                     disconnect_ts=disconnect_ts,
                     reconnect_ts=reconnect_ts,
-                    symbols=self.subscribed_symbols
+                    symbols=self.subscribed_symbols,
                 )
 
                 if gaps:
-                    logger.info(f"🔄 Filling {len(gaps)} gaps from WebSocket reconnect...")
+                    logger.info(
+                        f"🔄 Filling {len(gaps)} gaps from WebSocket reconnect..."
+                    )
                     # Run gap filling in background to not block message processing
                     asyncio.create_task(gap_service.fill_gaps(gaps))
         except Exception as e:
@@ -323,43 +352,53 @@ class DhanProvider(BaseMarketDataProvider):
             # Modified: Handle case where symbol is ALREADY internal (returns None from resolve)
             internal_symbol = symbol
             if self.provider_manager:
-                 resolved = self.provider_manager.resolve_internal_symbol("DHAN", symbol)
-                 if asyncio.iscoroutine(resolved):
-                     resolved = await resolved
+                resolved = self.provider_manager.resolve_internal_symbol("DHAN", symbol)
+                if asyncio.iscoroutine(resolved):
+                    resolved = await resolved
 
-                 if resolved:
-                     internal_symbol = resolved
+                if resolved:
+                    internal_symbol = resolved
 
             # --- START CHANGED CODE ---
             # Try to get segment from Redis mapping first (fastest and most accurate)
-            segment = await self.redis_mapper.get_provider_segment("DHAN", internal_symbol)
+            segment = await self.redis_mapper.get_provider_segment(
+                "DHAN", internal_symbol
+            )
 
             # DEBUG LOGGING
             if self.provider_manager:
-                 t_id = self.provider_manager.get_instrument_type_id(internal_symbol)
-                 if t_id == 2:
-                     logger.info(f"DEBUG: Processing Index {internal_symbol} (Type 2). Segment from Redis: {segment}")
+                t_id = self.provider_manager.get_instrument_type_id(internal_symbol)
+                if t_id == 2:
+                    logger.info(
+                        f"DEBUG: Processing Index {internal_symbol} (Type 2). Segment from Redis: {segment}"
+                    )
 
             if segment:
-                 # If we have the segment from DB/Redis, use it directly
-                 # security_id might be "SEGMENT:ID" or just "ID"
-                 security_id_raw = await self.redis_mapper.get_provider_symbol("DHAN", internal_symbol)
-                 
-                 if security_id_raw:
-                     # Parse potentially composite ID
-                     if ":" in str(security_id_raw):
-                         _, sec_id_val = str(security_id_raw).split(":", 1)
-                     else:
-                         sec_id_val = str(security_id_raw)
+                # If we have the segment from DB/Redis, use it directly
+                # security_id might be "SEGMENT:ID" or just "ID"
+                security_id_raw = await self.redis_mapper.get_provider_symbol(
+                    "DHAN", internal_symbol
+                )
 
-                     instruments.append((segment, sec_id_val))
-                     # Map using composite key for uniqueness: SEGMENT:ID
-                     self.symbol_map[f"{segment}:{sec_id_val}"] = internal_symbol
-                 else:
-                     logger.warning(f"Segment found but no SecurityID for {internal_symbol} in Redis")
+                if security_id_raw:
+                    # Parse potentially composite ID
+                    if ":" in str(security_id_raw):
+                        _, sec_id_val = str(security_id_raw).split(":", 1)
+                    else:
+                        sec_id_val = str(security_id_raw)
+
+                    instruments.append((segment, sec_id_val))
+                    # Map using composite key for uniqueness: SEGMENT:ID
+                    self.symbol_map[f"{segment}:{sec_id_val}"] = internal_symbol
+                else:
+                    logger.warning(
+                        f"Segment found but no SecurityID for {internal_symbol} in Redis"
+                    )
             else:
                 # Fallback to old logic if no segment in Redis
-                instrument_tuple = self._prepare_single_instrument(symbol, internal_symbol)
+                instrument_tuple = self._prepare_single_instrument(
+                    symbol, internal_symbol
+                )
                 if instrument_tuple:
                     instruments.append(instrument_tuple)
                     # Populate map using composite key
@@ -371,7 +410,7 @@ class DhanProvider(BaseMarketDataProvider):
         if not instruments:
             logger.warning("No valid instruments to subscribe")
             return
-        
+
         # Group by request code (15 for Ticker, 17 for Quote, 21 for Full)
         # Using 17 (Quote) as requested to get cleaner data stream instead of full depth
         request_code = FeedRequestCode.SUBSCRIBE_QUOTE
@@ -379,19 +418,17 @@ class DhanProvider(BaseMarketDataProvider):
         # Split into chunks of 100 (API limit)
         chunk_size = 100
         for i in range(0, len(instruments), chunk_size):
-            batch = instruments[i:i + chunk_size]
-            
+            batch = instruments[i : i + chunk_size]
+
             payload = {
                 "RequestCode": request_code,
                 "InstrumentCount": len(batch),
                 "InstrumentList": [
-                    {
-                        "ExchangeSegment": ex_seg,
-                        "SecurityId": sec_id
-                    } for ex_seg, sec_id in batch
-                ]
+                    {"ExchangeSegment": ex_seg, "SecurityId": sec_id}
+                    for ex_seg, sec_id in batch
+                ],
             }
-            
+
             logger.info(f"Sending subscription payload: {json.dumps(payload)}")
             await self.ws.send(json.dumps(payload))
             logger.info(f"Sent subscription request for {len(batch)} symbols")
@@ -400,7 +437,7 @@ class DhanProvider(BaseMarketDataProvider):
         """
         Handle incoming WebSocket messages.
         Must normalize provider-specific format to DataIngestionFormat.
-        
+
         Note: In this implementation, _process_message handles the binary parsing
         and calls the callback directly. This method is kept to satisfy the abstract base class.
         """
@@ -414,28 +451,30 @@ class DhanProvider(BaseMarketDataProvider):
             # Byte 1-2: Message Length
             # Byte 3: Exchange Segment
             # Byte 4-7: Security ID
-            
+
             if len(message) < 8:
                 return
 
             # Correct unpacking based on documentation
             # Header: 1 byte code, 2 bytes length, 1 byte exchange, 4 bytes security_id
-            response_code = struct.unpack('<B', message[0:1])[0]
-            msg_len = struct.unpack('<H', message[1:3])[0]
-            exchange_segment = struct.unpack('<B', message[3:4])[0]
-            security_id = struct.unpack('<I', message[4:8])[0]
+            response_code = struct.unpack("<B", message[0:1])[0]
+            msg_len = struct.unpack("<H", message[1:3])[0]
+            exchange_segment = struct.unpack("<B", message[3:4])[0]
+            security_id = struct.unpack("<I", message[4:8])[0]
 
             # Map exchange segment code to string
-            exchange_str = self.EXCHANGE_MAP.get(exchange_segment, str(exchange_segment))
+            exchange_str = self.EXCHANGE_MAP.get(
+                exchange_segment, str(exchange_segment)
+            )
 
             # Resolve to internal symbol using local cache
             # Use composite key "SEGMENT:ID" to avoid collisions
             p_symbol_composite = f"{exchange_str}:{security_id}"
             final_symbol = self.symbol_map.get(p_symbol_composite)
-            
+
             # Fallback for backward compatibility or ID-only maps
             if not final_symbol:
-                 final_symbol = self.symbol_map.get(str(security_id))
+                final_symbol = self.symbol_map.get(str(security_id))
 
             # Fallback: Try to resolve using provider manager if not in local map
             # This handles cases where symbol_map wasn't populated (e.g. restart) or incomplete
@@ -455,8 +494,12 @@ class DhanProvider(BaseMarketDataProvider):
                 # Saving "3432:tick:price" creates garbage keys.
                 # Better to drop the packet and warn.
                 # Limit logging to avoid flooding
-                if int(time.time()) % 60 == 0:  # Log once per minute max per ID roughly (or just standard log throttling)
-                     logger.warning(f"⚠️ Dropped msg for unknown SecurityID: {p_symbol_composite} (Ex: {exchange_segment})")
+                if (
+                    int(time.time()) % 60 == 0
+                ):  # Log once per minute max per ID roughly (or just standard log throttling)
+                    logger.warning(
+                        f"⚠️ Dropped msg for unknown SecurityID: {p_symbol_composite} (Ex: {exchange_segment})"
+                    )
                 return
 
             # Parse payload based on response code
@@ -471,55 +514,63 @@ class DhanProvider(BaseMarketDataProvider):
                 if len(message) < 16:
                     return
 
-                ltp = struct.unpack('<f', message[8:12])[0]
-                ltt = struct.unpack('<i', message[12:16])[0] # Using <i for signed int32 (Epoch)
+                ltp = struct.unpack("<f", message[8:12])[0]
+                ltt = struct.unpack("<i", message[12:16])[
+                    0
+                ]  # Using <i for signed int32 (Epoch)
 
                 data = {
                     "symbol": final_symbol,
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
-                    "volume": 0
+                    "volume": 0,
                 }
 
             elif response_code == FeedResponseCode.QUOTE:
-
-                ltp = struct.unpack('<f', message[8:12])[0]
-                ltq = struct.unpack('<H', message[12:14])[0] # Using <H for unsigned int16
-                ltt = struct.unpack('<i', message[14:18])[0] # Using <i for signed int32
+                ltp = struct.unpack("<f", message[8:12])[0]
+                ltq = struct.unpack("<H", message[12:14])[
+                    0
+                ]  # Using <H for unsigned int16
+                ltt = struct.unpack("<i", message[14:18])[
+                    0
+                ]  # Using <i for signed int32
 
                 # Parse other fields if needed
-                volume_full = struct.unpack('<I', message[22:26])[0]  # Total volume for the day
+                volume_full = struct.unpack("<I", message[22:26])[
+                    0
+                ]  # Total volume for the day
 
                 data = {
                     "symbol": final_symbol,
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
-                    "volume": float(ltq), # Using LTQ as volume for tick updates (tick size)
-                    "total_volume": float(volume_full) # Cumulative volume for the day
+                    "volume": float(
+                        ltq
+                    ),  # Using LTQ as volume for tick updates (tick size)
+                    "total_volume": float(volume_full),  # Cumulative volume for the day
                 }
-                
-            elif response_code == FeedResponseCode.FULL:
 
+            elif response_code == FeedResponseCode.FULL:
                 if len(message) < 62:
                     logger.warning(f"Full packet too short: {len(message)} bytes")
                     return
 
-                ltp = struct.unpack('<f', message[8:12])[0]
-                ltq = struct.unpack('<H', message[12:14])[0]
-                ltt = struct.unpack('<i', message[14:18])[0]
-                atp = struct.unpack('<f', message[18:22])[0]
-                volume = struct.unpack('<I', message[22:26])[0]
-                total_sell_qty = struct.unpack('<I', message[26:30])[0]
-                total_buy_qty = struct.unpack('<I', message[30:34])[0]
-                oi = struct.unpack('<I', message[34:38])[0]
-                oi_day_high = struct.unpack('<I', message[38:42])[0]
-                oi_day_low = struct.unpack('<I', message[42:46])[0]
-                open_price = struct.unpack('<f', message[46:50])[0]
-                close_price = struct.unpack('<f', message[50:54])[0]
-                high_price = struct.unpack('<f', message[54:58])[0]
-                low_price = struct.unpack('<f', message[58:62])[0]
+                ltp = struct.unpack("<f", message[8:12])[0]
+                ltq = struct.unpack("<H", message[12:14])[0]
+                ltt = struct.unpack("<i", message[14:18])[0]
+                atp = struct.unpack("<f", message[18:22])[0]
+                volume = struct.unpack("<I", message[22:26])[0]
+                total_sell_qty = struct.unpack("<I", message[26:30])[0]
+                total_buy_qty = struct.unpack("<I", message[30:34])[0]
+                oi = struct.unpack("<I", message[34:38])[0]
+                oi_day_high = struct.unpack("<I", message[38:42])[0]
+                oi_day_low = struct.unpack("<I", message[42:46])[0]
+                open_price = struct.unpack("<f", message[46:50])[0]
+                close_price = struct.unpack("<f", message[50:54])[0]
+                high_price = struct.unpack("<f", message[54:58])[0]
+                low_price = struct.unpack("<f", message[58:62])[0]
 
                 data = {
                     "symbol": final_symbol,
@@ -527,7 +578,7 @@ class DhanProvider(BaseMarketDataProvider):
                     "price": ltp,
                     "timestamp": ltt,
                     "volume": float(ltq),
-                    "total_volume": float(volume), # Cumulative volume
+                    "total_volume": float(volume),  # Cumulative volume
                 }
 
                 # Full packet implies we might get prev close (close_price is prev close in the Full packet spec usually)
@@ -536,7 +587,9 @@ class DhanProvider(BaseMarketDataProvider):
                 # Dhan Spec says Code 8 (Full) has 'Close Price'. Usually this is Prev Close if market is open/pre-open.
                 # Let's save it.
                 if close_price > 0:
-                     asyncio.create_task(self._update_prev_close(exchange_str, final_symbol, close_price))
+                    asyncio.create_task(
+                        self._update_prev_close(exchange_str, final_symbol, close_price)
+                    )
 
             elif response_code == FeedResponseCode.PREV_CLOSE:
                 # Value Code 6
@@ -544,17 +597,19 @@ class DhanProvider(BaseMarketDataProvider):
                 # 9-12 Prev Close (float32)
                 # 13-16 OI (int32)
 
-                print(f'Received PREV_CLOSE packet: {message} for {final_symbol}')
+                print(f"Received PREV_CLOSE packet: {message} for {final_symbol}")
 
                 if len(message) < 16:
                     return
 
-                prev_close = struct.unpack('<f', message[8:12])[0]
-                oi = struct.unpack('<i', message[12:16])[0]
+                prev_close = struct.unpack("<f", message[8:12])[0]
+                oi = struct.unpack("<i", message[12:16])[0]
 
                 # Update Redis Hash for O(1) access
                 if prev_close > 0:
-                    asyncio.create_task(self._update_prev_close(exchange_str, final_symbol, prev_close))
+                    asyncio.create_task(
+                        self._update_prev_close(exchange_str, final_symbol, prev_close)
+                    )
 
                 # We typically don't broadcast Prev Close as a standalone tick,
                 # but we could if UI needs it. The request specifically asked to SAVE it.
@@ -585,20 +640,20 @@ class DhanProvider(BaseMarketDataProvider):
                 # But we don't know the last volume here.
                 # Let's use 'total_volume' if present, else 0.
 
-                vol_to_use = float(data.get('total_volume', 0))
+                vol_to_use = float(data.get("total_volume", 0))
                 if vol_to_use == 0:
-                     vol_to_use = float(data.get('volume', 0))
+                    vol_to_use = float(data.get("volume", 0))
 
                 await self.data_queue.add_data(
                     DataIngestionFormat(
-                        symbol=data['symbol'],
-                        price=float(data['price']),
+                        symbol=data["symbol"],
+                        price=float(data["price"]),
                         volume=vol_to_use,
                         timestamp=ts,
                         provider_code="DHAN",
                     )
                 )
-                
+
         except Exception as e:
             logger.error(f"Error parsing binary message: {e}")
 
@@ -615,14 +670,16 @@ class DhanProvider(BaseMarketDataProvider):
         except Exception as e:
             logger.error(f"Error updating prev_close for {symbol}: {e}")
 
-    def _prepare_single_instrument(self, provider_symbol: str, internal_symbol: str) -> Optional[tuple]:
+    def _prepare_single_instrument(
+        self, provider_symbol: str, internal_symbol: str
+    ) -> Optional[tuple]:
         """
         Convert symbol to Dhan subscription format using instrument type from manager.
         Returns (ExchangeSegment, SecurityId) tuple or None.
         """
         try:
             sec_id = provider_symbol
-            exchange_seg = "NSE_EQ" # Default fallback
+            exchange_seg = "NSE_EQ"  # Default fallback
 
             # If provider symbol has format "EXCHANGE:ID" or similar, parse it
             if ":" in provider_symbol:
@@ -633,16 +690,26 @@ class DhanProvider(BaseMarketDataProvider):
 
             if self.provider_manager:
                 # 1. Get Instrument Type ID
-                inst_type_id = self.provider_manager.get_instrument_type_id(internal_symbol)
+                inst_type_id = self.provider_manager.get_instrument_type_id(
+                    internal_symbol
+                )
 
                 # 2. Get Exchange ID -> Exchange Code AND Provider Code (Dhan)
                 # We need to know which exchange this symbol belongs to (NSE, BSE, MCX)
-                exchange_id = self.provider_manager.get_exchange_id_for_symbol(internal_symbol)
-                exchange_code = self.provider_manager.get_exchange_code(exchange_id) if exchange_id else "NSE"
+                exchange_id = self.provider_manager.get_exchange_id_for_symbol(
+                    internal_symbol
+                )
+                exchange_code = (
+                    self.provider_manager.get_exchange_code(exchange_id)
+                    if exchange_id
+                    else "NSE"
+                )
 
                 # DEBUG info for Index type
                 if inst_type_id == 2:
-                     logger.info(f"DEBUG: Prepare Instrument - {internal_symbol} | Type: {inst_type_id} | ExCode: {exchange_code}")
+                    logger.info(
+                        f"DEBUG: Prepare Instrument - {internal_symbol} | Type: {inst_type_id} | ExCode: {exchange_code}"
+                    )
 
                 # 3. Map based on SQL logic
                 # |1 |EQ |Equity | -> NSE_EQ / BSE_EQ
@@ -653,16 +720,24 @@ class DhanProvider(BaseMarketDataProvider):
                 # |9 |COMM |Commodity | -> MCX_COMM
 
                 if exchange_code == "NSE":
-                    if inst_type_id == 1: exchange_seg = "NSE_EQ"
-                    elif inst_type_id == 2: exchange_seg = "IDX_I" # or NSE_EQ depending on Dhan? Dhan uses IDX_I (0) for Indices
-                    elif inst_type_id == 3: exchange_seg = "NSE_CURRENCY"
-                    elif inst_type_id in (4, 6): exchange_seg = "NSE_FNO"
+                    if inst_type_id == 1:
+                        exchange_seg = "NSE_EQ"
+                    elif inst_type_id == 2:
+                        exchange_seg = "IDX_I"  # or NSE_EQ depending on Dhan? Dhan uses IDX_I (0) for Indices
+                    elif inst_type_id == 3:
+                        exchange_seg = "NSE_CURRENCY"
+                    elif inst_type_id in (4, 6):
+                        exchange_seg = "NSE_FNO"
                 elif exchange_code == "BSE":
-                    if inst_type_id == 1: exchange_seg = "BSE_EQ"
-                    elif inst_type_id == 2: exchange_seg = "IDX_I" # BSE Index?
-                    elif inst_type_id in (4, 6): exchange_seg = "BSE_FNO"
+                    if inst_type_id == 1:
+                        exchange_seg = "BSE_EQ"
+                    elif inst_type_id == 2:
+                        exchange_seg = "IDX_I"  # BSE Index?
+                    elif inst_type_id in (4, 6):
+                        exchange_seg = "BSE_FNO"
                 elif exchange_code == "MCX":
-                    if inst_type_id == 9: exchange_seg = "MCX_COMM"
+                    if inst_type_id == 9:
+                        exchange_seg = "MCX_COMM"
 
             # If plain ID, use it. If "ID-EQ" format, split.
             # Dhan usually expects just the numeric Security ID for the API
@@ -715,51 +790,55 @@ class DhanProvider(BaseMarketDataProvider):
             # We need to resolve the internal symbol first to get instrument_type_id
             internal_symbol = symbol
             if self.provider_manager:
-                 resolved = self.provider_manager.resolve_internal_symbol("DHAN", symbol)
-                 if asyncio.iscoroutine(resolved):
-                     resolved = await resolved
+                resolved = self.provider_manager.resolve_internal_symbol("DHAN", symbol)
+                if asyncio.iscoroutine(resolved):
+                    resolved = await resolved
 
-                 if resolved:
-                     internal_symbol = resolved
+                if resolved:
+                    internal_symbol = resolved
 
             # Try to get segment from Redis mapping first (fastest and most accurate)
             # COPIED logic from _subscribe_batch
-            segment = await self.redis_mapper.get_provider_segment("DHAN", internal_symbol)
+            segment = await self.redis_mapper.get_provider_segment(
+                "DHAN", internal_symbol
+            )
             if segment:
-                 security_id_raw = await self.redis_mapper.get_provider_symbol("DHAN", internal_symbol)
-                 if security_id_raw:
-                     if ":" in str(security_id_raw):
-                         _, sec_id_val = str(security_id_raw).split(":", 1)
-                     else:
-                         sec_id_val = str(security_id_raw)
-                     instruments.append((segment, sec_id_val))
+                security_id_raw = await self.redis_mapper.get_provider_symbol(
+                    "DHAN", internal_symbol
+                )
+                if security_id_raw:
+                    if ":" in str(security_id_raw):
+                        _, sec_id_val = str(security_id_raw).split(":", 1)
+                    else:
+                        sec_id_val = str(security_id_raw)
+                    instruments.append((segment, sec_id_val))
             else:
-                instrument_tuple = self._prepare_single_instrument(symbol, internal_symbol)
+                instrument_tuple = self._prepare_single_instrument(
+                    symbol, internal_symbol
+                )
                 if instrument_tuple:
                     instruments.append(instrument_tuple)
 
         if not instruments:
             return
-        
+
         # Group by request code (16 for Unsubscribe Ticker)
         request_code = FeedRequestCode.UNSUBSCRIBE_QUOTE
-        
+
         # Split into chunks of 100 (API limit)
         chunk_size = 100
         for i in range(0, len(instruments), chunk_size):
-            batch = instruments[i:i + chunk_size]
-            
+            batch = instruments[i : i + chunk_size]
+
             payload = {
                 "RequestCode": request_code,
                 "InstrumentCount": len(batch),
                 "InstrumentList": [
-                    {
-                        "ExchangeSegment": ex_seg,
-                        "SecurityId": sec_id
-                    } for ex_seg, sec_id in batch
-                ]
+                    {"ExchangeSegment": ex_seg, "SecurityId": sec_id}
+                    for ex_seg, sec_id in batch
+                ],
             }
-            
+
             logger.info(f"Sending unsubscribe payload: {json.dumps(payload)}")
             await self.ws.send(json.dumps(payload))
             logger.info(f"Sent unsubscribe request for {len(batch)} symbols")
@@ -771,10 +850,11 @@ class DhanProvider(BaseMarketDataProvider):
             asyncio.create_task(self._unsubscribe_batch(symbols))
 
     async def get_intraday_prices(
-        self, instruments: List[Instrument],
-            start_date: Optional[datetime] = None,
-            end_date: Optional[datetime] = None,
-            timeframe: str = '5m',
+        self,
+        instruments: List[Instrument],
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        timeframe: str = "5m",
     ) -> dict[str, list[PriceHistoryIntraday]]:
         """
         Fetch intraday price history for given instruments.
@@ -788,7 +868,7 @@ class DhanProvider(BaseMarketDataProvider):
 
         # Dhan expects dates in IST (Asia/Kolkata)
         # We need to convert UTC start_date/end_date to IST
-        ist_tz = pytz.timezone('Asia/Kolkata')
+        ist_tz = pytz.timezone("Asia/Kolkata")
 
         # Ensure dates are timezone aware (UTC)
         if start_date.tzinfo is None:
@@ -809,17 +889,23 @@ class DhanProvider(BaseMarketDataProvider):
         from_date_str = start_date_ist.strftime("%Y-%m-%d %H:%M:%S")
         to_date_str = end_date_ist.strftime("%Y-%m-%d %H:%M:%S")
 
-        logger.debug(f"Fetching intraday prices from {from_date_str} to {to_date_str} (IST)")
+        logger.debug(
+            f"Fetching intraday prices from {from_date_str} to {to_date_str} (IST)"
+        )
 
         requests_sent = 0
         for instrument in instruments:
             security_id = instrument.symbol
             if self.provider_manager:
-                sid = await self.provider_manager.get_search_code(self.provider_code, instrument.symbol)
+                sid = await self.provider_manager.get_search_code(
+                    self.provider_code, instrument.symbol
+                )
                 if sid:
                     security_id = sid
                 else:
-                    logger.warning(f"Could not find securityId for {instrument.symbol} in Dhan provider")
+                    logger.warning(
+                        f"Could not find securityId for {instrument.symbol} in Dhan provider"
+                    )
                     continue
 
             # Determine exchange segment from instrument.exchange_id
@@ -830,36 +916,42 @@ class DhanProvider(BaseMarketDataProvider):
                 internal_symbol = instrument.symbol
 
                 # Check mapping for instrument type based resolution
-                instrument_tuple = self._prepare_single_instrument(security_id, internal_symbol)
+                instrument_tuple = self._prepare_single_instrument(
+                    security_id, internal_symbol
+                )
 
                 if instrument_tuple:
-                     exchange_segment, security_id = instrument_tuple
+                    exchange_segment, security_id = instrument_tuple
                 else:
                     # Fallback to map if prepare_single fail or provider manager not ready?
                     # The get_search_code above already did half the job for security_id
-                    exchange_segment = self.EXCHANGE_MAP.get(instrument.exchange_id, "NSE_EQ")
+                    exchange_segment = self.EXCHANGE_MAP.get(
+                        instrument.exchange_id, "NSE_EQ"
+                    )
             else:
-                 exchange_segment = self.EXCHANGE_MAP.get(instrument.exchange_id, "NSE_EQ")
+                exchange_segment = self.EXCHANGE_MAP.get(
+                    instrument.exchange_id, "NSE_EQ"
+                )
 
             payload = {
                 "securityId": str(security_id),
                 "exchangeSegment": exchange_segment,
-                "instrument": "EQUITY", # Default
-                "interval": "5", # 5 minutes
+                "instrument": "EQUITY",  # Default
+                "interval": "5",  # 5 minutes
                 "oi": False,
                 "fromDate": from_date_str,
-                "toDate": to_date_str
+                "toDate": to_date_str,
             }
-            
+
             # Rate limit before request
             await asyncio.sleep(0.2)
-            
+
             data = await self._make_request("/charts/intraday", payload)
             requests_sent += 1
 
             if not data or "timestamp" not in data:
                 continue
-                
+
             history = []
             timestamps = data.get("timestamp", [])
             opens = data.get("open", [])
@@ -867,7 +959,7 @@ class DhanProvider(BaseMarketDataProvider):
             lows = data.get("low", [])
             closes = data.get("close", [])
             volumes = data.get("volume", [])
-            
+
             for i in range(len(timestamps)):
                 try:
                     # Dhan returns epoch timestamp (seconds or ms? API doc says "Epoch timestamp")
@@ -876,7 +968,7 @@ class DhanProvider(BaseMarketDataProvider):
                     # Dhan Historical API returns valid UTC timestamp. No shift needed.
                     # ts = ts - 19800
                     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-                    
+
                     history.append(
                         PriceHistoryIntraday(
                             instrument_id=instrument.id,
@@ -887,23 +979,28 @@ class DhanProvider(BaseMarketDataProvider):
                             close=closes[i],
                             volume=volumes[i],
                             interval="5m",
-                            resolve_required=False
+                            resolve_required=False,
                         )
                     )
                 except Exception as e:
-                    logger.error(f"Error parsing intraday data for {instrument.symbol}: {e}")
+                    logger.error(
+                        f"Error parsing intraday data for {instrument.symbol}: {e}"
+                    )
                     continue
-            
+
             results[instrument.symbol] = history
 
-        logger.info(f"[RESOLVER-DHAN] Sent {requests_sent} requests to Dhan for intraday prices.")
+        logger.info(
+            f"[RESOLVER-DHAN] Sent {requests_sent} requests to Dhan for intraday prices."
+        )
         return results
 
     async def get_daily_prices(
-        self, instruments: List[Instrument],
-            start_date: Optional[datetime] = None,
-            end_date: Optional[datetime] = None,
-            timeframe: str = '1d',
+        self,
+        instruments: List[Instrument],
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        timeframe: str = "1d",
     ) -> dict[str, list[PriceHistoryDaily]]:
         """
         Fetch daily price history for given instruments.
@@ -916,7 +1013,7 @@ class DhanProvider(BaseMarketDataProvider):
             start_date = end_date - timedelta(days=30)
 
         # Dhan expects dates in IST (Asia/Kolkata)
-        ist_tz = pytz.timezone('Asia/Kolkata')
+        ist_tz = pytz.timezone("Asia/Kolkata")
 
         if start_date.tzinfo is None:
             start_date = start_date.replace(tzinfo=timezone.utc)
@@ -930,33 +1027,45 @@ class DhanProvider(BaseMarketDataProvider):
         from_date_str = start_date_ist.strftime("%Y-%m-%d")
         to_date_str = end_date_ist.strftime("%Y-%m-%d")
 
-        logger.debug(f"Fetching daily prices from {from_date_str} to {to_date_str} (IST)")
+        logger.debug(
+            f"Fetching daily prices from {from_date_str} to {to_date_str} (IST)"
+        )
 
         for instrument in instruments:
             security_id = instrument.symbol
             if self.provider_manager:
-                sid = await self.provider_manager.get_search_code(self.provider_code, instrument.symbol)
+                sid = await self.provider_manager.get_search_code(
+                    self.provider_code, instrument.symbol
+                )
                 if sid:
                     security_id = sid
                 else:
-                    logger.warning(f"Could not find securityId for {instrument.symbol} in Dhan provider")
+                    logger.warning(
+                        f"Could not find securityId for {instrument.symbol} in Dhan provider"
+                    )
                     continue
 
             # Determine exchange segment
             exchange_segment = "NSE_EQ"
             if self.provider_manager:
-                 # Reuse local helper to get correct segment for instrument type
-                 internal_symbol = instrument.symbol
-                 instrument_tuple = self._prepare_single_instrument(security_id, internal_symbol)
-                 if instrument_tuple:
-                      exchange_segment, mapped_sec_id = instrument_tuple
-                      # Warning: _prepare_single_instrument might return trimmed security id?
-                      # It returns (exchange_seg, sec_id). Let's use it.
-                      security_id = mapped_sec_id
-                 else:
-                      exchange_segment = self.EXCHANGE_MAP.get(instrument.exchange_id, "NSE_EQ")
+                # Reuse local helper to get correct segment for instrument type
+                internal_symbol = instrument.symbol
+                instrument_tuple = self._prepare_single_instrument(
+                    security_id, internal_symbol
+                )
+                if instrument_tuple:
+                    exchange_segment, mapped_sec_id = instrument_tuple
+                    # Warning: _prepare_single_instrument might return trimmed security id?
+                    # It returns (exchange_seg, sec_id). Let's use it.
+                    security_id = mapped_sec_id
+                else:
+                    exchange_segment = self.EXCHANGE_MAP.get(
+                        instrument.exchange_id, "NSE_EQ"
+                    )
             else:
-                 exchange_segment = self.EXCHANGE_MAP.get(instrument.exchange_id, "NSE_EQ")
+                exchange_segment = self.EXCHANGE_MAP.get(
+                    instrument.exchange_id, "NSE_EQ"
+                )
 
             payload = {
                 "securityId": security_id,
@@ -965,14 +1074,14 @@ class DhanProvider(BaseMarketDataProvider):
                 "expiryCode": 0,
                 "oi": False,
                 "fromDate": from_date_str,
-                "toDate": to_date_str
+                "toDate": to_date_str,
             }
-            
+
             data = await self._make_request("/charts/historical", payload)
-            
+
             if not data or "timestamp" not in data:
                 continue
-                
+
             history = []
             timestamps = data.get("timestamp", [])
             opens = data.get("open", [])
@@ -980,14 +1089,14 @@ class DhanProvider(BaseMarketDataProvider):
             lows = data.get("low", [])
             closes = data.get("close", [])
             volumes = data.get("volume", [])
-            
+
             for i in range(len(timestamps)):
                 try:
                     ts = timestamps[i]
                     # Dhan Historical API returns valid UTC timestamp. No shift needed.
                     # ts = ts - 19800
                     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-                    
+
                     history.append(
                         PriceHistoryDaily(
                             instrument_id=instrument.id,
@@ -997,14 +1106,15 @@ class DhanProvider(BaseMarketDataProvider):
                             low=lows[i],
                             close=closes[i],
                             volume=volumes[i],
-                            resolve_required=False
+                            resolve_required=False,
                         )
                     )
                 except Exception as e:
-                    logger.error(f"Error parsing daily data for {instrument.symbol}: {e}")
+                    logger.error(
+                        f"Error parsing daily data for {instrument.symbol}: {e}"
+                    )
                     continue
-            
+
             results[instrument.symbol] = history
 
         return results
-

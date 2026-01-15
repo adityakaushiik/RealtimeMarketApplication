@@ -311,33 +311,38 @@ async def get_price_history_intraday(
                 volumes = redis_candles["volume"]
 
                 for i, ts in enumerate(timestamps):
-                    dt = datetime.datetime.fromtimestamp(ts / 1000, tz=datetime.timezone.utc)
-                    result_list.append(PriceHistoryIntradayInDb(
-                        id=-1,  # Synthetic ID for Redis data
-                        instrument_id=instrument_id,
-                        datetime=dt,
-                        open=opens[i],
-                        high=highs[i],
-                        low=lows[i],
-                        close=closes[i],
-                        volume=int(volumes[i]) if volumes[i] else 0,
-                        resolve_required=False,
-                        interval=interval or "5m",
-                        previous_close=None,
-                        adj_close=None,
-                        deliver_percentage=None,
-                    ))
+                    dt = datetime.datetime.fromtimestamp(
+                        ts / 1000, tz=datetime.timezone.utc
+                    )
+                    result_list.append(
+                        PriceHistoryIntradayInDb(
+                            id=-1,  # Synthetic ID for Redis data
+                            instrument_id=instrument_id,
+                            datetime=dt,
+                            open=opens[i],
+                            high=highs[i],
+                            low=lows[i],
+                            close=closes[i],
+                            volume=int(volumes[i]) if volumes[i] else 0,
+                            resolve_required=False,
+                            interval=interval or "5m",
+                            previous_close=None,
+                            adj_close=None,
+                            deliver_percentage=None,
+                        )
+                    )
 
         except Exception as e:
-            logger.error(f"Error fetching today's data from Redis for {instrument.symbol}: {e}")
-
+            logger.error(
+                f"Error fetching today's data from Redis for {instrument.symbol}: {e}"
+            )
 
     # ========================================
     # 2. Get HISTORICAL data from TimescaleDB
     # ========================================
     stmt = select(PriceHistoryIntraday).where(
-        (PriceHistoryIntraday.instrument_id == instrument_id) &
-        (PriceHistoryIntraday.datetime < today_boundary_utc)  # Only historical data
+        (PriceHistoryIntraday.instrument_id == instrument_id)
+        & (PriceHistoryIntraday.datetime < today_boundary_utc)  # Only historical data
     )
 
     if interval:
@@ -349,21 +354,23 @@ async def get_price_history_intraday(
     db_records = db_result.scalars().all()
 
     for r in db_records:
-        result_list.append(PriceHistoryIntradayInDb(
-            id=r.id,
-            instrument_id=r.instrument_id,
-            datetime=r.datetime,
-            open=r.open,
-            high=r.high,
-            low=r.low,
-            close=r.close,
-            previous_close=r.previous_close,
-            adj_close=r.adj_close,
-            volume=r.volume,
-            deliver_percentage=r.deliver_percentage,
-            resolve_required=r.resolve_required,
-            interval=r.interval,
-        ))
+        result_list.append(
+            PriceHistoryIntradayInDb(
+                id=r.id,
+                instrument_id=r.instrument_id,
+                datetime=r.datetime,
+                open=r.open,
+                high=r.high,
+                low=r.low,
+                close=r.close,
+                previous_close=r.previous_close,
+                adj_close=r.adj_close,
+                volume=r.volume,
+                deliver_percentage=r.deliver_percentage,
+                resolve_required=r.resolve_required,
+                interval=r.interval,
+            )
+        )
 
     # Sort by datetime descending (most recent first)
     result_list.sort(key=lambda x: x.datetime, reverse=True)
@@ -383,8 +390,8 @@ async def get_price_history_daily(
     result = await session.execute(
         select(PriceHistoryDaily)
         .where(
-            (PriceHistoryDaily.instrument_id == instrument_id) &
-            (PriceHistoryDaily.datetime <= current_time_utc)
+            (PriceHistoryDaily.instrument_id == instrument_id)
+            & (PriceHistoryDaily.datetime <= current_time_utc)
         )
         .order_by(PriceHistoryDaily.datetime.desc())
     )
@@ -412,7 +419,9 @@ async def get_price_history_daily(
 
     # Check if the latest record (today) needs resolution
     if result_list and result_list[0].resolve_required:
-        await _aggregate_intraday_for_daily_record(session, instrument_id, result_list[0])
+        await _aggregate_intraday_for_daily_record(
+            session, instrument_id, result_list[0]
+        )
 
     # Merge with ongoing candle from Redis
     instrument = await session.get(Instrument, instrument_id)
@@ -425,27 +434,25 @@ async def get_price_history_daily(
             today_rec = result_list[0]
 
             # Update High/Low/Close
-            today_rec.close = latest_candle['close']
+            today_rec.close = latest_candle["close"]
 
-            if today_rec.high is None or latest_candle['high'] > today_rec.high:
-                today_rec.high = latest_candle['high']
+            if today_rec.high is None or latest_candle["high"] > today_rec.high:
+                today_rec.high = latest_candle["high"]
 
-            if today_rec.low is None or latest_candle['low'] < today_rec.low:
-                today_rec.low = latest_candle['low']
+            if today_rec.low is None or latest_candle["low"] < today_rec.low:
+                today_rec.low = latest_candle["low"]
 
             if today_rec.open is None:
-                today_rec.open = latest_candle['open']
+                today_rec.open = latest_candle["open"]
 
             # Add volume from the ongoing candle
-            today_rec.volume = (today_rec.volume or 0) + int(latest_candle['volume'])
+            today_rec.volume = (today_rec.volume or 0) + int(latest_candle["volume"])
 
     return result_list
 
 
 async def _aggregate_intraday_for_daily_record(
-    session: AsyncSession,
-    instrument_id: int,
-    daily_record: PriceHistoryDailyInDb
+    session: AsyncSession, instrument_id: int, daily_record: PriceHistoryDailyInDb
 ):
     """
     Helper to aggregate intraday data into a daily record.
@@ -459,11 +466,11 @@ async def _aggregate_intraday_for_daily_record(
     stmt_agg = select(
         func.min(PriceHistoryIntraday.low).label("low"),
         func.max(PriceHistoryIntraday.high).label("high"),
-        func.sum(PriceHistoryIntraday.volume).label("volume")
+        func.sum(PriceHistoryIntraday.volume).label("volume"),
     ).where(
         PriceHistoryIntraday.instrument_id == instrument_id,
         PriceHistoryIntraday.datetime >= day_start,
-        PriceHistoryIntraday.datetime < day_end
+        PriceHistoryIntraday.datetime < day_end,
     )
 
     agg_result = await session.execute(stmt_agg)
@@ -471,21 +478,31 @@ async def _aggregate_intraday_for_daily_record(
 
     if agg_row and agg_row.low is not None:
         # Get Open (earliest)
-        stmt_open = select(PriceHistoryIntraday.open).where(
-            PriceHistoryIntraday.instrument_id == instrument_id,
-            PriceHistoryIntraday.datetime >= day_start,
-            PriceHistoryIntraday.datetime < day_end,
-            PriceHistoryIntraday.open.is_not(None)
-        ).order_by(PriceHistoryIntraday.datetime.asc()).limit(1)
+        stmt_open = (
+            select(PriceHistoryIntraday.open)
+            .where(
+                PriceHistoryIntraday.instrument_id == instrument_id,
+                PriceHistoryIntraday.datetime >= day_start,
+                PriceHistoryIntraday.datetime < day_end,
+                PriceHistoryIntraday.open.is_not(None),
+            )
+            .order_by(PriceHistoryIntraday.datetime.asc())
+            .limit(1)
+        )
         open_val = (await session.execute(stmt_open)).scalar_one_or_none()
 
         # Get Close (latest)
-        stmt_close = select(PriceHistoryIntraday.close).where(
-            PriceHistoryIntraday.instrument_id == instrument_id,
-            PriceHistoryIntraday.datetime >= day_start,
-            PriceHistoryIntraday.datetime < day_end,
-            PriceHistoryIntraday.close.is_not(None)
-        ).order_by(PriceHistoryIntraday.datetime.desc()).limit(1)
+        stmt_close = (
+            select(PriceHistoryIntraday.close)
+            .where(
+                PriceHistoryIntraday.instrument_id == instrument_id,
+                PriceHistoryIntraday.datetime >= day_start,
+                PriceHistoryIntraday.datetime < day_end,
+                PriceHistoryIntraday.close.is_not(None),
+            )
+            .order_by(PriceHistoryIntraday.datetime.desc())
+            .limit(1)
+        )
         close_val = (await session.execute(stmt_close)).scalar_one_or_none()
 
         # Update the Pydantic model instance
@@ -493,7 +510,9 @@ async def _aggregate_intraday_for_daily_record(
         daily_record.high = agg_row.high
         daily_record.low = agg_row.low
         daily_record.close = close_val
-        daily_record.volume = int(agg_row.volume) if agg_row.volume is not None else None
+        daily_record.volume = (
+            int(agg_row.volume) if agg_row.volume is not None else None
+        )
 
 
 async def get_previous_closes_by_exchange(session: AsyncSession, exchange_code: str):
@@ -523,7 +542,7 @@ async def get_previous_closes_by_exchange(session: AsyncSession, exchange_code: 
         try:
             # Cache for 1 hour (or until next update)
             # Serialize with Pydantic's model_dump_json or similar, but list of models needs manual handling
-            json_data = json.dumps([item.model_dump(mode='json') for item in response])
+            json_data = json.dumps([item.model_dump(mode="json") for item in response])
             await redis.set(cache_key, json_data, ex=3600)
 
             # NEW: Also populate the Hash Map for O(1) access
@@ -541,7 +560,9 @@ async def get_previous_closes_by_exchange(session: AsyncSession, exchange_code: 
     return response
 
 
-async def _fetch_previous_closes_from_db(session: AsyncSession, exchange_id: int) -> list[InstrumentPreviousClose]:
+async def _fetch_previous_closes_from_db(
+    session: AsyncSession, exchange_id: int
+) -> list[InstrumentPreviousClose]:
     # Calculate start of today in UTC to ensure we get strictly previous day's data
     today_start = datetime.datetime.now(datetime.timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -550,15 +571,11 @@ async def _fetch_previous_closes_from_db(session: AsyncSession, exchange_id: int
     # Use DISTINCT ON to get the latest record for each instrument efficiently
     # This is PostgreSQL specific but highly efficient
     stmt = (
-        select(
-            Instrument.symbol,
-            PriceHistoryDaily.close,
-            PriceHistoryDaily.datetime
-        )
+        select(Instrument.symbol, PriceHistoryDaily.close, PriceHistoryDaily.datetime)
         .join(Instrument, PriceHistoryDaily.instrument_id == Instrument.id)
         .where(
             Instrument.exchange_id == exchange_id,
-            PriceHistoryDaily.datetime < today_start
+            PriceHistoryDaily.datetime < today_start,
         )
         .distinct(Instrument.id)
         .order_by(Instrument.id, PriceHistoryDaily.datetime.desc())
@@ -568,18 +585,13 @@ async def _fetch_previous_closes_from_db(session: AsyncSession, exchange_id: int
     records = result.all()
 
     return [
-        InstrumentPreviousClose(
-            symbol=r.symbol,
-            price=r.close,
-            timestamp=r.datetime
-        )
+        InstrumentPreviousClose(symbol=r.symbol, price=r.close, timestamp=r.datetime)
         for r in records
     ]
 
 
 async def get_combined_daily_price_history(
-    session: AsyncSession,
-    instrument: InstrumentInDb
+    session: AsyncSession, instrument: InstrumentInDb
 ) -> list[PriceHistoryDailyInDb]:
     if instrument.should_record_data:
         return await get_price_history_daily(session, instrument.id)
@@ -608,13 +620,14 @@ async def get_combined_daily_price_history(
             volume=d.volume,
             deliver_percentage=d.deliver_percentage,
             resolve_required=d.resolve_required,
-        ) for d in data if d.datetime <= current_time_utc
+        )
+        for d in data
+        if d.datetime <= current_time_utc
     ]
 
 
 async def get_combined_intraday_price_history(
-    session: AsyncSession,
-    instrument: InstrumentInDb
+    session: AsyncSession, instrument: InstrumentInDb
 ) -> list[PriceHistoryIntradayInDb]:
     if instrument.should_record_data:
         return await get_price_history_intraday(session, instrument.id)
@@ -643,6 +656,8 @@ async def get_combined_intraday_price_history(
             volume=d.volume,
             deliver_percentage=d.deliver_percentage,
             resolve_required=d.resolve_required,
-            interval=d.interval if hasattr(d, 'interval') else "5m",
-        ) for d in data if d.datetime <= current_time_utc
+            interval=d.interval if hasattr(d, "interval") else "5m",
+        )
+        for d in data
+        if d.datetime <= current_time_utc
     ]

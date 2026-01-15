@@ -131,4 +131,3 @@ def require_auth(
         return payload
 
     return dependency
-

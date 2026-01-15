@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.database_config import get_database_url
 
+
 def fix_alembic_version(target_revision):
     """
     Updates the alembic_version table to the specified revision.
@@ -39,19 +40,19 @@ def fix_alembic_version(target_revision):
             if current_version:
                 connection.execute(
                     text("UPDATE alembic_version SET version_num = :ver"),
-                    {"ver": target_revision}
+                    {"ver": target_revision},
                 )
             else:
                 connection.execute(
                     text("INSERT INTO alembic_version (version_num) VALUES (:ver)"),
-                    {"ver": target_revision}
+                    {"ver": target_revision},
                 )
 
         print("Success! Database version updated.")
+
 
 if __name__ == "__main__":
     # We will pick the revision that looks like the latest one from the file list provided earlier
     # f8074233c2f6_add_should_record_data.py -> f8074233c2f6
     target_rev = "f8074233c2f6"
     fix_alembic_version(target_rev)
-

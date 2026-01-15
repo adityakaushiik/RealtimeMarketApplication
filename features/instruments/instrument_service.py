@@ -7,9 +7,14 @@ from config.logger import logger
 from features.instruments.instrument_schema import (
     InstrumentCreate,
     InstrumentUpdate,
-    InstrumentInDb
+    InstrumentInDb,
 )
-from models import Instrument, ProviderInstrumentMapping, PriceHistoryIntraday, PriceHistoryDaily
+from models import (
+    Instrument,
+    ProviderInstrumentMapping,
+    PriceHistoryIntraday,
+    PriceHistoryDaily,
+)
 
 
 # Instrument CRUD
@@ -26,7 +31,7 @@ async def create_instrument(
         sector_id=instrument_data.sector_id,
         blacklisted=instrument_data.blacklisted,
         delisted=instrument_data.delisted,
-        should_record_data=False, # Always false on creation, must be enabled explicitly after mapping provider
+        should_record_data=False,  # Always false on creation, must be enabled explicitly after mapping provider
         is_active=False,  # Initially inactive
     )
 
@@ -100,7 +105,11 @@ async def get_instrument_by_id(
             try:
                 await redis.set(cache_key, instrument_db.model_dump_json(), ex=3600)
                 # Also cache by symbol for consistency
-                await redis.set(f"instrument:symbol:{instrument.symbol}", instrument_db.model_dump_json(), ex=3600)
+                await redis.set(
+                    f"instrument:symbol:{instrument.symbol}",
+                    instrument_db.model_dump_json(),
+                    ex=3600,
+                )
             except Exception as e:
                 logger.error(f"Error caching instrument to Redis: {e}")
 
@@ -156,7 +165,11 @@ async def get_instrument_by_symbol(
             try:
                 await redis.set(cache_key, instrument_db.model_dump_json(), ex=3600)
                 # Also cache by ID
-                await redis.set(f"instrument:id:{instrument.id}", instrument_db.model_dump_json(), ex=3600)
+                await redis.set(
+                    f"instrument:id:{instrument.id}",
+                    instrument_db.model_dump_json(),
+                    ex=3600,
+                )
             except Exception as e:
                 logger.error(f"Error caching instrument to Redis: {e}")
 
@@ -177,7 +190,7 @@ async def get_all_instruments(
     stmt = select(Instrument)
     if only_active:
         stmt = stmt.where(Instrument.is_active == True)
-        
+
     result = await session.execute(stmt)
     instruments = result.scalars().all()
     return [
@@ -274,15 +287,19 @@ async def search_instruments(
     session: AsyncSession,
     query: str,
     only_active: bool = True,
+    exchange_id: int | None = None,
 ) -> list[InstrumentInDb]:
     """Search instruments by symbol or name"""
     stmt = select(Instrument).where(
-        (Instrument.symbol.ilike(f"%{query}%")) | 
-        (Instrument.name.ilike(f"%{query}%"))
+        (Instrument.symbol.ilike(f"%{query}%")) | (Instrument.name.ilike(f"%{query}%"))
     )
+
+    if exchange_id is not None:
+        stmt = stmt.where(Instrument.exchange_id == exchange_id)
+
     if only_active:
         stmt = stmt.where(Instrument.is_active == True)
-        
+
     result = await session.execute(stmt)
     instruments = result.scalars().all()
     return [
@@ -313,24 +330,32 @@ async def toggle_instrument_recording(
     """
     stmt = select(Instrument).where(Instrument.id == instrument_id)
     result = await session.execute(stmt)
-    instrument : Instrument = result.scalar_one_or_none()
+    instrument: Instrument = result.scalar_one_or_none()
 
     if not instrument:
         return None
 
     if should_record:
         # Check if provider mapping exists
-        mapping_stmt = select(exists().where(ProviderInstrumentMapping.instrument_id == instrument_id))
+        mapping_stmt = select(
+            exists().where(ProviderInstrumentMapping.instrument_id == instrument_id)
+        )
         mapping_exists = await session.execute(mapping_stmt)
         if not mapping_exists.scalar():
-            raise ValueError("Cannot enable recording: No provider mapping found for this instrument.")
+            raise ValueError(
+                "Cannot enable recording: No provider mapping found for this instrument."
+            )
     else:
         # Delete existing data if disabling recording
         await session.execute(
-            delete(PriceHistoryIntraday).where(PriceHistoryIntraday.instrument_id == instrument_id)
+            delete(PriceHistoryIntraday).where(
+                PriceHistoryIntraday.instrument_id == instrument_id
+            )
         )
         await session.execute(
-            delete(PriceHistoryDaily).where(PriceHistoryDaily.instrument_id == instrument_id)
+            delete(PriceHistoryDaily).where(
+                PriceHistoryDaily.instrument_id == instrument_id
+            )
         )
 
     instrument.should_record_data = should_record

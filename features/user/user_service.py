@@ -9,8 +9,8 @@ from fastapi import HTTPException, status
 
 
 async def create_user(
-        session: AsyncSession,
-        user_data: UserCreate,
+    session: AsyncSession,
+    user_data: UserCreate,
 ) -> UserInDb:
     hashed_password = hash_password(user_data.password)
 
@@ -23,7 +23,7 @@ async def create_user(
         profile_picture_url=user_data.profile_picture_url,
         role_id=UserRoles.VIEWER.value,
         is_active=False,
-        status=UserStatus.PENDING.value
+        status=UserStatus.PENDING.value,
     )
     session.add(new_user)
     await session.commit()
@@ -43,8 +43,8 @@ async def create_user(
 
 
 async def get_user_by_id(
-        session: AsyncSession,
-        user_id: int,
+    session: AsyncSession,
+    user_id: int,
 ) -> UserInDb | None:
     """Get user by ID"""
     result = await session.execute(select(User).where(User.id == user_id))
@@ -66,8 +66,8 @@ async def get_user_by_id(
 
 
 async def get_user_by_email(
-        session: AsyncSession,
-        email: str,
+    session: AsyncSession,
+    email: str,
 ) -> UserInDb | None:
     """Get user by email"""
     result = await session.execute(select(User).where(User.email == email))
@@ -89,8 +89,8 @@ async def get_user_by_email(
 
 
 async def get_all_users(
-        session: AsyncSession,
-        status: int | None = None,
+    session: AsyncSession,
+    status: int | None = None,
 ) -> list[UserInDb]:
     """Get all users"""
     query = select(User)
@@ -118,9 +118,9 @@ async def get_all_users(
 
 
 async def update_user(
-        session: AsyncSession,
-        user_id: int,
-        user_data: UserUpdate,
+    session: AsyncSession,
+    user_id: int,
+    user_data: UserUpdate,
 ) -> UserInDb | None:
     """Update a user"""
     result = await session.execute(select(User).where(User.id == user_id))
@@ -149,8 +149,8 @@ async def update_user(
 
 
 async def delete_user(
-        session: AsyncSession,
-        user_id: int,
+    session: AsyncSession,
+    user_id: int,
 ) -> bool:
     """Delete a user"""
     result = await session.execute(select(User).where(User.id == user_id))
@@ -164,13 +164,13 @@ async def delete_user(
 
 
 async def activate_user(
-        session: AsyncSession,
-        user_id: int,
-        status: int = 1,
+    session: AsyncSession,
+    user_id: int,
+    status: int = 1,
 ):
     """Activate a user"""
     result = await session.execute(select(User).where(User.id == user_id))
-    user : User = result.scalar_one_or_none()
+    user: User = result.scalar_one_or_none()
     if not user:
         return None
 
@@ -182,9 +182,9 @@ async def activate_user(
 
 
 async def update_user_status(
-        session: AsyncSession,
-        user_id: int,
-        status: int,
+    session: AsyncSession,
+    user_id: int,
+    status: int,
 ) -> UserInDb | None:
     """Update user status"""
     result = await session.execute(select(User).where(User.id == user_id))
@@ -215,43 +215,37 @@ async def update_user_status(
 
 
 async def change_user_password(
-        session: AsyncSession,
-        user_id: int,
-        old_password: str,
-        new_password: str
+    session: AsyncSession, user_id: int, old_password: str, new_password: str
 ) -> bool:
     """Change user's own password"""
     result = await session.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
-    
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
-        
+
     if not verify_password(old_password, user.hashed_password):
         return False
-        
+
     user.hashed_password = hash_password(new_password)
     await session.commit()
     return True
 
 
 async def reset_user_password(
-        session: AsyncSession,
-        user_id: int,
-        new_password: str
+    session: AsyncSession, user_id: int, new_password: str
 ) -> bool:
     """Reset user password (Admin only)"""
     result = await session.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
-    
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
-        
+
     user.hashed_password = hash_password(new_password)
     await session.commit()
     return True
-

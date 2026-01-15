@@ -17,7 +17,9 @@ class ExchangeHoliday(Base, BaseMixin):
     __tablename__ = "exchange_holidays"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    exchange_id: Mapped[int] = mapped_column(Integer, ForeignKey("exchanges.id"), nullable=False)
+    exchange_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("exchanges.id"), nullable=False
+    )
     date: Mapped[date] = mapped_column(Date, nullable=False)
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
@@ -30,4 +32,3 @@ class ExchangeHoliday(Base, BaseMixin):
     close_time: Mapped[time | None] = mapped_column(Time, nullable=True)
 
     exchange: Mapped["Exchange"] = relationship(back_populates="holidays")
-

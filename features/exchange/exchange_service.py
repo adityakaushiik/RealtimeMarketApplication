@@ -89,7 +89,11 @@ async def get_exchange_by_id(
             try:
                 await redis.set(cache_key, exchange_db.model_dump_json(), ex=86400)
                 # Also cache by code
-                await redis.set(f"exchange:code:{exchange.code}", exchange_db.model_dump_json(), ex=86400)
+                await redis.set(
+                    f"exchange:code:{exchange.code}",
+                    exchange_db.model_dump_json(),
+                    ex=86400,
+                )
             except Exception as e:
                 logger.error(f"Error caching exchange to Redis: {e}")
 
@@ -100,7 +104,7 @@ async def get_exchange_by_id(
 async def get_exchange_by_code(
     session: AsyncSession,
     code: str,
-):
+) -> ExchangeInDb | None:
     """Get exchange by code"""
     redis = get_redis()
     cache_key = f"exchange:code:{code}"
@@ -134,7 +138,11 @@ async def get_exchange_by_code(
             try:
                 await redis.set(cache_key, exchange_db.model_dump_json(), ex=86400)
                 # Also cache by ID
-                await redis.set(f"exchange:id:{exchange.id}", exchange_db.model_dump_json(), ex=86400)
+                await redis.set(
+                    f"exchange:id:{exchange.id}",
+                    exchange_db.model_dump_json(),
+                    ex=86400,
+                )
             except Exception as e:
                 logger.error(f"Error caching exchange to Redis: {e}")
 
@@ -179,7 +187,7 @@ async def get_all_exchanges(
 
     if redis and response:
         try:
-            json_data = json.dumps([item.model_dump(mode='json') for item in response])
+            json_data = json.dumps([item.model_dump(mode="json") for item in response])
             await redis.set(cache_key, json_data, ex=86400)
         except Exception as e:
             logger.error(f"Error caching all exchanges to Redis: {e}")
@@ -195,12 +203,11 @@ async def get_all_active_exchanges(
     # (update_timestamps_for_date, etc.) used by DataCreationService and DataSaver.
     # Caching ORM objects directly is not recommended, so we skip Redis here for now
     # or we would need to cache IDs and re-fetch.
-    
+
     result = await session.execute(select(Exchange).where(Exchange.is_active == True))
     exchanges = result.scalars().all()
-    
-    return list(exchanges)
 
+    return list(exchanges)
 
 
 async def update_exchange(

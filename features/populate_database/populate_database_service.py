@@ -36,7 +36,8 @@ async def populate_instrument_in_database(
 
         if price_history is None:
             price_history = PriceHistoryDaily(
-                instrument_id=instrument_id, datetime=pd.to_datetime(index).to_pydatetime()
+                instrument_id=instrument_id,
+                datetime=pd.to_datetime(index).to_pydatetime(),
             )
 
         price_history.open = float(row["Open"])
@@ -53,33 +54,61 @@ async def populate_instrument_in_database(
 
 
 def generate_backfill_template() -> io.BytesIO:
-    df = pd.DataFrame(columns=[
-        "symbol", "datetime", "open", "high", "low", "close",
-        "volume", "timeframe", "dividend", "split",
-        "previous_close", "adj_close", "deliver_percentage", "split_adjusted"
-    ])
+    df = pd.DataFrame(
+        columns=[
+            "symbol",
+            "datetime",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "timeframe",
+            "dividend",
+            "split",
+            "previous_close",
+            "adj_close",
+            "deliver_percentage",
+            "split_adjusted",
+        ]
+    )
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Backfill Template')
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Backfill Template")
     output.seek(0)
     return output
 
 
 async def process_backfill_file(session: AsyncSession, file: UploadFile):
-    if not file.filename.endswith(('.xlsx', '.xls')):
-        raise HTTPException(status_code=400, detail="Invalid file format. Please upload an Excel file.")
+    if not file.filename.endswith((".xlsx", ".xls")):
+        raise HTTPException(
+            status_code=400, detail="Invalid file format. Please upload an Excel file."
+        )
 
     contents = await file.read()
     try:
         df = pd.read_excel(io.BytesIO(contents))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error reading Excel file: {str(e)}")
+        raise HTTPException(
+            status_code=400, detail=f"Error reading Excel file: {str(e)}"
+        )
 
     # Validate columns
-    required_columns = ["symbol", "datetime", "open", "high", "low", "close", "timeframe"]
+    required_columns = [
+        "symbol",
+        "datetime",
+        "open",
+        "high",
+        "low",
+        "close",
+        "timeframe",
+    ]
     missing_columns = [col for col in required_columns if col not in df.columns]
     if missing_columns:
-        raise HTTPException(status_code=400, detail=f"Missing required columns: {', '.join(missing_columns)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required columns: {', '.join(missing_columns)}",
+        )
 
     # Cache instruments
     instruments_result = await session.execute(select(Instrument.symbol, Instrument.id))
@@ -90,41 +119,57 @@ async def process_backfill_file(session: AsyncSession, file: UploadFile):
     errors = []
 
     for index, row in df.iterrows():
-        symbol = row.get('symbol')
+        symbol = row.get("symbol")
         if symbol not in instrument_map:
-            errors.append(f"Row {index+2}: Symbol '{symbol}' not found.")
+            errors.append(f"Row {index + 2}: Symbol '{symbol}' not found.")
             continue
 
         instrument_id = instrument_map[symbol]
 
         try:
-            dt = pd.to_datetime(row['datetime']).to_pydatetime()
+            dt = pd.to_datetime(row["datetime"]).to_pydatetime()
             # Ensure timezone awareness if needed. Assuming UTC for now if naive.
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
 
-            timeframe = str(row['timeframe']).lower()
+            timeframe = str(row["timeframe"]).lower()
 
             # Prepare values
-            open_val = float(row['open'])
-            high_val = float(row['high'])
-            low_val = float(row['low'])
-            close_val = float(row['close'])
-            volume_val = int(row['volume']) if pd.notna(row.get('volume')) else None
+            open_val = float(row["open"])
+            high_val = float(row["high"])
+            low_val = float(row["low"])
+            close_val = float(row["close"])
+            volume_val = int(row["volume"]) if pd.notna(row.get("volume")) else None
 
             # Optional fields
-            previous_close_val = float(row['previous_close']) if pd.notna(row.get('previous_close')) else None
-            adj_close_val = float(row['adj_close']) if pd.notna(row.get('adj_close')) else None
-            deliver_percentage_val = float(row['deliver_percentage']) if pd.notna(row.get('deliver_percentage')) else None
+            previous_close_val = (
+                float(row["previous_close"])
+                if pd.notna(row.get("previous_close"))
+                else None
+            )
+            adj_close_val = (
+                float(row["adj_close"]) if pd.notna(row.get("adj_close")) else None
+            )
+            deliver_percentage_val = (
+                float(row["deliver_percentage"])
+                if pd.notna(row.get("deliver_percentage"))
+                else None
+            )
 
-            if timeframe == '1d':
-                dividend_val = float(row['dividend']) if pd.notna(row.get('dividend')) else 0.0
-                split_val = float(row['split']) if pd.notna(row.get('split')) else 0.0
-                split_adjusted_val = float(row['split_adjusted']) if pd.notna(row.get('split_adjusted')) else None
+            if timeframe == "1d":
+                dividend_val = (
+                    float(row["dividend"]) if pd.notna(row.get("dividend")) else 0.0
+                )
+                split_val = float(row["split"]) if pd.notna(row.get("split")) else 0.0
+                split_adjusted_val = (
+                    float(row["split_adjusted"])
+                    if pd.notna(row.get("split_adjusted"))
+                    else None
+                )
 
                 stmt = select(PriceHistoryDaily).where(
                     PriceHistoryDaily.instrument_id == instrument_id,
-                    PriceHistoryDaily.datetime == dt
+                    PriceHistoryDaily.datetime == dt,
                 )
                 result = await session.execute(stmt)
                 existing = result.scalar_one_or_none()
@@ -155,7 +200,7 @@ async def process_backfill_file(session: AsyncSession, file: UploadFile):
                         previous_close=previous_close_val,
                         adj_close=adj_close_val,
                         deliver_percentage=deliver_percentage_val,
-                        split_adjusted=split_adjusted_val
+                        split_adjusted=split_adjusted_val,
                     )
                     session.add(new_record)
                 daily_count += 1
@@ -164,7 +209,7 @@ async def process_backfill_file(session: AsyncSession, file: UploadFile):
                 # Intraday
                 stmt = select(PriceHistoryIntraday).where(
                     PriceHistoryIntraday.instrument_id == instrument_id,
-                    PriceHistoryIntraday.datetime == dt
+                    PriceHistoryIntraday.datetime == dt,
                 )
                 result = await session.execute(stmt)
                 existing = result.scalar_one_or_none()
@@ -191,21 +236,24 @@ async def process_backfill_file(session: AsyncSession, file: UploadFile):
                         interval=timeframe,
                         previous_close=previous_close_val,
                         adj_close=adj_close_val,
-                        deliver_percentage=deliver_percentage_val
+                        deliver_percentage=deliver_percentage_val,
                     )
                     session.add(new_record)
                 intraday_count += 1
 
         except Exception as e:
-            errors.append(f"Row {index+2}: Error processing data - {str(e)}")
+            errors.append(f"Row {index + 2}: Error processing data - {str(e)}")
 
     if errors:
-        raise HTTPException(status_code=400, detail={"message": "Validation errors found", "errors": errors})
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Validation errors found", "errors": errors},
+        )
 
     await session.commit()
 
     return {
         "message": "Backfill completed successfully",
         "daily_records_processed": daily_count,
-        "intraday_records_processed": intraday_count
+        "intraday_records_processed": intraday_count,
     }

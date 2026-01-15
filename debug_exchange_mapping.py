@@ -3,6 +3,7 @@ from sqlalchemy import select
 from config.database_config import get_db_session
 from models import Exchange, Provider, ExchangeProviderMapping
 
+
 async def debug_mappings():
     async for session in get_db_session():
         print("--- Checking Exchange 7 ---")
@@ -33,6 +34,6 @@ async def debug_mappings():
             print(f"  Provider Active: {provider.is_active}")
             print("-" * 20)
 
+
 if __name__ == "__main__":
     asyncio.run(debug_mappings())
-

@@ -15,7 +15,12 @@ from .user import User, Role
 from .watchlist import Watchlist, WatchlistItem
 from .suggestion import Suggestion, SuggestionType
 from .gate3_logs import Gate3Cycle, Gate3Logs
-from .gate3_cycles import  Gate3CycleLog, Gate3DecisionLog, Gate3SecurityLog, Gate3ExecutionBlockLog
+from .gate3_cycles import (
+    Gate3CycleLog,
+    Gate3DecisionLog,
+    Gate3SecurityLog,
+    Gate3ExecutionBlockLog,
+)
 
 __all__ = [
     "Base",
@@ -36,8 +41,8 @@ __all__ = [
     "SuggestionType",
     "Gate3Cycle",
     "Gate3Logs",
-"Gate3CycleLog",
+    "Gate3CycleLog",
     "Gate3DecisionLog",
     "Gate3SecurityLog",
-    "Gate3ExecutionBlockLog"
+    "Gate3ExecutionBlockLog",
 ]

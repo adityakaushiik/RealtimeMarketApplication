@@ -23,11 +23,12 @@ from services.redis_timeseries import get_redis_timeseries, RedisTimeSeries
 @dataclass
 class GapInfo:
     """Represents a gap in data for a symbol."""
+
     symbol: str
     instrument_id: int
     exchange_id: int
     start_ts: int  # Start of gap (ms)
-    end_ts: int    # End of gap (ms)
+    end_ts: int  # End of gap (ms)
 
 
 class GapDetectionService:
@@ -68,10 +69,14 @@ class GapDetectionService:
                     if exchange:
                         self._exchange_cache[inst.exchange_id] = exchange
 
-            logger.info(f"Loaded {len(self._recordable_instruments)} recordable instruments")
+            logger.info(
+                f"Loaded {len(self._recordable_instruments)} recordable instruments"
+            )
             break
 
-    def _get_exchange_trading_hours(self, exchange: Exchange, date: DateType) -> tuple[int, int]:
+    def _get_exchange_trading_hours(
+        self, exchange: Exchange, date: DateType
+    ) -> tuple[int, int]:
         """
         Get trading hours for an exchange on a specific date.
         Returns (market_open_ts_ms, market_close_ts_ms).
@@ -84,8 +89,12 @@ class GapDetectionService:
             return int(open_dt.timestamp() * 1000), int(close_dt.timestamp() * 1000)
 
         # Fallback: assume 9:00 - 16:00 local time
-        open_dt = tz.localize(datetime.combine(date, datetime.strptime("09:00", "%H:%M").time()))
-        close_dt = tz.localize(datetime.combine(date, datetime.strptime("16:00", "%H:%M").time()))
+        open_dt = tz.localize(
+            datetime.combine(date, datetime.strptime("09:00", "%H:%M").time())
+        )
+        close_dt = tz.localize(
+            datetime.combine(date, datetime.strptime("16:00", "%H:%M").time())
+        )
         return int(open_dt.timestamp() * 1000), int(close_dt.timestamp() * 1000)
 
     def _is_within_trading_hours(self, ts_ms: int, exchange: Exchange) -> bool:
@@ -94,7 +103,9 @@ class GapDetectionService:
         tz = pytz.timezone(exchange.timezone or "UTC")
         local_dt = dt.astimezone(tz)
 
-        market_open, market_close = self._get_exchange_trading_hours(exchange, local_dt.date())
+        market_open, market_close = self._get_exchange_trading_hours(
+            exchange, local_dt.date()
+        )
         return market_open <= ts_ms <= market_close
 
     async def detect_gaps_on_startup(self) -> List[GapInfo]:
@@ -121,18 +132,24 @@ class GapDetectionService:
                     # No data at all - check if market is open today
                     tz = pytz.timezone(exchange.timezone or "UTC")
                     today = datetime.now(tz).date()
-                    market_open, market_close = self._get_exchange_trading_hours(exchange, today)
+                    market_open, market_close = self._get_exchange_trading_hours(
+                        exchange, today
+                    )
 
                     if market_open <= now_ms <= market_close:
                         # Market is open, we have a gap from market open until now
-                        gaps.append(GapInfo(
-                            symbol=symbol,
-                            instrument_id=instrument.id,
-                            exchange_id=instrument.exchange_id,
-                            start_ts=market_open,
-                            end_ts=now_ms,
-                        ))
-                        logger.debug(f"Gap detected for {symbol}: No data, market is open")
+                        gaps.append(
+                            GapInfo(
+                                symbol=symbol,
+                                instrument_id=instrument.id,
+                                exchange_id=instrument.exchange_id,
+                                start_ts=market_open,
+                                end_ts=now_ms,
+                            )
+                        )
+                        logger.debug(
+                            f"Gap detected for {symbol}: No data, market is open"
+                        )
                     continue
 
                 # We have some data - check if there's a gap
@@ -141,15 +158,19 @@ class GapDetectionService:
                 if now_ms > expected_next_ts:
                     # Potential gap - but only if within trading hours
                     if self._is_within_trading_hours(now_ms, exchange):
-                        gaps.append(GapInfo(
-                            symbol=symbol,
-                            instrument_id=instrument.id,
-                            exchange_id=instrument.exchange_id,
-                            start_ts=expected_next_ts,
-                            end_ts=now_ms,
-                        ))
+                        gaps.append(
+                            GapInfo(
+                                symbol=symbol,
+                                instrument_id=instrument.id,
+                                exchange_id=instrument.exchange_id,
+                                start_ts=expected_next_ts,
+                                end_ts=now_ms,
+                            )
+                        )
                         gap_minutes = (now_ms - expected_next_ts) / (60 * 1000)
-                        logger.debug(f"Gap detected for {symbol}: {gap_minutes:.1f} minutes")
+                        logger.debug(
+                            f"Gap detected for {symbol}: {gap_minutes:.1f} minutes"
+                        )
 
             except Exception as e:
                 logger.error(f"Error detecting gap for {symbol}: {e}")
@@ -158,10 +179,7 @@ class GapDetectionService:
         return gaps
 
     async def detect_gaps_on_reconnect(
-        self,
-        disconnect_ts: int,
-        reconnect_ts: int,
-        symbols: Optional[Set[str]] = None
+        self, disconnect_ts: int, reconnect_ts: int, symbols: Optional[Set[str]] = None
     ) -> List[GapInfo]:
         """
         Detect gaps caused by a WebSocket disconnect.
@@ -173,7 +191,9 @@ class GapDetectionService:
 
         Returns list of gaps that need to be filled.
         """
-        logger.info(f"🔍 Detecting gaps from reconnect ({(reconnect_ts - disconnect_ts) / 1000:.1f}s disconnect)...")
+        logger.info(
+            f"🔍 Detecting gaps from reconnect ({(reconnect_ts - disconnect_ts) / 1000:.1f}s disconnect)..."
+        )
         gaps: List[GapInfo] = []
 
         check_symbols = symbols if symbols else set(self._recordable_instruments.keys())
@@ -196,13 +216,15 @@ class GapDetectionService:
             gap_end = self._align_to_5m_boundary(reconnect_ts, ceiling=False)
 
             if gap_end > gap_start:
-                gaps.append(GapInfo(
-                    symbol=symbol,
-                    instrument_id=instrument.id,
-                    exchange_id=instrument.exchange_id,
-                    start_ts=gap_start,
-                    end_ts=gap_end,
-                ))
+                gaps.append(
+                    GapInfo(
+                        symbol=symbol,
+                        instrument_id=instrument.id,
+                        exchange_id=instrument.exchange_id,
+                        start_ts=gap_start,
+                        end_ts=gap_end,
+                    )
+                )
 
         logger.info(f"🔍 Found {len(gaps)} gaps from reconnect")
         return gaps
@@ -252,10 +274,7 @@ class GapDetectionService:
         return results
 
     async def _fill_gaps_for_exchange(
-        self,
-        exchange_id: int,
-        gaps: List[GapInfo],
-        results: Dict[str, int]
+        self, exchange_id: int, gaps: List[GapInfo], results: Dict[str, int]
     ):
         """Fill gaps for a specific exchange."""
         # Get instruments for this batch
@@ -278,14 +297,18 @@ class GapDetectionService:
         start_dt = datetime.fromtimestamp(min_start / 1000, tz=timezone.utc)
         end_dt = datetime.fromtimestamp(max_end / 1000, tz=timezone.utc)
 
-        logger.info(f"Fetching historical data for {len(instruments)} instruments from {start_dt} to {end_dt}")
+        logger.info(
+            f"Fetching historical data for {len(instruments)} instruments from {start_dt} to {end_dt}"
+        )
 
         # Get correct provider for this exchange from ProviderManager maps
         provider_code = self.provider_manager.exchange_to_provider.get(exchange_id)
         provider = self.provider_manager.providers.get(provider_code)
 
         if not provider:
-            logger.error(f"No provider found for exchange {exchange_id} (Code: {provider_code})")
+            logger.error(
+                f"No provider found for exchange {exchange_id} (Code: {provider_code})"
+            )
             return
 
         try:
@@ -294,7 +317,7 @@ class GapDetectionService:
                 instruments=instruments,
                 start_date=start_dt,
                 end_date=end_dt,
-                timeframe='5m'
+                timeframe="5m",
             )
 
             # Insert fetched data into Redis 5m keys

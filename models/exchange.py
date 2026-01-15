@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .instruments import Instrument
     from .exchange_provider_mapping import ExchangeProviderMapping
     from .exchange_holiday import ExchangeHoliday
+    from .watchlist import Watchlist
 
 
 class Exchange(Base, BaseMixin):
@@ -44,6 +45,9 @@ class Exchange(Base, BaseMixin):
     holidays: Mapped[list["ExchangeHoliday"]] = relationship(
         back_populates="exchange", cascade="all, delete-orphan"
     )
+    watchlist : Mapped[list["Watchlist"]] = relationship(
+        back_populates="exchange"
+    )
 
     # Transient attributes for runtime logic
     start_time: int = 0
@@ -54,8 +58,8 @@ class Exchange(Base, BaseMixin):
         """Update start_time and end_time for a specific date."""
         # Use strictly market open and close times, ignoring pre/post market sessions
         if not self.market_open_time or not self.market_close_time:
-             # Fallback or handle error if times are missing, though they should be present
-             return
+            # Fallback or handle error if times are missing, though they should be present
+            return
 
         effective_start_time = self.market_open_time
         effective_end_time = self.market_close_time
@@ -80,8 +84,12 @@ class Exchange(Base, BaseMixin):
         return {
             "exchange_name": self.name,
             "exchange_id": self.id,
-            "market_open_time": self.market_open_time.strftime("%H:%M:%S") if self.market_open_time else None,
-            "market_close_time": self.market_close_time.strftime("%H:%M:%S") if self.market_close_time else None,
+            "market_open_time": self.market_open_time.strftime("%H:%M:%S")
+            if self.market_open_time
+            else None,
+            "market_close_time": self.market_close_time.strftime("%H:%M:%S")
+            if self.market_close_time
+            else None,
             "pre_market_open_time": self.pre_market_open_time.strftime("%H:%M:%S")
             if self.pre_market_open_time
             else None,
@@ -94,9 +102,9 @@ class Exchange(Base, BaseMixin):
             "start_time_readable": datetime.fromtimestamp(
                 self.start_time / 1000, tz=timezone.utc
             ).strftime("%Y-%m-%d %H:%M:%S"),
-            "end_time_readable": datetime.fromtimestamp(self.end_time / 1000, tz=timezone.utc).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            ),
+            "end_time_readable": datetime.fromtimestamp(
+                self.end_time / 1000, tz=timezone.utc
+            ).strftime("%Y-%m-%d %H:%M:%S"),
             "interval_minutes": self.interval_minutes,
         }
 

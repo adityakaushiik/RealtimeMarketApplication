@@ -2,6 +2,7 @@ from enum import Enum
 
 from models.base_model_py import BaseModelPy
 
+
 class UserRoles(Enum):
     ADMIN = 1
     VIEWER = 2

@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     DHAN_CLIENT_ID: str = ""
     DHAN_ACCESS_TOKEN: str = ""
 
-    #Redis
+    # Redis
     REDIS_URL: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env")

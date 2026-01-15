@@ -2,16 +2,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import json
 
-from features.instrument_type.instrument_type_schema import InstrumentTypeCreate, InstrumentTypeInDb, \
-    InstrumentTypeUpdate
+from features.instrument_type.instrument_type_schema import (
+    InstrumentTypeCreate,
+    InstrumentTypeInDb,
+    InstrumentTypeUpdate,
+)
 from models import InstrumentType
 from config.redis_config import get_redis
 from config.logger import logger
 
 
 async def create_instrument_type(
-        session: AsyncSession,
-        type_data: InstrumentTypeCreate,
+    session: AsyncSession,
+    type_data: InstrumentTypeCreate,
 ) -> InstrumentTypeInDb:
     """Create a new instrument type"""
     new_type = InstrumentType(
@@ -44,8 +47,8 @@ async def create_instrument_type(
 
 
 async def get_instrument_type_by_id(
-        session: AsyncSession,
-        type_id: int,
+    session: AsyncSession,
+    type_id: int,
 ) -> InstrumentTypeInDb | None:
     """Get instrument type by ID"""
     result = await session.execute(
@@ -65,7 +68,7 @@ async def get_instrument_type_by_id(
 
 
 async def get_all_instrument_types(
-        session: AsyncSession,
+    session: AsyncSession,
 ) -> list[InstrumentTypeInDb]:
     """Get all instrument types"""
     redis = get_redis()
@@ -97,7 +100,7 @@ async def get_all_instrument_types(
 
     if redis and response:
         try:
-            json_data = json.dumps([item.model_dump(mode='json') for item in response])
+            json_data = json.dumps([item.model_dump(mode="json") for item in response])
             await redis.set(cache_key, json_data, ex=86400)
         except Exception as e:
             logger.error(f"Error caching all instrument types to Redis: {e}")
@@ -106,9 +109,9 @@ async def get_all_instrument_types(
 
 
 async def update_instrument_type(
-        session: AsyncSession,
-        type_id: int,
-        type_data: InstrumentTypeUpdate,
+    session: AsyncSession,
+    type_id: int,
+    type_data: InstrumentTypeUpdate,
 ) -> InstrumentTypeInDb | None:
     """Update an instrument type"""
     result = await session.execute(
@@ -144,8 +147,8 @@ async def update_instrument_type(
 
 
 async def delete_instrument_type(
-        session: AsyncSession,
-        type_id: int,
+    session: AsyncSession,
+    type_id: int,
 ) -> bool:
     """Delete an instrument type"""
     result = await session.execute(

@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, DateTime, BigInteger, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Float,
+    ForeignKey,
+    Integer,
+    DateTime,
+    BigInteger,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 
@@ -16,7 +24,11 @@ if TYPE_CHECKING:
 class PriceHistoryDaily(Base, BaseMixin):
     __tablename__ = "price_history_daily"
     __table_args__ = (
-        UniqueConstraint("instrument_id", "datetime", name="uq_price_history_daily_instrument_datetime"),
+        UniqueConstraint(
+            "instrument_id",
+            "datetime",
+            name="uq_price_history_daily_instrument_datetime",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

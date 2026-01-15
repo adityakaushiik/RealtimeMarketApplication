@@ -46,7 +46,7 @@ class DataSaver:
         # Initialize timestamps for the exchange
         tz = pytz.timezone(exchange.timezone)
         exchange.update_timestamps_for_date(datetime.now(tz).date())
-        
+
         self.exchanges.append(exchange)
         logger.info(f"Added exchange: {exchange.name}")
 
@@ -170,9 +170,7 @@ class DataSaver:
         try:
             keys = await self.redis_timeseries.get_all_keys()
             if not keys:
-                logger.warning(
-                    f"[{exchange.name}] No keys found in Redis"
-                )
+                logger.warning(f"[{exchange.name}] No keys found in Redis")
                 return
 
             logger.info(
@@ -225,28 +223,33 @@ class DataSaver:
                             # So start is query_align_ts - interval_ms
                             interval_ms = interval_minutes * 60 * 1000
                             bucket_start_ts = query_align_ts - interval_ms
-                            record_dt = datetime.fromtimestamp(bucket_start_ts / 1000, tz=timezone.utc)
+                            record_dt = datetime.fromtimestamp(
+                                bucket_start_ts / 1000, tz=timezone.utc
+                            )
 
                             records_to_resolve.append(
                                 PriceHistoryIntraday(
-                                    instrument_id=inst_id,
-                                    datetime=record_dt
+                                    instrument_id=inst_id, datetime=record_dt
                                 )
                             )
 
                     if records_to_resolve:
-                        logger.info(f"[{exchange.name}] Triggering immediate resolution for {len(records_to_resolve)} missing symbols. Timestamp: {records_to_resolve[0].datetime}")
-                        logger.debug(f"[{exchange.name}] Resolving symbols: {[sym for sym in missing_data_symbols if symbol_map.get(sym)]}")
+                        logger.info(
+                            f"[{exchange.name}] Triggering immediate resolution for {len(records_to_resolve)} missing symbols. Timestamp: {records_to_resolve[0].datetime}"
+                        )
+                        logger.debug(
+                            f"[{exchange.name}] Resolving symbols: {[sym for sym in missing_data_symbols if symbol_map.get(sym)]}"
+                        )
                         # Run in background to not block the main loop too much?
                         # Or run inline to ensure data is available ASAP?
                         # Inline is safer for data consistency but might delay next cycle.
                         # Given it's "missing data", delay is acceptable to fix it.
-                        await self.data_resolver.resolve_specific_records(records_to_resolve)
+                        await self.data_resolver.resolve_specific_records(
+                            records_to_resolve
+                        )
 
             if not valid_data:
-                logger.warning(
-                    f"[{exchange.name}] No valid data found for interval"
-                )
+                logger.warning(f"[{exchange.name}] No valid data found for interval")
                 return
 
             logger.info(
@@ -265,7 +268,9 @@ class DataSaver:
                             unmapped_symbols.append(symbol)
 
                     if unmapped_symbols:
-                        logger.warning(f"[{exchange.name}] {len(unmapped_symbols)} symbols have data but no instrument mapping (or not marked for recording). Examples: {unmapped_symbols[:5]}")
+                        logger.warning(
+                            f"[{exchange.name}] {len(unmapped_symbols)} symbols have data but no instrument mapping (or not marked for recording). Examples: {unmapped_symbols[:5]}"
+                        )
 
                     # Sort items by instrument_id to ensure consistent locking order and prevent deadlocks
                     valid_items = []
@@ -291,27 +296,44 @@ class DataSaver:
                             high_val = highs[i] if i < len(highs) else None
                             low_val = lows[i] if i < len(lows) else None
                             close_val = closes[i] if i < len(closes) else None
-                            vol_val = int(volumes[i]) if i < len(volumes) and volumes[i] is not None else 0
+                            vol_val = (
+                                int(volumes[i])
+                                if i < len(volumes) and volumes[i] is not None
+                                else 0
+                            )
 
                             if open_val is None:  # Skip if no data in this bucket
                                 continue
 
                             # C2: Validate and fix OHLC data
-                            ohlc_result = validate_ohlc(open_val, high_val, low_val, close_val, vol_val, fix=True)
-                            if not ohlc_result['valid'] and ohlc_result['fixed']:
-                                logger.warning(f"[{exchange.name}] Fixed OHLC for {symbol}: {ohlc_result['errors']}")
-                                open_val = ohlc_result['data']['open']
-                                high_val = ohlc_result['data']['high']
-                                low_val = ohlc_result['data']['low']
-                                close_val = ohlc_result['data']['close']
+                            ohlc_result = validate_ohlc(
+                                open_val,
+                                high_val,
+                                low_val,
+                                close_val,
+                                vol_val,
+                                fix=True,
+                            )
+                            if not ohlc_result["valid"] and ohlc_result["fixed"]:
+                                logger.warning(
+                                    f"[{exchange.name}] Fixed OHLC for {symbol}: {ohlc_result['errors']}"
+                                )
+                                open_val = ohlc_result["data"]["open"]
+                                high_val = ohlc_result["data"]["high"]
+                                low_val = ohlc_result["data"]["low"]
+                                close_val = ohlc_result["data"]["close"]
 
                             # B4: Validate volume
                             vol_result = validate_volume(vol_val)
-                            if vol_result['warnings']:
-                                logger.warning(f"[{exchange.name}] Volume warning for {symbol}: {vol_result['warnings']}")
-                            vol_val = vol_result['volume']
+                            if vol_result["warnings"]:
+                                logger.warning(
+                                    f"[{exchange.name}] Volume warning for {symbol}: {vol_result['warnings']}"
+                                )
+                            vol_val = vol_result["volume"]
 
-                            record_dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                            record_dt = datetime.fromtimestamp(
+                                ts / 1000, tz=timezone.utc
+                            )
 
                             # Update Intraday Record
                             stmt = (
@@ -352,7 +374,9 @@ class DataSaver:
                         if timestamps and closes:
                             last_ts = timestamps[-1]
                             last_close = closes[-1]
-                            record_dt = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
+                            record_dt = datetime.fromtimestamp(
+                                last_ts / 1000, tz=timezone.utc
+                            )
                             record_dt_local = record_dt.astimezone(
                                 pytz.timezone(exchange.timezone)
                             )
@@ -407,10 +431,15 @@ class DataSaver:
                             if daily_record.open is None and daily_open is not None:
                                 daily_record.open = daily_open
 
-                            if daily_high is not None and (daily_record.high is None or daily_high > daily_record.high):
+                            if daily_high is not None and (
+                                daily_record.high is None
+                                or daily_high > daily_record.high
+                            ):
                                 daily_record.high = daily_high
 
-                            if daily_low is not None and (daily_record.low is None or daily_low < daily_record.low):
+                            if daily_low is not None and (
+                                daily_record.low is None or daily_low < daily_record.low
+                            ):
                                 daily_record.low = daily_low
 
                             # Recalculate daily volume from intraday records
@@ -419,10 +448,12 @@ class DataSaver:
 
                             await session.flush()
 
-                            vol_stmt = select(func.sum(PriceHistoryIntraday.volume)).where(
+                            vol_stmt = select(
+                                func.sum(PriceHistoryIntraday.volume)
+                            ).where(
                                 PriceHistoryIntraday.instrument_id == instrument_id,
                                 PriceHistoryIntraday.datetime >= day_start,
-                                PriceHistoryIntraday.datetime < day_end
+                                PriceHistoryIntraday.datetime < day_end,
                             )
                             vol_result = await session.execute(vol_stmt)
                             total_vol = vol_result.scalar() or 0
@@ -435,17 +466,26 @@ class DataSaver:
                     # Update last save time in Redis
                     if self.redis:
                         try:
-                            await self.redis.set(f"last_save_time:{interval_minutes}m", str(align_to_ts))
-                            logger.info(f"Updated last_save_time:{interval_minutes}m to {align_to_ts}")
+                            await self.redis.set(
+                                f"last_save_time:{interval_minutes}m", str(align_to_ts)
+                            )
+                            logger.info(
+                                f"Updated last_save_time:{interval_minutes}m to {align_to_ts}"
+                            )
                         except Exception as e:
                             logger.error(f"Error updating last_save_time in Redis: {e}")
 
                 except Exception as e:
-                    logger.error(f"Error saving data for {exchange.name}: {e}", exc_info=True)
+                    logger.error(
+                        f"Error saving data for {exchange.name}: {e}", exc_info=True
+                    )
                     await session.rollback()
 
         except Exception as e:
-            logger.error(f"Error in update_records_for_interval for {exchange.name}: {e}", exc_info=True)
+            logger.error(
+                f"Error in update_records_for_interval for {exchange.name}: {e}",
+                exc_info=True,
+            )
 
     async def _get_symbol_to_instrument_mapping(
         self, session: AsyncSession, symbols: List[str], exchange_id: int
@@ -465,13 +505,17 @@ class DataSaver:
         if symbols_to_fetch:
             stmt = select(Instrument).where(
                 Instrument.symbol.in_(symbols_to_fetch),
-                Instrument.exchange_id == exchange_id
+                Instrument.exchange_id == exchange_id,
             )
             result = await session.execute(stmt)
             instruments = result.scalars().all()
 
             for inst in instruments:
-                self.symbol_map_cache[inst.symbol] = (inst.id, inst.should_record_data, inst.exchange_id)
+                self.symbol_map_cache[inst.symbol] = (
+                    inst.id,
+                    inst.should_record_data,
+                    inst.exchange_id,
+                )
                 if inst.should_record_data:
                     mapping[inst.symbol] = inst.id
 
@@ -512,18 +556,28 @@ class DataSaver:
                             # Already saved for today, wait for tomorrow
                             next_date = current_date + timedelta(days=1)
                             exchange.update_timestamps_for_date(next_date)
-                            wait_seconds = (exchange.end_time + (buffer_minutes * 60 * 1000) - current_time_ms) / 1000
-                            wait_seconds = max(60.0, min(wait_seconds, 3600.0))  # At least 1 min, at most 1 hour
+                            wait_seconds = (
+                                exchange.end_time
+                                + (buffer_minutes * 60 * 1000)
+                                - current_time_ms
+                            ) / 1000
+                            wait_seconds = max(
+                                60.0, min(wait_seconds, 3600.0)
+                            )  # At least 1 min, at most 1 hour
                             await asyncio.sleep(wait_seconds)
                             continue
 
                     # Perform end-of-day save
-                    logger.info(f"🌙 Starting end-of-day save for {exchange_name} ({current_date})")
+                    logger.info(
+                        f"🌙 Starting end-of-day save for {exchange_name} ({current_date})"
+                    )
                     await self.transfer_redis_to_db(exchange, current_date)
 
                     # Mark as saved
                     if self.redis:
-                        await self.redis.set(save_key, "1", ex=24*60*60)  # Expire in 24 hours
+                        await self.redis.set(
+                            save_key, "1", ex=24 * 60 * 60
+                        )  # Expire in 24 hours
 
                     logger.info(f"✅ End-of-day save completed for {exchange_name}")
 
@@ -532,15 +586,21 @@ class DataSaver:
                 else:
                     # Market still open or in pre-close period, wait
                     wait_ms = save_trigger_time - current_time_ms
-                    wait_seconds = min(wait_ms / 1000, 300)  # Check at least every 5 minutes
+                    wait_seconds = min(
+                        wait_ms / 1000, 300
+                    )  # Check at least every 5 minutes
                     await asyncio.sleep(wait_seconds)
 
         except asyncio.CancelledError:
             logger.info(f"End-of-day save cancelled for {exchange_name}")
         except Exception as e:
-            logger.error(f"Error in end-of-day save for {exchange_name}: {e}", exc_info=True)
+            logger.error(
+                f"Error in end-of-day save for {exchange_name}: {e}", exc_info=True
+            )
 
-    async def transfer_redis_to_db(self, exchange: Exchange, trade_date: DateType) -> int:
+    async def transfer_redis_to_db(
+        self, exchange: Exchange, trade_date: DateType
+    ) -> int:
         """
         Transfer all Redis 5m candle data to TimescaleDB for a given trading day.
 
@@ -551,17 +611,27 @@ class DataSaver:
         Returns:
             Number of candles transferred
         """
-        logger.info(f"📦 Transferring Redis data to TimescaleDB for {exchange.name} on {trade_date}")
+        logger.info(
+            f"📦 Transferring Redis data to TimescaleDB for {exchange.name} on {trade_date}"
+        )
 
         tz = pytz.timezone(exchange.timezone)
 
         # Calculate time range for the trading day
         if exchange.market_open_time and exchange.market_close_time:
-            day_start_local = tz.localize(datetime.combine(trade_date, exchange.market_open_time))
-            day_end_local = tz.localize(datetime.combine(trade_date, exchange.market_close_time))
+            day_start_local = tz.localize(
+                datetime.combine(trade_date, exchange.market_open_time)
+            )
+            day_end_local = tz.localize(
+                datetime.combine(trade_date, exchange.market_close_time)
+            )
         else:
-            day_start_local = tz.localize(datetime.combine(trade_date, datetime.strptime("09:00", "%H:%M").time()))
-            day_end_local = tz.localize(datetime.combine(trade_date, datetime.strptime("16:00", "%H:%M").time()))
+            day_start_local = tz.localize(
+                datetime.combine(trade_date, datetime.strptime("09:00", "%H:%M").time())
+            )
+            day_end_local = tz.localize(
+                datetime.combine(trade_date, datetime.strptime("16:00", "%H:%M").time())
+            )
 
         from_ts = int(day_start_local.timestamp() * 1000)
         to_ts = int(day_end_local.timestamp() * 1000)
@@ -603,7 +673,9 @@ class DataSaver:
                         candles_inserted = 0
 
                         for i, ts in enumerate(timestamps):
-                            candle_dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                            candle_dt = datetime.fromtimestamp(
+                                ts / 1000, tz=timezone.utc
+                            )
 
                             open_val = opens[i]
                             high_val = highs[i]
@@ -615,12 +687,19 @@ class DataSaver:
                                 continue
 
                             # Validate OHLC
-                            ohlc_result = validate_ohlc(open_val, high_val, low_val, close_val, vol_val, fix=True)
-                            if ohlc_result.get('fixed'):
-                                open_val = ohlc_result['data']['open']
-                                high_val = ohlc_result['data']['high']
-                                low_val = ohlc_result['data']['low']
-                                close_val = ohlc_result['data']['close']
+                            ohlc_result = validate_ohlc(
+                                open_val,
+                                high_val,
+                                low_val,
+                                close_val,
+                                vol_val,
+                                fix=True,
+                            )
+                            if ohlc_result.get("fixed"):
+                                open_val = ohlc_result["data"]["open"]
+                                high_val = ohlc_result["data"]["high"]
+                                low_val = ohlc_result["data"]["low"]
+                                close_val = ohlc_result["data"]["close"]
 
                             # Check if record already exists
                             existing = await session.execute(
@@ -658,17 +737,23 @@ class DataSaver:
 
                         if candles_inserted > 0:
                             total_transferred += candles_inserted
-                            logger.debug(f"Transferred {candles_inserted} candles for {symbol}")
+                            logger.debug(
+                                f"Transferred {candles_inserted} candles for {symbol}"
+                            )
 
                     except Exception as e:
                         logger.error(f"Error transferring {symbol}: {e}")
                         continue
 
                 # Update daily records from intraday data
-                await self._update_daily_records_from_intraday(session, exchange, trade_date, symbol_map)
+                await self._update_daily_records_from_intraday(
+                    session, exchange, trade_date, symbol_map
+                )
 
                 await session.commit()
-                logger.info(f"📦 Transferred {total_transferred} total candles for {exchange.name}")
+                logger.info(
+                    f"📦 Transferred {total_transferred} total candles for {exchange.name}"
+                )
 
             except Exception as e:
                 logger.error(f"Error in transfer_redis_to_db: {e}", exc_info=True)
@@ -691,9 +776,13 @@ class DataSaver:
 
         # Calculate the daily record datetime (typically market open time)
         if exchange.market_open_time:
-            daily_dt_local = tz.localize(datetime.combine(trade_date, exchange.market_open_time))
+            daily_dt_local = tz.localize(
+                datetime.combine(trade_date, exchange.market_open_time)
+            )
         else:
-            daily_dt_local = tz.localize(datetime.combine(trade_date, datetime.strptime("09:00", "%H:%M").time()))
+            daily_dt_local = tz.localize(
+                datetime.combine(trade_date, datetime.strptime("09:00", "%H:%M").time())
+            )
 
         daily_dt_utc = daily_dt_local.astimezone(timezone.utc)
         day_end_utc = daily_dt_utc + timedelta(days=1)
@@ -718,21 +807,31 @@ class DataSaver:
                     continue
 
                 # Get open (first candle)
-                open_stmt = select(PriceHistoryIntraday.open).where(
-                    PriceHistoryIntraday.instrument_id == instrument_id,
-                    PriceHistoryIntraday.datetime >= daily_dt_utc,
-                    PriceHistoryIntraday.datetime < day_end_utc,
-                    PriceHistoryIntraday.open.isnot(None),
-                ).order_by(PriceHistoryIntraday.datetime.asc()).limit(1)
+                open_stmt = (
+                    select(PriceHistoryIntraday.open)
+                    .where(
+                        PriceHistoryIntraday.instrument_id == instrument_id,
+                        PriceHistoryIntraday.datetime >= daily_dt_utc,
+                        PriceHistoryIntraday.datetime < day_end_utc,
+                        PriceHistoryIntraday.open.isnot(None),
+                    )
+                    .order_by(PriceHistoryIntraday.datetime.asc())
+                    .limit(1)
+                )
                 open_val = (await session.execute(open_stmt)).scalar_one_or_none()
 
                 # Get close (last candle)
-                close_stmt = select(PriceHistoryIntraday.close).where(
-                    PriceHistoryIntraday.instrument_id == instrument_id,
-                    PriceHistoryIntraday.datetime >= daily_dt_utc,
-                    PriceHistoryIntraday.datetime < day_end_utc,
-                    PriceHistoryIntraday.close.isnot(None),
-                ).order_by(PriceHistoryIntraday.datetime.desc()).limit(1)
+                close_stmt = (
+                    select(PriceHistoryIntraday.close)
+                    .where(
+                        PriceHistoryIntraday.instrument_id == instrument_id,
+                        PriceHistoryIntraday.datetime >= daily_dt_utc,
+                        PriceHistoryIntraday.datetime < day_end_utc,
+                        PriceHistoryIntraday.close.isnot(None),
+                    )
+                    .order_by(PriceHistoryIntraday.datetime.desc())
+                    .limit(1)
+                )
                 close_val = (await session.execute(close_stmt)).scalar_one_or_none()
 
                 # Find or create daily record
@@ -777,4 +876,6 @@ class DataSaver:
             task = asyncio.create_task(self.run_end_of_day_save(exchange))
             self._running_tasks[f"{exchange.name}_eod"] = task
 
-        logger.info(f"Started end-of-day monitors for {len(self.exchanges)} exchange(s)")
+        logger.info(
+            f"Started end-of-day monitors for {len(self.exchanges)} exchange(s)"
+        )

@@ -5,7 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.database_config import get_db_session
 from features.auth.auth_service import require_auth
-from features.user.user_schema import UserUpdate, UserInDb, ChangePasswordRequest, ResetPasswordRequest
+from features.user.user_schema import (
+    UserUpdate,
+    UserInDb,
+    ChangePasswordRequest,
+    ResetPasswordRequest,
+)
 from features.user import user_service
 from utils.common_constants import UserRoles
 
@@ -91,10 +96,10 @@ async def update_user(
 
 @user_router.patch("/update_status/{user_id}", response_model=UserInDb)
 async def update_user_status(
-        user_id: int,
-        user_status: int,
-        user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
-        session: AsyncSession = Depends(get_db_session),
+    user_id: int,
+    user_status: int,
+    user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
+    session: AsyncSession = Depends(get_db_session),
 ):
     """Update user status"""
     updated_user = await user_service.update_user_status(session, user_id, user_status)
@@ -140,6 +145,7 @@ async def reset_password(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
     return {"message": "Password reset successfully"}
+
 
 # @user_router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 # async def delete_user(

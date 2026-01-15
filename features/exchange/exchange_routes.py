@@ -46,6 +46,7 @@ async def create_exchange(
 
     return await exchange_service.create_exchange(session, exchange_data)
 
+
 @exchange_router.get(
     "/",
     response_model=list[ExchangeInDb],
@@ -74,6 +75,7 @@ async def get_exchange(
             status_code=status.HTTP_404_NOT_FOUND, detail="Exchange not found"
         )
     return exchange
+
 
 @exchange_router.put(
     "/{exchange_id}",
@@ -116,6 +118,7 @@ async def delete_exchange(
 
 # Exchange-Provider Mapping routes
 
+
 @exchange_router.get(
     "/{exchange_id}/providers",
     response_model=list[ExchangeProviderMappingInDb],
@@ -151,7 +154,9 @@ async def add_provider_to_exchange(
             mapping_data.provider_id != provider_id
             or mapping_data.exchange_id != exchange_id
         ):
-            raise HTTPException(status_code=400, detail="Provider or exchange ID mismatch")
+            raise HTTPException(
+                status_code=400, detail="Provider or exchange ID mismatch"
+            )
     # Check if already exists
     existing = await session.execute(
         select(ExchangeProviderMapping).where(
@@ -161,7 +166,9 @@ async def add_provider_to_exchange(
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Mapping already exists")
-    return await exchange_service.create_exchange_provider_mapping(session, mapping_data)
+    return await exchange_service.create_exchange_provider_mapping(
+        session, mapping_data
+    )
 
 
 @exchange_router.put(
@@ -195,13 +202,16 @@ async def remove_provider_from_exchange(
     session: AsyncSession = Depends(get_db_session),
 ):
     """Remove a provider from an exchange"""
-    deleted = await exchange_service.delete_exchange_provider_mapping(session, provider_id, exchange_id)
+    deleted = await exchange_service.delete_exchange_provider_mapping(
+        session, provider_id, exchange_id
+    )
     if not deleted:
         raise HTTPException(status_code=404, detail="Mapping not found")
     return None
 
 
 # Exchange Holiday routes
+
 
 @exchange_router.post(
     "/holidays",
@@ -215,7 +225,9 @@ async def create_exchange_holiday(
 ):
     """Create a new exchange holiday"""
     # Check if exchange exists
-    exchange = await exchange_service.get_exchange_by_id(session, holiday_data.exchange_id)
+    exchange = await exchange_service.get_exchange_by_id(
+        session, holiday_data.exchange_id
+    )
     if not exchange:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

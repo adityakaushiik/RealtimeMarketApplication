@@ -17,9 +17,9 @@ sector_router = APIRouter(
 
 @sector_router.post("/")
 async def create_sector(
-        create_sector: SectorCreate,
-        user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
-        session: AsyncSession = Depends(get_db_session),
+    create_sector: SectorCreate,
+    user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
+    session: AsyncSession = Depends(get_db_session),
 ) -> SectorInDb:
     sector = await sector_service.create_sector(
         session=session,
@@ -31,9 +31,9 @@ async def create_sector(
 
 @sector_router.get("/{sector_id}")
 async def get_sector(
-        sector_id: int,
-        user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
-        session: AsyncSession = Depends(get_db_session),
+    sector_id: int,
+    user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
+    session: AsyncSession = Depends(get_db_session),
 ) -> SectorInDb:
     sector = await sector_service.get_sector_by_id(
         session=session,
@@ -44,8 +44,8 @@ async def get_sector(
 
 @sector_router.get("/")
 async def list_sectors(
-        user_claims: dict = Depends(require_auth()),
-        session: AsyncSession = Depends(get_db_session),
+    user_claims: dict = Depends(require_auth()),
+    session: AsyncSession = Depends(get_db_session),
 ) -> List[SectorInDb]:
     sectors = await sector_service.get_all_sectors(session=session)
     return sectors
@@ -53,9 +53,9 @@ async def list_sectors(
 
 @sector_router.put("/{sector_id}")
 async def update_sector(
-        sector_id: int,
-        user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
-        session: AsyncSession = Depends(get_db_session),
+    sector_id: int,
+    user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
+    session: AsyncSession = Depends(get_db_session),
 ):
     sector = await sector_service.update_sector(
         session=session,

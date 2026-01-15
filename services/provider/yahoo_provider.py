@@ -24,8 +24,8 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         try:
             # Load mappings
             try:
-                 self.symbol_map = await self.redis_mapper.get_all_p2i_mappings("YF")
-                 logger.info(f"Loaded {len(self.symbol_map)} symbol mappings for Yahoo")
+                self.symbol_map = await self.redis_mapper.get_all_p2i_mappings("YF")
+                logger.info(f"Loaded {len(self.symbol_map)} symbol mappings for Yahoo")
             except Exception as e:
                 logger.error(f"Failed to load symbol mappings: {e}")
 
@@ -84,10 +84,12 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                 if self.subscribed_symbols:
                     # Depending on yfinance version, unsubscribe might be needed or just closing
                     # The library might strictly require a list, converting set to list
-                    await self.websocket_connection.unsubscribe(list(self.subscribed_symbols))
+                    await self.websocket_connection.unsubscribe(
+                        list(self.subscribed_symbols)
+                    )
 
                 # Cancel the listener task if running
-                if hasattr(self, '_listen_task') and self._listen_task:
+                if hasattr(self, "_listen_task") and self._listen_task:
                     self._listen_task.cancel()
                     try:
                         await self._listen_task
@@ -122,10 +124,11 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                 logger.error(f"Error unsubscribing from Yahoo Finance symbols: {e}")
 
     async def get_intraday_prices(
-            self, instruments: List[Instrument],
-            start_date: Optional[datetime] = None,
-            end_date: Optional[datetime] = None,
-            timeframe: str = '5m',
+        self,
+        instruments: List[Instrument],
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        timeframe: str = "5m",
     ) -> dict[str, list[PriceHistoryIntraday]]:
         """
         Fetch intraday prices (5m interval) for the specified date range.
@@ -162,7 +165,7 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                 threads=True,
                 progress=False,
                 auto_adjust=False,
-                ignore_tz=True, # Attempt to fix "no timezone found" by ignoring tz alignment during download
+                ignore_tz=True,  # Attempt to fix "no timezone found" by ignoring tz alignment during download
             )
 
             if df.empty:
@@ -178,7 +181,9 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                 if isinstance(df.columns, pd.MultiIndex):
                     try:
                         symbol_df = df[symbol]
-                        result[symbol] = self._parse_intraday_dataframe(symbol_df, symbol)
+                        result[symbol] = self._parse_intraday_dataframe(
+                            symbol_df, symbol
+                        )
                     except KeyError:
                         # Fallback if symbol is not top level (maybe it's not MultiIndex but looks like it?)
                         # Or maybe columns are just Open, High...
@@ -192,7 +197,9 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                         # Check if symbol is in columns (top level)
                         if symbol in df.columns:
                             symbol_df = df[symbol].dropna()
-                            result[symbol] = self._parse_intraday_dataframe(symbol_df, symbol)
+                            result[symbol] = self._parse_intraday_dataframe(
+                                symbol_df, symbol
+                            )
                     except Exception as e:
                         logger.error(f"Error parsing intraday data for {symbol}: {e}")
 
@@ -202,7 +209,9 @@ class YahooFinanceProvider(BaseMarketDataProvider):
             logger.error(f"Error fetching intraday prices from YF: {e}")
             return {}
 
-    def _parse_intraday_dataframe(self, df: pd.DataFrame, symbol: str) -> List[PriceHistoryIntraday]:
+    def _parse_intraday_dataframe(
+        self, df: pd.DataFrame, symbol: str
+    ) -> List[PriceHistoryIntraday]:
         records = []
         for index, row in df.iterrows():
             try:
@@ -227,7 +236,7 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                         close=float(row["Close"]),
                         volume=int(row["Volume"]),
                         interval="5m",
-                        resolve_required=False
+                        resolve_required=False,
                     )
                 )
             except Exception as e:
@@ -235,10 +244,11 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         return records
 
     async def get_daily_prices(
-            self, instruments: List[Instrument],
-            start_date: Optional[datetime] = None,
-            end_date: Optional[datetime] = None,
-            timeframe: str = '1d',
+        self,
+        instruments: List[Instrument],
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        timeframe: str = "1d",
     ) -> dict[str, list[PriceHistoryDaily]]:
         """
         Fetch daily prices for the specified date range.
@@ -268,7 +278,7 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                 progress=False,
                 actions=True,  # To get Dividends and Splits if needed
                 auto_adjust=False,
-                ignore_tz=True, # Fix for "no timezone found" errors
+                ignore_tz=True,  # Fix for "no timezone found" errors
             )
 
             if df.empty:
@@ -292,7 +302,9 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                     try:
                         if symbol in df.columns:
                             symbol_df = df[symbol].dropna()
-                            result[symbol] = self._parse_daily_dataframe(symbol_df, symbol)
+                            result[symbol] = self._parse_daily_dataframe(
+                                symbol_df, symbol
+                            )
                     except Exception as e:
                         logger.error(f"Error parsing daily data for {symbol}: {e}")
 
@@ -302,7 +314,9 @@ class YahooFinanceProvider(BaseMarketDataProvider):
             logger.error(f"Error fetching daily prices from YF: {e}")
             return {}
 
-    def _parse_daily_dataframe(self, df: pd.DataFrame, symbol: str) -> List[PriceHistoryDaily]:
+    def _parse_daily_dataframe(
+        self, df: pd.DataFrame, symbol: str
+    ) -> List[PriceHistoryDaily]:
         records = []
         for index, row in df.iterrows():
             try:
@@ -329,7 +343,7 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                         close=float(row["Close"]),
                         adj_close=adj_close,
                         volume=int(row["Volume"]),
-                        resolve_required=False
+                        resolve_required=False,
                     )
                 )
             except Exception as e:

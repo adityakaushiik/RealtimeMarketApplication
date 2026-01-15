@@ -23,9 +23,7 @@ class ProviderInstrumentMapping(Base, BaseMixin):
     provider_instrument_search_code: Mapped[str] = mapped_column(
         String(255), nullable=False
     )
-    provider_instrument_segment : Mapped[str] = mapped_column(
-        String(100), nullable=True
-    )
+    provider_instrument_segment: Mapped[str] = mapped_column(String(100), nullable=True)
 
     __table_args__ = (
         PrimaryKeyConstraint(

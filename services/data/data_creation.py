@@ -58,7 +58,7 @@ class DataCreationService:
             # Check for holidays or special sessions
             stmt_holiday = select(ExchangeHoliday).where(
                 ExchangeHoliday.exchange_id == exchange.id,
-                ExchangeHoliday.date == target_date
+                ExchangeHoliday.date == target_date,
             )
             result_holiday = await self.session.execute(stmt_holiday)
             holiday = result_holiday.scalar_one_or_none()
@@ -68,12 +68,16 @@ class DataCreationService:
 
             if holiday:
                 if holiday.is_closed:
-                    logger.info(f"Skipping data creation for {exchange_name} on {target_date}: Holiday ({holiday.description})")
+                    logger.info(
+                        f"Skipping data creation for {exchange_name} on {target_date}: Holiday ({holiday.description})"
+                    )
                     return
                 else:
                     # Special session (e.g. Muhurat trading)
                     if holiday.open_time and holiday.close_time:
-                        logger.info(f"Using special trading hours for {exchange_name} on {target_date}: {holiday.open_time} - {holiday.close_time} ({holiday.description})")
+                        logger.info(
+                            f"Using special trading hours for {exchange_name} on {target_date}: {holiday.open_time} - {holiday.close_time} ({holiday.description})"
+                        )
                         market_open = holiday.open_time
                         market_close = holiday.close_time
 
@@ -88,9 +92,7 @@ class DataCreationService:
             start_dt = tz.localize(datetime.combine(target_date, market_open))
             end_dt = tz.localize(datetime.combine(target_date, market_close))
 
-            logger.info(
-                f"Creating data records for {exchange_name} on {target_date}"
-            )
+            logger.info(f"Creating data records for {exchange_name} on {target_date}")
 
             # Fetch active instruments for this exchange
             stmt = select(Instrument).where(
@@ -101,9 +103,7 @@ class DataCreationService:
             instruments = result.scalars().all()
 
             if not instruments:
-                logger.warning(
-                    f"No active instruments found for {exchange_name}"
-                )
+                logger.warning(f"No active instruments found for {exchange_name}")
                 return
 
             # Generate 5-minute intervals
@@ -116,9 +116,7 @@ class DataCreationService:
                 current_dt += timedelta(minutes=exchange.interval_minutes)
 
             # Use market open time for daily record timestamp (standard convention)
-            daily_record_dt = tz.localize(
-                datetime.combine(target_date, market_open)
-            )
+            daily_record_dt = tz.localize(datetime.combine(target_date, market_open))
 
             # Fetch existing records to avoid duplicates
             # Check for existing daily records for this SPECIFIC timestamp
@@ -131,13 +129,12 @@ class DataCreationService:
 
             # Check for existing intraday records for the specific timestamps we want to create
             # We need to check which specific timestamps already exist for each instrument
-            existing_intraday_stmt = (
-                select(PriceHistoryIntraday.instrument_id, PriceHistoryIntraday.datetime)
-                .where(
-                    PriceHistoryIntraday.instrument_id.in_([i.id for i in instruments]),
-                    PriceHistoryIntraday.datetime >= start_dt,
-                    PriceHistoryIntraday.datetime < end_dt,
-                )
+            existing_intraday_stmt = select(
+                PriceHistoryIntraday.instrument_id, PriceHistoryIntraday.datetime
+            ).where(
+                PriceHistoryIntraday.instrument_id.in_([i.id for i in instruments]),
+                PriceHistoryIntraday.datetime >= start_dt,
+                PriceHistoryIntraday.datetime < end_dt,
             )
             existing_intraday_result = await self.session.execute(
                 existing_intraday_stmt
@@ -191,7 +188,5 @@ class DataCreationService:
                 )
 
         except Exception as e:
-            logger.error(
-                f"Error creating data records for {exchange_name}: {e!r}"
-            )
+            logger.error(f"Error creating data records for {exchange_name}: {e!r}")
             await self.session.rollback()

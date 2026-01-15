@@ -1,6 +1,7 @@
 """
 Health check API endpoints.
 """
+
 from fastapi import APIRouter, Response
 from services.health_monitor import get_health_monitor
 
@@ -39,4 +40,3 @@ async def readiness_check(response: Response):
 async def liveness_check():
     """Kubernetes-style liveness probe."""
     return {"alive": True}
-

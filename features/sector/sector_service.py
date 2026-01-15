@@ -9,8 +9,8 @@ from config.logger import logger
 
 
 async def create_sector(
-        session: AsyncSession,
-        sector_data: SectorCreate,
+    session: AsyncSession,
+    sector_data: SectorCreate,
 ) -> SectorInDb:
     """Create a new sector"""
     new_sector = Sector(
@@ -37,8 +37,8 @@ async def create_sector(
 
 
 async def get_sector_by_id(
-        session: AsyncSession,
-        sector_id: int,
+    session: AsyncSession,
+    sector_id: int,
 ) -> SectorInDb | None:
     """Get sector by ID"""
     result = await session.execute(select(Sector).where(Sector.id == sector_id))
@@ -53,7 +53,7 @@ async def get_sector_by_id(
 
 
 async def get_all_sectors(
-        session: AsyncSession,
+    session: AsyncSession,
 ) -> list[SectorInDb]:
     """Get all sectors"""
     redis = get_redis()
@@ -82,7 +82,7 @@ async def get_all_sectors(
 
     if redis and response:
         try:
-            json_data = json.dumps([item.model_dump(mode='json') for item in response])
+            json_data = json.dumps([item.model_dump(mode="json") for item in response])
             await redis.set(cache_key, json_data, ex=86400)
         except Exception as e:
             logger.error(f"Error caching all sectors to Redis: {e}")
@@ -91,9 +91,9 @@ async def get_all_sectors(
 
 
 async def update_sector(
-        session: AsyncSession,
-        sector_id: int,
-        sector_data: SectorUpdate,
+    session: AsyncSession,
+    sector_id: int,
+    sector_data: SectorUpdate,
 ) -> SectorInDb | None:
     """Update a sector"""
     result = await session.execute(select(Sector).where(Sector.id == sector_id))
@@ -124,8 +124,8 @@ async def update_sector(
 
 
 async def delete_sector(
-        session: AsyncSession,
-        sector_id: int,
+    session: AsyncSession,
+    sector_id: int,
 ) -> bool:
     """Delete a sector"""
     result = await session.execute(select(Sector).where(Sector.id == sector_id))

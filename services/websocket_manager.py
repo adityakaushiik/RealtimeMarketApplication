@@ -32,7 +32,7 @@ class WebSocketManager:
             if channel not in self.channel_subscribers:
                 self.channel_subscribers[channel] = set()
             self.channel_subscribers[channel].add(websocket)
-            
+
             self._notify_callbacks()
 
     def disconnect(self, websocket: WebSocket):
@@ -55,7 +55,7 @@ class WebSocketManager:
                 self.channel_subscribers[channel].discard(websocket)
                 if not self.channel_subscribers[channel]:
                     del self.channel_subscribers[channel]
-            
+
             if notify:
                 self._notify_callbacks()
 

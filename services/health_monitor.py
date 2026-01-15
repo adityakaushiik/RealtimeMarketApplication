@@ -1,6 +1,7 @@
 """
 Health monitoring service for system components.
 """
+
 import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional
@@ -42,7 +43,7 @@ class HealthMonitor:
                     name="database",
                     healthy=True,
                     latency_ms=latency,
-                    message="Connected"
+                    message="Connected",
                 )
         except Exception as e:
             latency = (datetime.now(timezone.utc) - start).total_seconds() * 1000
@@ -50,7 +51,7 @@ class HealthMonitor:
                 name="database",
                 healthy=False,
                 latency_ms=latency,
-                message=f"Error: {str(e)[:100]}"
+                message=f"Error: {str(e)[:100]}",
             )
 
     async def check_redis(self) -> ComponentHealth:
@@ -59,7 +60,9 @@ class HealthMonitor:
         try:
             redis = get_redis()
             if not redis:
-                return ComponentHealth(name="redis", healthy=False, message="Redis client not initialized")
+                return ComponentHealth(
+                    name="redis", healthy=False, message="Redis client not initialized"
+                )
 
             await redis.ping()
             latency = (datetime.now(timezone.utc) - start).total_seconds() * 1000
@@ -73,11 +76,13 @@ class HealthMonitor:
                 healthy=True,
                 latency_ms=latency,
                 message="Connected",
-                details={"used_memory": used_memory}
+                details={"used_memory": used_memory},
             )
         except Exception as e:
             latency = (datetime.now(timezone.utc) - start).total_seconds() * 1000
-            return ComponentHealth(name="redis", healthy=False, latency_ms=latency, message=str(e)[:100])
+            return ComponentHealth(
+                name="redis", healthy=False, latency_ms=latency, message=str(e)[:100]
+            )
 
     async def check_data_quality(self) -> ComponentHealth:
         """Check data quality metrics."""
@@ -89,7 +94,7 @@ class HealthMonitor:
                 # Count records needing resolution in last hour
                 stmt = select(func.count(PriceHistoryIntraday.id)).where(
                     PriceHistoryIntraday.datetime >= one_hour_ago,
-                    PriceHistoryIntraday.resolve_required == True
+                    PriceHistoryIntraday.resolve_required == True,
                 )
                 unresolved_count = (await session.execute(stmt)).scalar() or 0
 
@@ -97,7 +102,7 @@ class HealthMonitor:
                 stmt_exceeded = select(func.count(PriceHistoryIntraday.id)).where(
                     PriceHistoryIntraday.datetime >= one_hour_ago,
                     PriceHistoryIntraday.resolve_required == True,
-                    PriceHistoryIntraday.resolve_tries >= 3
+                    PriceHistoryIntraday.resolve_tries >= 3,
                 )
                 exceeded_count = (await session.execute(stmt_exceeded)).scalar() or 0
 
@@ -107,7 +112,11 @@ class HealthMonitor:
                 )
                 total_count = (await session.execute(stmt_total)).scalar() or 0
 
-                resolution_rate = ((total_count - unresolved_count) / total_count * 100) if total_count > 0 else 100
+                resolution_rate = (
+                    ((total_count - unresolved_count) / total_count * 100)
+                    if total_count > 0
+                    else 100
+                )
 
                 healthy = resolution_rate >= 90 and exceeded_count == 0
 
@@ -119,20 +128,25 @@ class HealthMonitor:
                         "total_records_1h": total_count,
                         "unresolved_records": unresolved_count,
                         "exceeded_retry_limit": exceeded_count,
-                        "resolution_rate_percent": round(resolution_rate, 2)
-                    }
+                        "resolution_rate_percent": round(resolution_rate, 2),
+                    },
                 )
         except Exception as e:
-            return ComponentHealth(name="data_quality", healthy=False, message=str(e)[:100])
+            return ComponentHealth(
+                name="data_quality", healthy=False, message=str(e)[:100]
+            )
 
     async def check_providers(self) -> ComponentHealth:
         """Check provider status."""
         try:
             from services.provider.provider_manager import get_provider_manager
+
             pm = get_provider_manager()
 
             if not pm or not pm.providers:
-                return ComponentHealth(name="providers", healthy=False, message="No providers initialized")
+                return ComponentHealth(
+                    name="providers", healthy=False, message="No providers initialized"
+                )
 
             provider_status = {}
             all_healthy = True
@@ -140,16 +154,16 @@ class HealthMonitor:
             for code, provider in pm.providers.items():
                 if provider:
                     # Generic status checks
-                    is_connected = getattr(provider, 'is_connected', False)
+                    is_connected = getattr(provider, "is_connected", False)
                     # Some providers use _running
-                    if not is_connected and hasattr(provider, '_running'):
+                    if not is_connected and hasattr(provider, "_running"):
                         is_connected = provider._running
 
-                    subscribed = len(getattr(provider, 'subscribed_symbols', []))
+                    subscribed = len(getattr(provider, "subscribed_symbols", []))
 
                     status_dict = {
                         "connected": is_connected,
-                        "subscribed_symbols": subscribed
+                        "subscribed_symbols": subscribed,
                     }
 
                     # Add "last_data_received" if available (track it in provider if needed)
@@ -160,16 +174,21 @@ class HealthMonitor:
                     if not is_connected:
                         all_healthy = False
                 else:
-                    provider_status[code] = {"connected": False, "subscribed_symbols": 0}
+                    provider_status[code] = {
+                        "connected": False,
+                        "subscribed_symbols": 0,
+                    }
 
             return ComponentHealth(
                 name="providers",
                 healthy=all_healthy,
                 message=f"Providers: {len(provider_status)} configured",
-                details=provider_status
+                details=provider_status,
             )
         except Exception as e:
-            return ComponentHealth(name="providers", healthy=False, message=str(e)[:100])
+            return ComponentHealth(
+                name="providers", healthy=False, message=str(e)[:100]
+            )
 
     async def get_full_health(self, use_cache: bool = True) -> Dict[str, Any]:
         """Get comprehensive health status of all components."""
@@ -186,7 +205,7 @@ class HealthMonitor:
             self.check_redis(),
             self.check_data_quality(),
             self.check_providers(),
-            return_exceptions=True
+            return_exceptions=True,
         )
 
         components = {}
@@ -201,7 +220,7 @@ class HealthMonitor:
                     "healthy": result.healthy,
                     "latency_ms": result.latency_ms,
                     "message": result.message,
-                    "details": result.details
+                    "details": result.details,
                 }
                 if not result.healthy:
                     overall_healthy = False
@@ -209,7 +228,7 @@ class HealthMonitor:
         health_result = {
             "status": "healthy" if overall_healthy else "unhealthy",
             "timestamp": now.isoformat(),
-            "components": components
+            "components": components,
         }
 
         # Cache result

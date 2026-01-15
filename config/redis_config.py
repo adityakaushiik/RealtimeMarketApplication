@@ -32,14 +32,15 @@ def get_redis():
             redis_client = async_redis.from_url(
                 redis_url,
                 decode_responses=False,
-                socket_keepalive=True,    # Enable TCP keepalive
-                health_check_interval=30  # Check connection health every 30s
+                socket_keepalive=True,  # Enable TCP keepalive
+                health_check_interval=30,  # Check connection health every 30s
             )
             print(f"Created redis client for {redis_url} (decode_responses=False)")
         return redis_client
     except Exception as e:
         print(f"Redis connection error: {e}")
         return None
+
 
 async def close_redis_client():
     """Close the global redis client connection pool."""

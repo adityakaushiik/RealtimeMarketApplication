@@ -40,15 +40,18 @@ class ProviderManager:
         # self.callback = None
         self.providers: Dict[str, BaseMarketDataProvider] = {}
 
-
         self.exchange_to_provider: Dict[int, str] = {}  # exchange_id -> provider_code
-        self.exchange_id_to_code: Dict[int, str] = {}  # exchange_id -> exchange_code ("NSE", "BSE")
+        self.exchange_id_to_code: Dict[
+            int, str
+        ] = {}  # exchange_id -> exchange_code ("NSE", "BSE")
         self.symbol_to_provider: Dict[
             str, str
         ] = {}  # internal symbol (provider search symbol currently) -> provider_code
         self.symbol_to_exchange: Dict[str, int] = {}  # internal symbol -> exchange_id
 
-        self.symbol_to_instrument_type: Dict[str, int] = {}  # internal symbol -> instrument_type_id
+        self.symbol_to_instrument_type: Dict[
+            str, int
+        ] = {}  # internal symbol -> instrument_type_id
         self._initialized = False
 
         # Redis Mapping Helper
@@ -93,7 +96,9 @@ class ProviderManager:
 
         # Automatically start providers with default recordable symbols
         logger.info("Auto-starting providers with recordable symbols...")
-        symbols_by_provider = await self.get_symbols_by_provider(check_should_record=True)
+        symbols_by_provider = await self.get_symbols_by_provider(
+            check_should_record=True
+        )
         await self.start_all_providers(symbols_by_provider)
 
         # Start the dynamic subscription sync task
@@ -116,7 +121,9 @@ class ProviderManager:
                 f"Unknown provider code: {provider_code}. Please add it to the factory method."
             )
 
-    async def get_symbols_by_provider(self, check_should_record: bool = False) -> Dict[str, list[str]]:
+    async def get_symbols_by_provider(
+        self, check_should_record: bool = False
+    ) -> Dict[str, list[str]]:
         """
         Query database to get all instruments grouped by provider.
         Returns: {"YF": ["AAPL", "TSLA"], "DHAN": ["RELIANCE-EQ", "TCS-EQ"]}
@@ -125,7 +132,9 @@ class ProviderManager:
         - Populates symbol_to_provider & symbol_to_exchange for quick lookups.
         """
         # Logic shifted to RedisMappingHelper
-        return await self.redis_mapper.get_symbols_by_provider(check_should_record=check_should_record)
+        return await self.redis_mapper.get_symbols_by_provider(
+            check_should_record=check_should_record
+        )
 
     async def start_all_providers(self, symbols_by_provider: Dict[str, list[str]]):
         """Connect all providers with their respective symbols"""
@@ -144,15 +153,13 @@ class ProviderManager:
             if provider_code in self.providers and self.providers[provider_code]:
                 logger.info(f"Connecting {provider_code} with {len(symbols)} symbols")
                 provider = self.providers[provider_code]
-                
+
                 if asyncio.iscoroutinefunction(provider.connect_websocket):
                     # For async providers (like Dhan)
                     task = provider.connect_websocket(symbols)
                 else:
                     # For sync providers (like Yahoo) - run in threadpool
-                    task = run_in_threadpool(
-                        provider.connect_websocket, symbols
-                    )
+                    task = run_in_threadpool(provider.connect_websocket, symbols)
                 tasks.append(task)
 
         # Connect all providers in parallel
@@ -197,7 +204,7 @@ class ProviderManager:
         for provider_code, provider_symbols in symbols_by_provider.items():
             if provider_code in self.providers and self.providers[provider_code]:
                 try:
-                    print('Subscribing to', provider_code, provider_symbols)
+                    print("Subscribing to", provider_code, provider_symbols)
                     self.providers[provider_code].subscribe_symbols(provider_symbols)
                     logger.info(
                         f"Subscribed to {len(provider_symbols)} symbols on {provider_code}"
@@ -240,7 +247,7 @@ class ProviderManager:
             loop = asyncio.get_running_loop()
             loop.call_soon_threadsafe(self._subscription_change_event.set)
         except RuntimeError:
-            pass # No running loop
+            pass  # No running loop
 
     async def start_sync_task(self):
         """Start dynamic subscription synchronization task."""
@@ -275,7 +282,9 @@ class ProviderManager:
             try:
                 # Wait for event or timeout (heartbeat)
                 try:
-                    await asyncio.wait_for(self._subscription_change_event.wait(), timeout=10.0)
+                    await asyncio.wait_for(
+                        self._subscription_change_event.wait(), timeout=10.0
+                    )
                 except asyncio.TimeoutError:
                     pass
 
@@ -308,11 +317,21 @@ class ProviderManager:
 
                     if provider_code:
                         if provider_code not in provider_i2p_maps:
-                            provider_i2p_maps[provider_code] = await self.redis_mapper.get_all_i2p_mappings(provider_code)
+                            provider_i2p_maps[
+                                provider_code
+                            ] = await self.redis_mapper.get_all_i2p_mappings(
+                                provider_code
+                            )
                             # Prefetch reverse map too
-                            provider_p2i_maps[provider_code] = await self.redis_mapper.get_all_p2i_mappings(provider_code)
+                            provider_p2i_maps[
+                                provider_code
+                            ] = await self.redis_mapper.get_all_p2i_mappings(
+                                provider_code
+                            )
 
-                        search_code = provider_i2p_maps[provider_code].get(internal_symbol)
+                        search_code = provider_i2p_maps[provider_code].get(
+                            internal_symbol
+                        )
                         # We track internal symbols that successfully resolved to a search code
                         if search_code:
                             # We don't add search_code to target_subscriptions anymore
@@ -326,7 +345,11 @@ class ProviderManager:
                     if provider:
                         # If we haven't fetched p2i map yet (because no target needed it?), fetch it now
                         if provider_code not in provider_p2i_maps:
-                             provider_p2i_maps[provider_code] = await self.redis_mapper.get_all_p2i_mappings(provider_code)
+                            provider_p2i_maps[
+                                provider_code
+                            ] = await self.redis_mapper.get_all_p2i_mappings(
+                                provider_code
+                            )
 
                         p2i = provider_p2i_maps.get(provider_code, {})
 
@@ -345,7 +368,9 @@ class ProviderManager:
 
                 # Calculate diff using INTERNAL SYMBOLS
                 to_subscribe = target_internal_symbols - current_internal_subscriptions
-                to_unsubscribe = current_internal_subscriptions - target_internal_symbols
+                to_unsubscribe = (
+                    current_internal_subscriptions - target_internal_symbols
+                )
 
                 # Filter to_subscribe: ensure they map to valid providers/search_codes
                 # We can't subscribe to something with no provider mapping
@@ -353,20 +378,22 @@ class ProviderManager:
                 for sym in to_subscribe:
                     p_code = self.symbol_to_provider.get(sym)
                     if p_code:
-                         if p_code not in provider_i2p_maps:
-                              provider_i2p_maps[p_code] = await self.redis_mapper.get_all_i2p_mappings(p_code)
-                         if provider_i2p_maps[p_code].get(sym):
-                              valid_to_subscribe.append(sym)
+                        if p_code not in provider_i2p_maps:
+                            provider_i2p_maps[
+                                p_code
+                            ] = await self.redis_mapper.get_all_i2p_mappings(p_code)
+                        if provider_i2p_maps[p_code].get(sym):
+                            valid_to_subscribe.append(sym)
 
                 # Apply changes
                 if valid_to_subscribe:
                     await self.subscribe_to_symbols(valid_to_subscribe)
-                    logger.info(f"📈 Subscribed to {len(valid_to_subscribe)} new symbols")
+                    logger.info(
+                        f"📈 Subscribed to {len(valid_to_subscribe)} new symbols"
+                    )
 
                 if to_unsubscribe:
-                    await self.unsubscribe_from_symbols(
-                        list(to_unsubscribe)
-                    )
+                    await self.unsubscribe_from_symbols(list(to_unsubscribe))
                     logger.info(f"📉 Unsubscribed from {len(to_unsubscribe)} symbols")
 
             except asyncio.CancelledError:
@@ -376,10 +403,11 @@ class ProviderManager:
                 logger.error(f"Error syncing subscriptions: {e}")
 
     async def get_intraday_prices(
-        self, instrument: Instrument,
-            start_date: Optional[str] = None,
-            end_date: Optional[str] = None,
-            timeframe: str = '1d',
+        self,
+        instrument: Instrument,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        timeframe: str = "1d",
     ) -> list["PriceHistoryIntraday"]:
         """Fetch intraday prices for a single instrument from its provider."""
         provider_code = self.exchange_to_provider.get(instrument.exchange_id)
@@ -394,10 +422,11 @@ class ProviderManager:
         return result.get(instrument.symbol, [])
 
     async def get_daily_prices(
-        self, instrument: Instrument,
-            start_date: Optional[str] = None,
-            end_date: Optional[str] = None,
-            timeframe: str = '1d',
+        self,
+        instrument: Instrument,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        timeframe: str = "1d",
     ) -> list["PriceHistoryDaily"]:
         """Fetch daily prices for a single instrument from its provider."""
         provider_code = self.exchange_to_provider.get(instrument.exchange_id)
@@ -432,17 +461,26 @@ class ProviderManager:
         Resolve an internal instrument symbol from a provider code & provider search code.
         Uses RedisMappingHelper.
         """
-        return await self.redis_mapper.get_internal_symbol(provider_code, provider_search_code)
+        return await self.redis_mapper.get_internal_symbol(
+            provider_code, provider_search_code
+        )
 
-    async def get_search_code(self, provider_code: str, internal_symbol: str) -> Optional[str]:
+    async def get_search_code(
+        self, provider_code: str, internal_symbol: str
+    ) -> Optional[str]:
         """
         Get provider specific search code for an internal symbol.
         Uses RedisMappingHelper.
         """
-        return await self.redis_mapper.get_provider_symbol(provider_code, internal_symbol)
+        return await self.redis_mapper.get_provider_symbol(
+            provider_code, internal_symbol
+        )
+
 
 # Global reference for dependency injection
 _provider_manager_instance = None
+
+
 def get_provider_manager() -> ProviderManager:
     global _provider_manager_instance
     if _provider_manager_instance is None:

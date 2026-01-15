@@ -9,31 +9,45 @@ from features.suggestion.suggestion_schema import (
     SuggestionTypeUpdate,
     SuggestionInDb,
     SuggestionTypeInDb,
-    SuggestionResponse
+    SuggestionResponse,
 )
 
+
 # Suggestion Type CRUD
-async def create_suggestion_type(session: AsyncSession, suggestion_type_data: SuggestionTypeCreate) -> SuggestionTypeInDb:
+async def create_suggestion_type(
+    session: AsyncSession, suggestion_type_data: SuggestionTypeCreate
+) -> SuggestionTypeInDb:
     new_type = SuggestionType(**suggestion_type_data.model_dump())
     session.add(new_type)
     await session.commit()
     await session.refresh(new_type)
     return SuggestionTypeInDb.model_validate(new_type)
 
+
 async def get_all_suggestion_types(session: AsyncSession) -> list[SuggestionTypeInDb]:
     result = await session.execute(select(SuggestionType))
     types = result.scalars().all()
     return [SuggestionTypeInDb.model_validate(t) for t in types]
 
-async def get_suggestion_type_by_id(session: AsyncSession, type_id: int) -> SuggestionTypeInDb | None:
-    result = await session.execute(select(SuggestionType).where(SuggestionType.id == type_id))
+
+async def get_suggestion_type_by_id(
+    session: AsyncSession, type_id: int
+) -> SuggestionTypeInDb | None:
+    result = await session.execute(
+        select(SuggestionType).where(SuggestionType.id == type_id)
+    )
     suggestion_type = result.scalar_one_or_none()
     if suggestion_type:
         return SuggestionTypeInDb.model_validate(suggestion_type)
     return None
 
-async def update_suggestion_type(session: AsyncSession, type_id: int, update_data: SuggestionTypeUpdate) -> SuggestionTypeInDb | None:
-    result = await session.execute(select(SuggestionType).where(SuggestionType.id == type_id))
+
+async def update_suggestion_type(
+    session: AsyncSession, type_id: int, update_data: SuggestionTypeUpdate
+) -> SuggestionTypeInDb | None:
+    result = await session.execute(
+        select(SuggestionType).where(SuggestionType.id == type_id)
+    )
     suggestion_type = result.scalar_one_or_none()
     if not suggestion_type:
         return None
@@ -45,8 +59,11 @@ async def update_suggestion_type(session: AsyncSession, type_id: int, update_dat
     await session.refresh(suggestion_type)
     return SuggestionTypeInDb.model_validate(suggestion_type)
 
+
 async def delete_suggestion_type(session: AsyncSession, type_id: int) -> bool:
-    result = await session.execute(select(SuggestionType).where(SuggestionType.id == type_id))
+    result = await session.execute(
+        select(SuggestionType).where(SuggestionType.id == type_id)
+    )
     suggestion_type = result.scalar_one_or_none()
     if not suggestion_type:
         return False
@@ -55,40 +72,60 @@ async def delete_suggestion_type(session: AsyncSession, type_id: int) -> bool:
     await session.commit()
     return True
 
+
 # Suggestion CRUD
-async def create_suggestion(session: AsyncSession, user_id: int, suggestion_data: SuggestionCreate) -> SuggestionInDb:
+async def create_suggestion(
+    session: AsyncSession, user_id: int, suggestion_data: SuggestionCreate
+) -> SuggestionInDb:
     new_suggestion = Suggestion(user_id=user_id, **suggestion_data.model_dump())
     session.add(new_suggestion)
     await session.commit()
     await session.refresh(new_suggestion)
     return SuggestionInDb.model_validate(new_suggestion)
 
+
 async def get_all_suggestions(session: AsyncSession) -> list[SuggestionResponse]:
     result = await session.execute(
-        select(Suggestion)
-        .options(selectinload(Suggestion.user), selectinload(Suggestion.suggestion_type))
+        select(Suggestion).options(
+            selectinload(Suggestion.user), selectinload(Suggestion.suggestion_type)
+        )
     )
     suggestions = result.scalars().all()
     return [SuggestionResponse.model_validate(s) for s in suggestions]
 
-async def get_suggestions_by_user(session: AsyncSession, user_id: int) -> list[SuggestionResponse]:
+
+async def get_suggestions_by_user(
+    session: AsyncSession, user_id: int
+) -> list[SuggestionResponse]:
     result = await session.execute(
         select(Suggestion)
         .where(Suggestion.user_id == user_id)
-        .options(selectinload(Suggestion.user), selectinload(Suggestion.suggestion_type))
+        .options(
+            selectinload(Suggestion.user), selectinload(Suggestion.suggestion_type)
+        )
     )
     suggestions = result.scalars().all()
     return [SuggestionResponse.model_validate(s) for s in suggestions]
 
-async def get_suggestion_by_id(session: AsyncSession, suggestion_id: int) -> SuggestionInDb | None:
-    result = await session.execute(select(Suggestion).where(Suggestion.id == suggestion_id))
+
+async def get_suggestion_by_id(
+    session: AsyncSession, suggestion_id: int
+) -> SuggestionInDb | None:
+    result = await session.execute(
+        select(Suggestion).where(Suggestion.id == suggestion_id)
+    )
     suggestion = result.scalar_one_or_none()
     if suggestion:
         return SuggestionInDb.model_validate(suggestion)
     return None
 
-async def update_suggestion(session: AsyncSession, suggestion_id: int, update_data: SuggestionUpdate) -> SuggestionInDb | None:
-    result = await session.execute(select(Suggestion).where(Suggestion.id == suggestion_id))
+
+async def update_suggestion(
+    session: AsyncSession, suggestion_id: int, update_data: SuggestionUpdate
+) -> SuggestionInDb | None:
+    result = await session.execute(
+        select(Suggestion).where(Suggestion.id == suggestion_id)
+    )
     suggestion = result.scalar_one_or_none()
     if not suggestion:
         return None
@@ -100,8 +137,11 @@ async def update_suggestion(session: AsyncSession, suggestion_id: int, update_da
     await session.refresh(suggestion)
     return SuggestionInDb.model_validate(suggestion)
 
+
 async def delete_suggestion(session: AsyncSession, suggestion_id: int) -> bool:
-    result = await session.execute(select(Suggestion).where(Suggestion.id == suggestion_id))
+    result = await session.execute(
+        select(Suggestion).where(Suggestion.id == suggestion_id)
+    )
     suggestion = result.scalar_one_or_none()
     if not suggestion:
         return False
@@ -109,4 +149,3 @@ async def delete_suggestion(session: AsyncSession, suggestion_id: int) -> bool:
     await session.delete(suggestion)
     await session.commit()
     return True
-

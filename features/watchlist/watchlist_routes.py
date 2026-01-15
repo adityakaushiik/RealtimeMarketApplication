@@ -58,6 +58,7 @@ async def get_dashboard_watchlists(
     user_id = int(user_claims.get("id"))
     return await watchlist_service.get_dashboard_watchlists(session, user_id)
 
+
 @watchlist_router.get(
     "/{watchlist_id}",
     response_model=WatchlistInDb,
@@ -69,7 +70,9 @@ async def get_watchlist(
 ):
     """Get a specific watchlist"""
     user_id = int(user_claims.get("id"))
-    watchlist = await watchlist_service.get_watchlist_by_id(session, watchlist_id, user_id)
+    watchlist = await watchlist_service.get_watchlist_by_id(
+        session, watchlist_id, user_id
+    )
     if not watchlist:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -140,7 +143,9 @@ async def add_item_to_watchlist(
     if not item:
         # Could be watchlist not found or item already exists
         # Check if watchlist exists first
-        watchlist = await watchlist_service.get_watchlist_by_id(session, watchlist_id, user_id)
+        watchlist = await watchlist_service.get_watchlist_by_id(
+            session, watchlist_id, user_id
+        )
         if not watchlist:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -174,6 +179,7 @@ async def remove_item_from_watchlist(
             detail="Item not found in watchlist",
         )
     return None
+
 
 @watchlist_router.put(
     "/show_on_dashboard/{watchlist_id}",

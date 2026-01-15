@@ -36,7 +36,9 @@ class RedisTimeSeries:
 
     # Retention periods
     TICK_RETENTION_MS = 15 * 60 * 1000  # 15 minutes for raw ticks
-    CANDLE_5M_RETENTION_MS = 18 * 60 * 60 * 1000  # 18 hours for 5m candles (covers full trading day)
+    CANDLE_5M_RETENTION_MS = (
+        18 * 60 * 60 * 1000
+    )  # 18 hours for 5m candles (covers full trading day)
     BUCKET_5M_MS = 5 * 60 * 1000  # 5 minute buckets
 
     def __init__(self, redis_client=None) -> None:
@@ -143,7 +145,7 @@ class RedisTimeSeries:
             except ResponseError as e:
                 # Ignore "key already exists" errors
                 if "key already exists" not in str(e).lower():
-                     logger.warning(f"Error creating 5m timeseries {key}: {e}")
+                    logger.warning(f"Error creating 5m timeseries {key}: {e}")
 
     async def setup_downsampling_rules(self, symbol: str) -> None:
         """Create TS.CREATERULE to automatically downsample ticks into 5m candles."""
@@ -172,8 +174,13 @@ class RedisTimeSeries:
                 )
             except ResponseError as e:
                 err_msg = str(e).lower()
-                if "rule already exists" not in err_msg and "destination key already has a src rule" not in err_msg:
-                    logger.warning(f"Error creating rule {source_key} -> {dest_key}: {e}")
+                if (
+                    "rule already exists" not in err_msg
+                    and "destination key already has a src rule" not in err_msg
+                ):
+                    logger.warning(
+                        f"Error creating rule {source_key} -> {dest_key}: {e}"
+                    )
 
         self._downsampling_initialized.add(symbol)
         logger.debug(f"Downsampling rules created for {symbol}")
@@ -213,7 +220,9 @@ class RedisTimeSeries:
             if "key does not exist" in err_str:
                 await self.create_tick_timeseries(symbol)
                 async with r.pipeline() as pipe:
-                    pipe.ts().add(price_key, timestamp, float(price), on_duplicate="last")
+                    pipe.ts().add(
+                        price_key, timestamp, float(price), on_duplicate="last"
+                    )
                     pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate="max")
                     await pipe.execute()
             elif "timestamp cannot be older" in err_str:
@@ -246,22 +255,72 @@ class RedisTimeSeries:
 
         try:
             async with r.pipeline() as pipe:
-                pipe.ts().add(self._5m_open_key(symbol), timestamp_ms, float(open_price), on_duplicate="first")
-                pipe.ts().add(self._5m_high_key(symbol), timestamp_ms, float(high_price), on_duplicate="max")
-                pipe.ts().add(self._5m_low_key(symbol), timestamp_ms, float(low_price), on_duplicate="min")
-                pipe.ts().add(self._5m_close_key(symbol), timestamp_ms, float(close_price), on_duplicate="last")
-                pipe.ts().add(self._5m_volume_key(symbol), timestamp_ms, float(volume), on_duplicate="sum")
+                pipe.ts().add(
+                    self._5m_open_key(symbol),
+                    timestamp_ms,
+                    float(open_price),
+                    on_duplicate="first",
+                )
+                pipe.ts().add(
+                    self._5m_high_key(symbol),
+                    timestamp_ms,
+                    float(high_price),
+                    on_duplicate="max",
+                )
+                pipe.ts().add(
+                    self._5m_low_key(symbol),
+                    timestamp_ms,
+                    float(low_price),
+                    on_duplicate="min",
+                )
+                pipe.ts().add(
+                    self._5m_close_key(symbol),
+                    timestamp_ms,
+                    float(close_price),
+                    on_duplicate="last",
+                )
+                pipe.ts().add(
+                    self._5m_volume_key(symbol),
+                    timestamp_ms,
+                    float(volume),
+                    on_duplicate="sum",
+                )
                 await pipe.execute()
         except ResponseError as e:
             err_str = str(e).lower()
             if "key does not exist" in err_str:
                 await self.create_5m_timeseries(symbol)
                 async with r.pipeline() as pipe:
-                    pipe.ts().add(self._5m_open_key(symbol), timestamp_ms, float(open_price), on_duplicate="first")
-                    pipe.ts().add(self._5m_high_key(symbol), timestamp_ms, float(high_price), on_duplicate="max")
-                    pipe.ts().add(self._5m_low_key(symbol), timestamp_ms, float(low_price), on_duplicate="min")
-                    pipe.ts().add(self._5m_close_key(symbol), timestamp_ms, float(close_price), on_duplicate="last")
-                    pipe.ts().add(self._5m_volume_key(symbol), timestamp_ms, float(volume), on_duplicate="sum")
+                    pipe.ts().add(
+                        self._5m_open_key(symbol),
+                        timestamp_ms,
+                        float(open_price),
+                        on_duplicate="first",
+                    )
+                    pipe.ts().add(
+                        self._5m_high_key(symbol),
+                        timestamp_ms,
+                        float(high_price),
+                        on_duplicate="max",
+                    )
+                    pipe.ts().add(
+                        self._5m_low_key(symbol),
+                        timestamp_ms,
+                        float(low_price),
+                        on_duplicate="min",
+                    )
+                    pipe.ts().add(
+                        self._5m_close_key(symbol),
+                        timestamp_ms,
+                        float(close_price),
+                        on_duplicate="last",
+                    )
+                    pipe.ts().add(
+                        self._5m_volume_key(symbol),
+                        timestamp_ms,
+                        float(volume),
+                        on_duplicate="sum",
+                    )
                     await pipe.execute()
             elif "timestamp cannot be older" in err_str:
                 pass
@@ -307,7 +366,14 @@ class RedisTimeSeries:
             )
         except ResponseError as e:
             if "key does not exist" in str(e).lower():
-                return {"timestamp": [], "open": [], "high": [], "low": [], "close": [], "volume": []}
+                return {
+                    "timestamp": [],
+                    "open": [],
+                    "high": [],
+                    "low": [],
+                    "close": [],
+                    "volume": [],
+                }
             raise
 
         def to_map(lst):
@@ -319,7 +385,13 @@ class RedisTimeSeries:
         c_map = to_map(close_data)
         v_map = to_map(vol_data)
 
-        all_ts = sorted(set(o_map.keys()) | set(h_map.keys()) | set(l_map.keys()) | set(c_map.keys()) | set(v_map.keys()))
+        all_ts = sorted(
+            set(o_map.keys())
+            | set(h_map.keys())
+            | set(l_map.keys())
+            | set(c_map.keys())
+            | set(v_map.keys())
+        )
 
         timestamps, opens, highs, lows, closes, volumes = [], [], [], [], [], []
 
@@ -333,7 +405,14 @@ class RedisTimeSeries:
             closes.append(c_map.get(ts))
             volumes.append(v_map.get(ts, 0.0))
 
-        return {"timestamp": timestamps, "open": opens, "high": highs, "low": lows, "close": closes, "volume": volumes}
+        return {
+            "timestamp": timestamps,
+            "open": opens,
+            "high": highs,
+            "low": lows,
+            "close": closes,
+            "volume": volumes,
+        }
 
     async def get_last_price(self, symbol: str) -> Optional[float]:
         """Get the latest price from the tick series."""
@@ -372,13 +451,55 @@ class RedisTimeSeries:
 
         try:
             first, last, high, low, vol_min, vol_max, count = await asyncio.gather(
-                r.ts().range(price_key, bucket_start, bucket_end, aggregation_type="first", bucket_size_msec=self.BUCKET_5M_MS),
-                r.ts().range(price_key, bucket_start, bucket_end, aggregation_type="last", bucket_size_msec=self.BUCKET_5M_MS),
-                r.ts().range(price_key, bucket_start, bucket_end, aggregation_type="max", bucket_size_msec=self.BUCKET_5M_MS),
-                r.ts().range(price_key, bucket_start, bucket_end, aggregation_type="min", bucket_size_msec=self.BUCKET_5M_MS),
-                r.ts().range(vol_key, bucket_start, bucket_end, aggregation_type="min", bucket_size_msec=self.BUCKET_5M_MS),
-                r.ts().range(vol_key, bucket_start, bucket_end, aggregation_type="max", bucket_size_msec=self.BUCKET_5M_MS),
-                r.ts().range(price_key, bucket_start, bucket_end, aggregation_type="count", bucket_size_msec=self.BUCKET_5M_MS),
+                r.ts().range(
+                    price_key,
+                    bucket_start,
+                    bucket_end,
+                    aggregation_type="first",
+                    bucket_size_msec=self.BUCKET_5M_MS,
+                ),
+                r.ts().range(
+                    price_key,
+                    bucket_start,
+                    bucket_end,
+                    aggregation_type="last",
+                    bucket_size_msec=self.BUCKET_5M_MS,
+                ),
+                r.ts().range(
+                    price_key,
+                    bucket_start,
+                    bucket_end,
+                    aggregation_type="max",
+                    bucket_size_msec=self.BUCKET_5M_MS,
+                ),
+                r.ts().range(
+                    price_key,
+                    bucket_start,
+                    bucket_end,
+                    aggregation_type="min",
+                    bucket_size_msec=self.BUCKET_5M_MS,
+                ),
+                r.ts().range(
+                    vol_key,
+                    bucket_start,
+                    bucket_end,
+                    aggregation_type="min",
+                    bucket_size_msec=self.BUCKET_5M_MS,
+                ),
+                r.ts().range(
+                    vol_key,
+                    bucket_start,
+                    bucket_end,
+                    aggregation_type="max",
+                    bucket_size_msec=self.BUCKET_5M_MS,
+                ),
+                r.ts().range(
+                    price_key,
+                    bucket_start,
+                    bucket_end,
+                    aggregation_type="count",
+                    bucket_size_msec=self.BUCKET_5M_MS,
+                ),
             )
         except ResponseError as e:
             if "key does not exist" in str(e).lower():
@@ -555,7 +676,9 @@ class RedisTimeSeries:
             tick_keys = await r.ts().queryindex(["type=tick", "field=price"])
             if tick_keys:
                 for key in tick_keys:
-                    key_str = key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                    key_str = (
+                        key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                    )
                     if key_str.endswith(":tick:price"):
                         symbol = key_str[:-11]
                         keys.append(symbol)
@@ -566,7 +689,9 @@ class RedisTimeSeries:
             try:
                 tick_keys = await r.keys("*:tick:price")
                 for key in tick_keys:
-                    key_str = key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                    key_str = (
+                        key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                    )
                     if key_str.endswith(":tick:price"):
                         symbol = key_str[:-11]
                         keys.append(symbol)
@@ -584,7 +709,9 @@ class RedisTimeSeries:
             close_keys = await r.ts().queryindex(["type=5m", "field=close"])
             if close_keys:
                 for key in close_keys:
-                    key_str = key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                    key_str = (
+                        key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                    )
                     if key_str.endswith(":5m:close"):
                         symbol = key_str[:-9]
                         keys.append(symbol)

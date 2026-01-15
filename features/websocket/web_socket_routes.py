@@ -8,7 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config.database_config import get_database_engine
 from config.redis_config import get_redis
 from features.instruments.instrument_service import get_instrument_by_symbol
-from features.marketdata.marketdata_service import get_price_history_daily, get_previous_closes_by_exchange
+from features.marketdata.marketdata_service import (
+    get_price_history_daily,
+    get_previous_closes_by_exchange,
+)
 from features.exchange.exchange_service import get_exchange_by_id
 from services.websocket_manager import WebSocketManager, get_websocket_manager
 from services.redis_timeseries import RedisTimeSeries, get_redis_timeseries
@@ -46,7 +49,9 @@ async def websocket_endpoint(
                     hour=0, minute=0, second=0, microsecond=0
                 )
                 start_ts = int(today_start.timestamp() * 1000)
-                daily_candle = await redis_ts.get_current_daily_candle(channel, start_ts)
+                daily_candle = await redis_ts.get_current_daily_candle(
+                    channel, start_ts
+                )
                 open_price = daily_candle.get("open") if daily_candle else None
 
                 prev_close = None
@@ -56,7 +61,9 @@ async def websocket_endpoint(
                 async with AsyncSession(engine) as session:
                     instrument = await get_instrument_by_symbol(session, channel)
                     if instrument:
-                        exchange = await get_exchange_by_id(session, instrument.exchange_id)
+                        exchange = await get_exchange_by_id(
+                            session, instrument.exchange_id
+                        )
                         if exchange:
                             redis = get_redis()
                             cache_key = f"prev_close:{exchange.code}"
@@ -77,18 +84,20 @@ async def websocket_endpoint(
 
                             # NEW: Try fetching from Hash Map (O(1)) if not found in list
                             if not found_in_cache and redis:
-                                 hash_key = f"prev_close_map:{exchange.code}"
-                                 price_str = await redis.hget(hash_key, channel)
-                                 if price_str:
-                                     try:
-                                         prev_close = float(price_str)
-                                         found_in_cache = True
-                                     except:
-                                         pass
+                                hash_key = f"prev_close_map:{exchange.code}"
+                                price_str = await redis.hget(hash_key, channel)
+                                if price_str:
+                                    try:
+                                        prev_close = float(price_str)
+                                        found_in_cache = True
+                                    except:
+                                        pass
 
                             if not found_in_cache:
                                 # Fallback to service
-                                pcs = await get_previous_closes_by_exchange(session, exchange.code)
+                                pcs = await get_previous_closes_by_exchange(
+                                    session, exchange.code
+                                )
                                 for item in pcs:
                                     if item.symbol == channel:
                                         prev_close = item.price
@@ -101,7 +110,7 @@ async def websocket_endpoint(
                         "symbol": channel,
                         "prev_close": prev_close if prev_close is not None else -1,
                         "ltp": ltp if ltp is not None else -1,
-                        "open": open_price if open_price is not None else -1
+                        "open": open_price if open_price is not None else -1,
                     }
                 )
 
