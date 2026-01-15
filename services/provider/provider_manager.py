@@ -43,15 +43,15 @@ class ProviderManager:
         self.exchange_to_provider: Dict[int, str] = {}  # exchange_id -> provider_code
         self.exchange_id_to_code: Dict[
             int, str
-        ] = {}  # exchange_id -> exchange_code ("NSE", "BSE")
+        ]  # exchange_id -> exchange_code ("NSE", "BSE")
         self.symbol_to_provider: Dict[
             str, str
-        ] = {}  # internal symbol (provider search symbol currently) -> provider_code
+        ]  # internal symbol (provider search symbol currently) -> provider_code
         self.symbol_to_exchange: Dict[str, int] = {}  # internal symbol -> exchange_id
 
         self.symbol_to_instrument_type: Dict[
             str, int
-        ] = {}  # internal symbol -> instrument_type_id
+        ]  # internal symbol -> instrument_type_id
         self._initialized = False
 
         # Redis Mapping Helper
@@ -204,8 +204,9 @@ class ProviderManager:
         for provider_code, provider_symbols in symbols_by_provider.items():
             if provider_code in self.providers and self.providers[provider_code]:
                 try:
-                    print("Subscribing to", provider_code, provider_symbols)
-                    self.providers[provider_code].subscribe_symbols(provider_symbols)
+                    logger.debug(f"Subscribing to {provider_code} {provider_symbols}")
+                    await self.providers[provider_code].subscribe_symbols(provider_symbols)
+
                     logger.info(
                         f"Subscribed to {len(provider_symbols)} symbols on {provider_code}"
                     )
@@ -233,7 +234,8 @@ class ProviderManager:
         for provider_code, provider_symbols in symbols_by_provider.items():
             if provider_code in self.providers and self.providers[provider_code]:
                 try:
-                    self.providers[provider_code].unsubscribe_symbols(provider_symbols)
+                    await self.providers[provider_code].unsubscribe_symbols(provider_symbols)
+
                     logger.info(
                         f"Unsubscribed from {len(provider_symbols)} symbols on {provider_code}"
                     )
@@ -245,7 +247,7 @@ class ProviderManager:
         """Callback for when websocket subscriptions change."""
         try:
             loop = asyncio.get_running_loop()
-            loop.call_soon_threadsafe(self._subscription_change_event.set)
+            loop.call_soon_threadsafe(lambda: self._subscription_change_event.set())
         except RuntimeError:
             pass  # No running loop
 

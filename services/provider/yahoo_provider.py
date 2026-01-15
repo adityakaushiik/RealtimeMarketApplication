@@ -105,6 +105,13 @@ class YahooFinanceProvider(BaseMarketDataProvider):
 
     async def subscribe_symbols(self, symbols: list[str]):
         """Add new symbols to existing Yahoo Finance subscription."""
+        if not self.websocket_connection:
+            logger.info(
+                f"Yahoo Finance not connected. Connecting with {len(symbols)} symbols."
+            )
+            await self.connect_websocket(symbols)
+            return
+
         if self.websocket_connection and symbols:
             try:
                 await self.websocket_connection.subscribe(symbols)

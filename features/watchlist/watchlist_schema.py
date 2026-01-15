@@ -20,6 +20,7 @@ class WatchlistItemInDb(WatchlistItemBase):
 class WatchlistBase(BaseModelPy):
     name: str
     show_on_dashboard: bool
+    exchange_id: int
 
 
 class WatchlistCreate(WatchlistBase):

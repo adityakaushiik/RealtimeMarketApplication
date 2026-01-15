@@ -45,7 +45,7 @@ class BaseMarketDataProvider(ABC):
         pass
 
     @abstractmethod
-    def subscribe_symbols(self, symbols: list[str]):
+    async def subscribe_symbols(self, symbols: list[str]):
         """
         Add symbols to existing subscription.
 
@@ -55,7 +55,7 @@ class BaseMarketDataProvider(ABC):
         pass
 
     @abstractmethod
-    def unsubscribe_symbols(self, symbols: list[str]):
+    async def unsubscribe_symbols(self, symbols: list[str]):
         """
         Remove symbols from subscription.
 

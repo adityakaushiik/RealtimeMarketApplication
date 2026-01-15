@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 from features.instruments import instrument_service
 from features.instruments.instrument_schema import InstrumentInDb
 from models.watchlist import Watchlist, WatchlistItem
+from models.instruments import Instrument
 from features.watchlist.watchlist_schema import (
     WatchlistCreate,
     WatchlistUpdate,
@@ -26,6 +27,7 @@ async def create_watchlist(
         user_id=user_id,
         name=watchlist_data.name,
         show_on_dashboard=watchlist_data.show_on_dashboard,
+        exchange_id=watchlist_data.exchange_id,
     )
     session.add(new_watchlist)
     await session.commit()
@@ -36,6 +38,7 @@ async def create_watchlist(
         user_id=new_watchlist.user_id,
         name=new_watchlist.name,
         show_on_dashboard=new_watchlist.show_on_dashboard,
+        exchange_id=new_watchlist.exchange_id,
         items=[],
     )
 
@@ -58,6 +61,7 @@ async def get_user_watchlists(
             user_id=wl.user_id,
             name=wl.name,
             show_on_dashboard=wl.show_on_dashboard,
+            exchange_id=wl.exchange_id,
             items=await get_instruments_from_items(session, wl.items),
         )
         for wl in watchlists
@@ -90,6 +94,7 @@ async def get_watchlist_by_id(
         user_id=watchlist.user_id,
         name=watchlist.name,
         show_on_dashboard=watchlist.show_on_dashboard,
+        exchange_id=watchlist.exchange_id,
         items=instruments,
     )
 
@@ -121,7 +126,8 @@ async def update_watchlist(
         id=watchlist.id,
         user_id=watchlist.user_id,
         name=watchlist.name,
-        show_on_dashboard=True,
+        show_on_dashboard=watchlist.show_on_dashboard,
+        exchange_id=watchlist.exchange_id,
         items=await get_instruments_from_items(session, watchlist.items),
     )
 
@@ -176,6 +182,15 @@ async def add_item_to_watchlist(
         # Already exists, return it or raise error?
         # Let's return existing one to be idempotent-ish or handle in route
         return None
+
+    # Ensure the instrument belongs to the watchlist's exchange
+    instrument = await instrument_service.get_instrument_by_id(
+        session, item_data.instrument_id
+    )
+
+
+    if not instrument or instrument.exchange_id != watchlist.exchange_id:
+        return None  # or raise an error
 
     new_item = WatchlistItem(
         watchlist_id=watchlist_id,
@@ -251,6 +266,7 @@ async def set_watchlist_show_on_dashboard(
         user_id=watchlist.user_id,
         name=watchlist.name,
         show_on_dashboard=watchlist.show_on_dashboard,
+        exchange_id=watchlist.exchange_id,
         items=instruments,
     )
 
