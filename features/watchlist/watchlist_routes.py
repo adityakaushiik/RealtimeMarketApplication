@@ -106,7 +106,7 @@ async def update_watchlist(
 
 @watchlist_router.delete(
     "/{watchlist_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=status.HTTP_200_OK,
 )
 async def delete_watchlist(
     watchlist_id: int,
@@ -121,7 +121,7 @@ async def delete_watchlist(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Watchlist not found",
         )
-    return None
+    return {"message": "Watchlist deleted successfully"}
 
 
 @watchlist_router.post(
@@ -160,7 +160,7 @@ async def add_item_to_watchlist(
 
 @watchlist_router.delete(
     "/{watchlist_id}/items/{instrument_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=status.HTTP_200_OK,
 )
 async def remove_item_from_watchlist(
     watchlist_id: int,
@@ -178,7 +178,7 @@ async def remove_item_from_watchlist(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Item not found in watchlist",
         )
-    return None
+    return {"message": "Item removed from watchlist successfully"}
 
 
 @watchlist_router.put(

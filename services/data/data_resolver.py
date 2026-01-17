@@ -52,6 +52,12 @@ class DataResolver:
 
             now = datetime.now(timezone.utc)
 
+            # Ensure we don't go back further than 24 hours
+            cutoff_time = now - timedelta(hours=24)
+            if last_save_dt < cutoff_time:
+                logger.info(f"Adjusting last_save_dt from {last_save_dt} to {cutoff_time} (24h window)")
+                last_save_dt = cutoff_time
+
             if last_save_dt >= now:
                 logger.info(
                     "Last save time is in the future or current. No gaps to check."
@@ -332,7 +338,9 @@ class DataResolver:
                 # OR where any of the price fields (open, high, low, close) are 0 or NULL
                 # AND datetime is in the past (less than current UTC time)
                 # AND resolve_tries < 3
+                # Modified: Restrict to last 24 hours
                 now = datetime.now(timezone.utc)
+                cutoff_time = now - timedelta(hours=24)
 
                 # Find min and max datetime for each instrument that needs resolution
                 stmt = (
@@ -342,6 +350,7 @@ class DataResolver:
                         func.max(model.datetime).label("max_dt"),
                     )
                     .where(
+                        model.datetime >= cutoff_time,  # Enforce 24h window restriction
                         model.datetime < now,
                         model.resolve_tries < 3,
                         (model.resolve_required.is_(True))

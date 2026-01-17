@@ -73,46 +73,65 @@ async def lifespan(app: FastAPI):
     global subscriber_task, live_data_ingestion, data_broadcast, data_saver, provider_manager, scheduled_jobs, gap_detection_service
 
     # data = await parse_csv_file(file_path=r"C:\Users\tech\OneDrive\Documents\BSE_INSTRUMENTS_CSV1111.csv")
-    # print(data)
+    #
     # async for session in get_db_session():
+    #     session.expire_on_commit = False  # Prevent MissingGreenlet error
     #
-    #     required_symbols = {"ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE",
-    #                         "BAJAJFINSV", "BEL", "BPCL", "BHARTIARTL", "BRITANNIA", "CIPLA", "COALINDIA", "DRREDDY",
-    #                         "EICHERMOT", "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE", "HEROMOTOCO"}
-    #     print(required_symbols)
+    #     # Load existing instruments and mappings once
+    #     instruments = await session.execute(
+    #         select(Instrument).where(
+    #             Instrument.exchange_id == 8,
+    #             Instrument.instrument_type_id == 1
+    #         )
+    #     )
+    #     instruments = instruments.scalars().all()
+    #
+    #     mappings = await session.execute(
+    #         select(ProviderInstrumentMapping).where(
+    #             ProviderInstrumentMapping.provider_id == 2
+    #         )
+    #     )
+    #     mappings = mappings.scalars().all()
+    #
+    #     # Make quick lookup: symbol → instrument
+    #     symbol_to_inst = {inst.symbol.replace(".BSE", ""): inst for inst in instruments}
+    #
+    #     # Make quick lookup: instrument_id → mapping
+    #     inst_id_to_mapping = {m.instrument_id: m for m in mappings}
+    #
+    #     updated_count = 0
+    #
     #     for row in data:
-    #         symbol = row.get("UNDERLYING_SYMBOL")
-    #         print(symbol)
-    #         if symbol in required_symbols:
+    #         symbol = row.get("SEM_TRADING_SYMBOL")
+    #         new_search_code = row.get("SEM_SMST_SECURITY_ID")
     #
-    #             instrument = await session.execute(
-    #                 select(Instrument).where(Instrument.symbol == symbol + ".BSE")
-    #             )
-    #             instrument = instrument.scalars().first()
-    #             if instrument:
+    #         if not symbol or not new_search_code:
+    #             continue
     #
-    #                 mapping = await session.execute(
-    #                     select(ProviderInstrumentMapping).where(
-    #                         ProviderInstrumentMapping.instrument_id == instrument.id,
-    #                         ProviderInstrumentMapping.provider_id == 2 # Dhan provider ID
-    #                     )
-    #                 )
-    #                 mapping = mapping.scalars().first()
-    #                 if not mapping:
-    #                     new_mapping = ProviderInstrumentMapping(
-    #                         provider_id=2,
-    #                         instrument_id=instrument.id,
-    #                         provider_instrument_search_code=row.get("SEM_SMST_SECURITY_ID"),
-    #                         is_active=True
-    #                     )
-    #                     session.add(new_mapping)
-    #                     await session.commit()
-    #                     logger.info(f"Added mapping for {symbol} to Dhan provider.")
-    #                 elif mapping:
-    #                     mapping.provider_instrument_search_code = row.get("SECURITY_ID")
-    #                     mapping.is_active = True
-    #                     await session.commit()
-    #                     logger.info(f"Updated mapping for {symbol} to Dhan provider.")
+    #         # Find instrument by symbol
+    #         inst = symbol_to_inst.get(symbol)
+    #         if not inst:
+    #             print(f"Skipping - no instrument found for: {symbol}")
+    #             continue
+    #
+    #         # Find existing mapping
+    #         mapping = inst_id_to_mapping.get(inst.id)
+    #         if not mapping:
+    #             print(f"No mapping exists for {symbol} (id={inst.id}) → skipping")
+    #             continue
+    #
+    #         # Update only if different
+    #         if mapping.provider_instrument_search_code != new_search_code:
+    #             mapping.provider_instrument_search_code = new_search_code
+    #             updated_count += 1
+    #             print(f"Updated {symbol} → {new_search_code}")
+    #
+    #     # One single commit at the end
+    #     if updated_count > 0:
+    #         await session.commit()
+    #         print(f"\nSuccessfully updated {updated_count} mappings.")
+    #     else:
+    #         print("\nNo updates needed - all search codes already match.")
     #
     # return
 

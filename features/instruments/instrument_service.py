@@ -288,6 +288,7 @@ async def search_instruments(
     query: str,
     only_active: bool = True,
     exchange_id: int | None = None,
+    limit: int = 10,
 ) -> list[InstrumentInDb]:
     """Search instruments by symbol or name"""
     stmt = select(Instrument).where(
@@ -299,6 +300,9 @@ async def search_instruments(
 
     if only_active:
         stmt = stmt.where(Instrument.is_active == True)
+
+    if limit:
+        stmt = stmt.limit(limit)
 
     result = await session.execute(stmt)
     instruments = result.scalars().all()

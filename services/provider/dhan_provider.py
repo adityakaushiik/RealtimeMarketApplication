@@ -128,13 +128,14 @@ class DhanProvider(BaseMarketDataProvider):
                 headers = {
                     "access-token": self.access_token,
                     "dhanClientId": self.client_id,
-                    "Content-Type": "application/json",
                     "Accept": "application/json",
                 }
 
                 # Make request
+                # Using requests.post without json/data to strictly follow documentation/CURL
+                # which implies no body and no Content-Type
                 response = await asyncio.to_thread(
-                    requests.post, url, headers=headers, json={}
+                    requests.post, url, headers=headers
                 )
 
                 if response.ok:
@@ -1001,6 +1002,7 @@ class DhanProvider(BaseMarketDataProvider):
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         timeframe: str = "1d",
+        duration_in_days: int = 365,
     ) -> dict[str, list[PriceHistoryDaily]]:
         """
         Fetch daily price history for given instruments.
@@ -1010,7 +1012,7 @@ class DhanProvider(BaseMarketDataProvider):
         if not end_date:
             end_date = datetime.now(timezone.utc)
         if not start_date:
-            start_date = end_date - timedelta(days=30)
+            start_date = end_date - timedelta(days=duration_in_days)
 
         # Dhan expects dates in IST (Asia/Kolkata)
         ist_tz = pytz.timezone("Asia/Kolkata")

@@ -69,7 +69,7 @@ async def update_suggestion_type(
     return updated_type
 
 
-@router.delete("/types/{type_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/types/{type_id}", status_code=status.HTTP_200_OK)
 async def delete_suggestion_type(
     type_id: int,
     session: AsyncSession = Depends(get_db_session),
@@ -82,7 +82,7 @@ async def delete_suggestion_type(
     success = await suggestion_service.delete_suggestion_type(session, type_id)
     if not success:
         raise HTTPException(status_code=404, detail="Suggestion type not found")
-    return None
+    return {"message": "Suggestion type deleted successfully"}
 
 
 # Suggestions Routes
@@ -158,7 +158,7 @@ async def update_suggestion(
     return updated_suggestion
 
 
-@router.delete("/{suggestion_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{suggestion_id}", status_code=status.HTTP_200_OK)
 async def delete_suggestion(
     suggestion_id: int,
     session: AsyncSession = Depends(get_db_session),
@@ -175,4 +175,4 @@ async def delete_suggestion(
         )
 
     await suggestion_service.delete_suggestion(session, suggestion_id)
-    return None
+    return {"message": "Suggestion deleted successfully"}

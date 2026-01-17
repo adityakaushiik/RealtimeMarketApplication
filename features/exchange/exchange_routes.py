@@ -100,7 +100,7 @@ async def update_exchange(
 
 @exchange_router.delete(
     "/{exchange_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=status.HTTP_200_OK,
 )
 async def delete_exchange(
     exchange_id: int,
@@ -113,7 +113,7 @@ async def delete_exchange(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Exchange not found"
         )
-    return None
+    return {"message": "Exchange deleted successfully"}
 
 
 # Exchange-Provider Mapping routes
@@ -193,7 +193,7 @@ async def update_provider_exchange_mapping(
 
 @exchange_router.delete(
     "/{exchange_id}/providers/{provider_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=status.HTTP_200_OK,
 )
 async def remove_provider_from_exchange(
     exchange_id: int,
@@ -207,7 +207,7 @@ async def remove_provider_from_exchange(
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="Mapping not found")
-    return None
+    return {"message": "Provider removed from exchange successfully"}
 
 
 # Exchange Holiday routes
@@ -261,7 +261,7 @@ async def update_exchange_holiday(
 
 @exchange_router.delete(
     "/holidays/{holiday_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
+    status_code=status.HTTP_200_OK,
 )
 async def delete_exchange_holiday(
     holiday_id: int,
@@ -275,7 +275,7 @@ async def delete_exchange_holiday(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Exchange holiday not found",
         )
-    return None
+    return {"message": "Exchange holiday deleted successfully"}
 
 
 @exchange_router.get(

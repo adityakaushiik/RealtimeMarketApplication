@@ -256,6 +256,7 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         timeframe: str = "1d",
+        duration_in_days: int = 365,
     ) -> dict[str, list[PriceHistoryDaily]]:
         """
         Fetch daily prices for the specified date range.
@@ -270,7 +271,7 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         if not end_date:
             end_date = datetime.now(timezone.utc)
         if not start_date:
-            start_date = end_date - timedelta(days=365)
+            start_date = end_date - timedelta(days=duration_in_days)
 
         try:
             # Run blocking yfinance download in a thread
