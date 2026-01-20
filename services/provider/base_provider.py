@@ -5,7 +5,7 @@ All providers (Yahoo Finance, Dhan, etc.) must implement this interface.
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Callable, Optional, Set, List
+from typing import Optional, Set, List
 
 from models import Instrument, PriceHistoryIntraday, PriceHistoryDaily
 

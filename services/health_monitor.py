@@ -10,8 +10,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select, func, text
 from config.database_config import get_db_session
 from config.redis_config import get_redis
-from config.logger import logger
-from models import PriceHistoryIntraday, PriceHistoryDaily, Instrument
+from models import PriceHistoryIntraday
 
 
 @dataclass

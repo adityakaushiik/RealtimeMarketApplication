@@ -45,9 +45,7 @@ class Exchange(Base, BaseMixin):
     holidays: Mapped[list["ExchangeHoliday"]] = relationship(
         back_populates="exchange", cascade="all, delete-orphan"
     )
-    watchlist : Mapped[list["Watchlist"]] = relationship(
-        back_populates="exchange"
-    )
+    watchlist: Mapped[list["Watchlist"]] = relationship(back_populates="exchange")
 
     # Transient attributes for runtime logic
     start_time: int = 0

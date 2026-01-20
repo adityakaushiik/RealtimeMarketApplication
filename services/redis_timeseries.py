@@ -5,7 +5,6 @@ from config.redis_config import get_redis
 from config.logger import logger
 from redis.exceptions import ResponseError
 
-from utils.common_constants import DataBroadcastFormat
 
 
 class RedisTimeSeries:

@@ -31,9 +31,9 @@ class ScheduledJobs:
         self._running = True
         logger.info("Starting scheduled jobs...")
 
-        # A4: Periodic gap detection every 15 minutes
+        # A4: Periodic gap detection every 60 minutes
         self._tasks["gap_detection"] = asyncio.create_task(
-            self._run_periodic(self.periodic_gap_detection, interval_minutes=15)
+            self._run_periodic(self.periodic_gap_detection, interval_minutes=60)
         )
 
         # # A2: Alert for exceeded retry threshold every 30 minutes
@@ -97,7 +97,9 @@ class ScheduledJobs:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in scheduled job {job_func.__name__}: {e}", exc_info=True)
+                logger.error(
+                    f"Error in scheduled job {job_func.__name__}: {e}", exc_info=True
+                )
                 # Avoid tight loop in case of error
                 await asyncio.sleep(60)
 
@@ -122,7 +124,9 @@ class ScheduledJobs:
                         data_creation.add_exchange(exchange=exchange)
 
                     await data_creation.start_data_creation(target_date=target_date)
-                    logger.info(f"✅ successfully created future records for {target_date}")
+                    logger.info(
+                        f"✅ successfully created future records for {target_date}"
+                    )
                 finally:
                     # Async context manager mostly handles close, but explicit check if needed.
                     # With 'async for', session is yielded then closed.

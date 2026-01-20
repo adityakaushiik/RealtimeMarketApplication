@@ -28,7 +28,7 @@ class Watchlist(Base, BaseMixin):
     show_on_dashboard: Mapped[bool] = mapped_column(nullable=True, default=False)
 
     user: Mapped["User"] = relationship(back_populates="watchlists")
-    exchange : Mapped["Exchange"] = relationship(back_populates="watchlist")
+    exchange: Mapped["Exchange"] = relationship(back_populates="watchlist")
     items: Mapped[list["WatchlistItem"]] = relationship(
         back_populates="watchlist", cascade="all, delete-orphan"
     )

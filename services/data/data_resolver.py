@@ -1,6 +1,7 @@
+import asyncio
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
-from typing import Type, List, Dict, Tuple, Any
+from typing import Type, List
 import pytz
 
 from sqlalchemy import select, update, text, func
@@ -11,7 +12,19 @@ from config.logger import logger
 from config.redis_config import get_redis
 from models import Instrument, PriceHistoryIntraday, PriceHistoryDaily
 from services.provider.provider_manager import ProviderManager
-from utils.data_validation import retry_with_backoff, validate_ohlc
+from services.redis_timeseries import get_redis_timeseries
+from utils.data_validation import retry_with_backoff
+
+
+def _get_today_boundary_utc(exchange_timezone: str) -> datetime:
+    """
+    Get the start of "today" in exchange timezone, converted to UTC.
+    Used to determine what data should go to Redis vs DB.
+    """
+    tz = pytz.timezone(exchange_timezone or "UTC")
+    now_local = datetime.now(tz)
+    today_start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return today_start_local.astimezone(timezone.utc)
 
 
 class DataResolver:
@@ -22,40 +35,58 @@ class DataResolver:
 
     def __init__(self, provider_manager: ProviderManager):
         self.provider_manager = provider_manager
+        self._lock = asyncio.Lock()  # Ensure only one resolution task runs at a time
 
     async def resolve_all(self):
         """Resolve both intraday and daily prices."""
-        await self.resolve_intraday_prices()
-        await self.resolve_daily_prices()
+        if self._lock.locked():
+            logger.warning("Resolution task already running. Skipping resolve_all.")
+            return
+
+        async with self._lock:
+            # Call internal logic directly to avoid deadlock
+            await self._resolve_prices(PriceHistoryIntraday, "get_intraday_prices")
+
+            await self._resolve_prices(PriceHistoryDaily, "get_daily_prices")
+            await self._aggregate_intraday_to_daily_today()
 
     async def check_and_fill_gaps(self):
         """
         Checks for gaps in data updates since the last save and marks existing records
         for resolution.
         """
-
-        redis = get_redis()
-        if not redis:
-            logger.warning("Redis not available for gap check")
+        if self._lock.locked():
+            logger.warning("Resolution task already running. Skipping gap check.")
             return
+
+        async with self._lock:
+            redis = get_redis()
+            if not redis:
+                logger.warning("Redis not available for gap check")
+                return
 
         try:
             last_save_ts_str = await redis.get("last_save_time:5m")
             if not last_save_ts_str:
-                logger.info("No last_save_time found in Redis. Skipping gap check.")
-                # Even if no gap check, we should try to resolve any pending records
-                await self.resolve_intraday_prices()
-                return
-
-            last_save_ts = int(last_save_ts_str)
-            last_save_dt = datetime.fromtimestamp(last_save_ts / 1000, tz=timezone.utc)
+                logger.info(
+                    "No last_save_time found in Redis. Defaulting to 24 hour lookback for gap check."
+                )
+                # Default to 24 hours ago if no previous save time exists
+                last_save_dt = datetime.now(timezone.utc) - timedelta(hours=24)
+            else:
+                last_save_ts = int(last_save_ts_str)
+                last_save_dt = datetime.fromtimestamp(
+                    last_save_ts / 1000, tz=timezone.utc
+                )
 
             now = datetime.now(timezone.utc)
 
             # Ensure we don't go back further than 24 hours
             cutoff_time = now - timedelta(hours=24)
             if last_save_dt < cutoff_time:
-                logger.info(f"Adjusting last_save_dt from {last_save_dt} to {cutoff_time} (24h window)")
+                logger.info(
+                    f"Adjusting last_save_dt from {last_save_dt} to {cutoff_time} (24h window)"
+                )
                 last_save_dt = cutoff_time
 
             if last_save_dt >= now:
@@ -82,17 +113,19 @@ class DataResolver:
 
                 # Update existing records in this time range to resolve_required=True
                 # We assume records were pre-created by DataCreationService
-                # Also increment resolve_tries
+                # NOTE: Do NOT increment resolve_tries here - that should only happen
+                # after an actual failed resolution attempt in _resolve_prices
                 stmt = (
                     update(PriceHistoryIntraday)
                     .where(
                         PriceHistoryIntraday.datetime > last_save_dt,
                         PriceHistoryIntraday.datetime < now,
                         PriceHistoryIntraday.instrument_id.in_(instrument_ids),
+                        # Only mark records that don't already have valid data
+                        (PriceHistoryIntraday.close.is_(None)) | (PriceHistoryIntraday.close == 0),
                     )
                     .values(
                         resolve_required=True,
-                        resolve_tries=PriceHistoryIntraday.resolve_tries + 1,
                     )
                 )
 
@@ -108,31 +141,39 @@ class DataResolver:
                     logger.info("No records found to mark for resolution.")
 
             # Trigger resolution for the newly inserted records (and any old ones)
-            await self.resolve_intraday_prices()
+            # Call internal method directly to avoid deadlock (asyncio.Lock is not reentrant)
+            await self._resolve_prices(PriceHistoryIntraday, "get_intraday_prices")
 
         except Exception as e:
             logger.error(f"Error in check_and_fill_gaps: {e}", exc_info=True)
 
     async def resolve_intraday_prices(self):
         """Resolve intraday prices marked as requiring resolution."""
-        await self._resolve_prices(PriceHistoryIntraday, "get_intraday_prices")
+        if self._lock.locked():
+            logger.warning(
+                "Resolution task already running. Skipping resolve_intraday_prices."
+            )
+            return
+
+        async with self._lock:
+            await self._resolve_prices(PriceHistoryIntraday, "get_intraday_prices")
 
     async def resolve_daily_prices(self):
         """
         Resolve daily prices marked as requiring resolution.
-        For today's records, we aggregate from intraday data because some providers
-        (like Dhan) don't provide daily candles for the current day.
         """
-        # 1. Resolve historical daily prices (yesterday and before) normally
-        # We can filter for records strictly before today if needed, but _resolve_prices
-        # will just try to fetch whatever is marked.
-        # However, to be efficient and handle the "today" case specifically, we should:
+        if self._lock.locked():
+            logger.warning(
+                "Resolution task already running. Skipping resolve_daily_prices."
+            )
+            return
 
-        # A. Resolve standard daily prices (likely historical)
-        await self._resolve_prices(PriceHistoryDaily, "get_daily_prices")
+        async with self._lock:
+            # A. Resolve standard daily prices (likely historical)
+            await self._resolve_prices(PriceHistoryDaily, "get_daily_prices")
 
-        # B. Aggregate intraday for today's daily record
-        await self._aggregate_intraday_to_daily_today()
+            # B. Aggregate intraday for today's daily record
+            await self._aggregate_intraday_to_daily_today()
 
     async def _aggregate_intraday_to_daily_today(self):
         """
@@ -338,9 +379,11 @@ class DataResolver:
                 # OR where any of the price fields (open, high, low, close) are 0 or NULL
                 # AND datetime is in the past (less than current UTC time)
                 # AND resolve_tries < 3
-                # Modified: Restrict to last 24 hours
+                # Modified: Restrict to last 24 hours AND apply 60 minute buffer zone
+                # The buffer zone ensures we don't try to resolve data that is currently in Redis waiting to be saved.
                 now = datetime.now(timezone.utc)
                 cutoff_time = now - timedelta(hours=24)
+                buffer_zone = now - timedelta(minutes=60)
 
                 # Find min and max datetime for each instrument that needs resolution
                 stmt = (
@@ -351,7 +394,8 @@ class DataResolver:
                     )
                     .where(
                         model.datetime >= cutoff_time,  # Enforce 24h window restriction
-                        model.datetime < now,
+                        model.datetime
+                        < buffer_zone,  # Enforce 60m buffer zone (Strategy Option 1)
                         model.resolve_tries < 3,
                         (model.resolve_required.is_(True))
                         | (model.open == 0)
@@ -539,90 +583,140 @@ class DataResolver:
                     if not all_records:
                         continue
 
-                    # Prepare data for bulk operations
-                    # We need to check which records exist to decide between UPDATE and INSERT
-                    # For 7200 records, checking existence might be heavy if done one by one.
-                    # We can try to use Postgres ON CONFLICT if we are sure about unique constraints.
-                    # But to be safe and generic (and since we are resolving gaps), we can try a bulk approach.
+                    # NEW APPROACH: Split records into "today" (Redis) and "historical" (DB)
+                    # Today's data goes to Redis TimeSeries for fast access
+                    # Historical data goes directly to DB
 
-                    # Strategy:
-                    # 1. Extract all (instrument_id, datetime) pairs
-                    # 2. Query DB to find which ones exist
-                    # 3. Split into updates and inserts
-                    # 4. Execute bulk update and bulk insert
+                    # Get today boundary for this timezone
+                    today_boundary_utc = _get_today_boundary_utc(tz_name)
 
-                    # However, querying 7200 pairs might be slow too.
-                    # Let's try to use the `resolve_required` flag.
-                    # We assume we are updating records where `resolve_required=True` OR inserting new ones.
-                    # But we might be updating records that exist but resolve_required=False (re-fetching).
+                    # Split records
+                    today_records = []
+                    historical_records = []
 
-                    # Let's use a temporary table or VALUES clause to check existence efficiently?
-                    # Or just use `dialects.postgresql.insert` with `on_conflict_do_update`.
-                    # Since we are on Neon (Postgres), this is the best way.
-                    # We assume there is a UNIQUE constraint on (instrument_id, datetime).
-                    # If not, we might get duplicates on INSERT.
+                    # Build symbol to instrument map for Redis keys
+                    id_to_symbol = {i.id: i.symbol for i in provider_instruments}
 
-                    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-                    # Convert objects to dicts and deduplicate
-                    # We use a dict keyed by (instrument_id, datetime) to ensure uniqueness within the batch
-                    # This prevents "ON CONFLICT DO UPDATE command cannot affect row a second time" error
-                    unique_records = {}
                     for r in all_records:
-                        key = (r.instrument_id, r.datetime)
-                        d = {
-                            "instrument_id": r.instrument_id,
-                            "datetime": r.datetime,
-                            "open": r.open,
-                            "high": r.high,
-                            "low": r.low,
-                            "close": r.close,
-                            "volume": r.volume,
-                            "resolve_required": False,
-                        }
-                        if hasattr(r, "adj_close"):
-                            d["adj_close"] = r.adj_close
-                        unique_records[key] = d
+                        # Ensure datetime is timezone-aware
+                        r_dt = r.datetime
+                        if r_dt.tzinfo is None:
+                            r_dt = r_dt.replace(tzinfo=timezone.utc)
 
-                    records_dicts = list(unique_records.values())
+                        if r_dt >= today_boundary_utc:
+                            today_records.append(r)
+                        else:
+                            historical_records.append(r)
 
-                    # Sort records by instrument_id and datetime to prevent deadlocks
-                    records_dicts.sort(
-                        key=lambda x: (x["instrument_id"], x["datetime"])
+                    logger.info(
+                        f"🔍 Split records: {len(today_records)} for Redis (today), "
+                        f"{len(historical_records)} for DB (historical)"
                     )
 
-                    # Chunking to avoid huge statements
-                    chunk_size = 1000
-                    total_updated = 0
+                    # ========== SAVE TODAY'S DATA TO REDIS ==========
+                    if today_records and model == PriceHistoryIntraday:
+                        try:
+                            redis_ts = get_redis_timeseries()
+                            redis_saved = 0
 
-                    for i in range(0, len(records_dicts), chunk_size):
-                        chunk = records_dicts[i : i + chunk_size]
+                            for r in today_records:
+                                symbol = id_to_symbol.get(r.instrument_id)
+                                if not symbol:
+                                    continue
 
-                        stmt = pg_insert(model).values(chunk)
+                                # Convert datetime to milliseconds
+                                r_dt = r.datetime
+                                if r_dt.tzinfo is None:
+                                    r_dt = r_dt.replace(tzinfo=timezone.utc)
+                                timestamp_ms = int(r_dt.timestamp() * 1000)
 
-                        # Define update columns
-                        update_dict = {
-                            "open": stmt.excluded.open,
-                            "high": stmt.excluded.high,
-                            "low": stmt.excluded.low,
-                            "close": stmt.excluded.close,
-                            "volume": stmt.excluded.volume,
-                            "resolve_required": False,
-                        }
-                        if "adj_close" in chunk[0]:
-                            update_dict["adj_close"] = stmt.excluded.adj_close
+                                # Use add_5m_candle to save to Redis TimeSeries
+                                await redis_ts.add_5m_candle(
+                                    symbol=symbol,
+                                    timestamp_ms=timestamp_ms,
+                                    open_price=r.open or 0,
+                                    high_price=r.high or 0,
+                                    low_price=r.low or 0,
+                                    close_price=r.close or 0,
+                                    volume=r.volume or 0,
+                                )
+                                redis_saved += 1
 
-                        # ON CONFLICT DO UPDATE
-                        # We need to specify the constraint.
-                        # If we don't know the name, we can specify index_elements.
-                        # Assuming (instrument_id, datetime) is unique.
-                        stmt = stmt.on_conflict_do_update(
-                            index_elements=["instrument_id", "datetime"],
-                            set_=update_dict,
+                            logger.info(
+                                f"📈 Saved {redis_saved} records to Redis TimeSeries for {provider_code}"
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Error saving to Redis TimeSeries: {e}", exc_info=True
+                            )
+                            # Fall back to saving to DB if Redis fails
+                            historical_records.extend(today_records)
+                            logger.warning(
+                                f"⚠️ Falling back to DB for {len(today_records)} today's records"
+                            )
+
+                    # ========== SAVE HISTORICAL DATA TO DB ==========
+                    if historical_records:
+                        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                        # Convert objects to dicts and deduplicate
+                        unique_records = {}
+                        for r in historical_records:
+                            key = (r.instrument_id, r.datetime)
+                            d = {
+                                "instrument_id": r.instrument_id,
+                                "datetime": r.datetime,
+                                "open": r.open,
+                                "high": r.high,
+                                "low": r.low,
+                                "close": r.close,
+                                "volume": r.volume,
+                                "resolve_required": False,
+                            }
+                            if hasattr(r, "adj_close"):
+                                d["adj_close"] = r.adj_close
+                            unique_records[key] = d
+
+                        records_dicts = list(unique_records.values())
+
+                        # Sort records by instrument_id and datetime to prevent deadlocks
+                        records_dicts.sort(
+                            key=lambda x: (x["instrument_id"], x["datetime"])
                         )
 
-                        result = await session.execute(stmt)
-                        total_updated += result.rowcount
+                        # Chunking to avoid huge statements
+                        chunk_size = 1000
+                        total_updated = 0
+
+                        for i in range(0, len(records_dicts), chunk_size):
+                            chunk = records_dicts[i : i + chunk_size]
+
+                            stmt = pg_insert(model).values(chunk)
+
+                            # Define update columns
+                            update_dict = {
+                                "open": stmt.excluded.open,
+                                "high": stmt.excluded.high,
+                                "low": stmt.excluded.low,
+                                "close": stmt.excluded.close,
+                                "volume": stmt.excluded.volume,
+                                "resolve_required": False,
+                            }
+                            if "adj_close" in chunk[0]:
+                                update_dict["adj_close"] = stmt.excluded.adj_close
+
+                            stmt = stmt.on_conflict_do_update(
+                                index_elements=["instrument_id", "datetime"],
+                                set_=update_dict,
+                            )
+
+                            result = await session.execute(stmt)
+                            total_updated += result.rowcount
+
+                        await session.commit()
+                        logger.info(
+                            f"🔍 Updated/Inserted {total_updated} historical records to DB for {provider_code}"
+                        )
 
                     # Increment resolve_tries for all records in the requested range that still require resolution
                     # This ensures that records for which no data was found are eventually ignored
@@ -637,20 +731,14 @@ class DataResolver:
                         .values(resolve_tries=model.resolve_tries + 1)
                     )
                     await session.execute(increment_stmt)
-
                     await session.commit()
-                    logger.info(
-                        f"🔍 Updated/Inserted {total_updated} records for {provider_code}"
-                    )
 
-                    # A1: Log records that remain unresolved after this batch
-                    expected_updates = len(records_dicts)
-                    if total_updated < expected_updates:
-                        unresolved = expected_updates - total_updated
-                        logger.warning(
-                            f"⚠️ {unresolved}/{expected_updates} records remain unresolved for {provider_code}. "
-                            f"Check for missing provider data or mapping issues."
-                        )
+                    # Log summary
+                    total_saved = len(today_records) + len(historical_records)
+                    logger.info(
+                        f"🔍 Resolution complete for {provider_code}: "
+                        f"{len(today_records)} to Redis, {len(historical_records)} to DB"
+                    )
 
             except Exception as e:
                 logger.error(
@@ -864,3 +952,55 @@ class DataResolver:
                 logger.error(
                     f"🔍 Error in resolve_specific_records: {e}", exc_info=True
                 )
+
+    async def _save_to_redis_timeseries(self, records: List[PriceHistoryIntraday]):
+        """
+        Save resolved PriceHistoryIntraday records to Redis TimeSeries for fast access.
+        This is used to immediately reflect resolved data in Redis without waiting for the next full save.
+        """
+        if not records:
+            return
+
+        logger.info(f"📈 Saving {len(records)} records to Redis TimeSeries.")
+
+        try:
+            redis_ts = get_redis_timeseries()
+            if not redis_ts:
+                logger.warning("Redis TimeSeries not available")
+                return
+
+            # Group records by instrument_id for batch processing
+            grouped_records = defaultdict(list)
+            for record in records:
+                grouped_records[record.instrument_id].append(record)
+
+            # Process each group
+            for instrument_id, records in grouped_records.items():
+                # Create a pipeline for batch execution
+                pipeline = redis_ts.pipeline()
+
+                for record in records:
+                    # Use TS.ADD to append each record as a new point in the TimeSeries
+                    # We use the timestamp in milliseconds, and the close price as the value.
+                    # Adjust the timestamp to be in milliseconds.
+                    timestamp_ms = int(record.datetime.timestamp() * 1000)
+
+                    # TS.ADD key timestamp value [RETENTION retention] [LABELS label1 value1 label2 value2 ...]
+                    pipeline.tsadd(
+                        f"price:{instrument_id}",
+                        timestamp_ms,
+                        record.close,
+                        # Optional: Add labels for better filtering/querying
+                        # retention policy example: 1 week
+                        retention=604800,
+                        labels={"instrument_id": str(instrument_id)},
+                    )
+
+                # Execute the pipeline
+                await pipeline.execute()
+
+            logger.info("📈 Successfully saved records to Redis TimeSeries.")
+
+        except Exception as e:
+            logger.error(f"Error saving to Redis TimeSeries: {e}", exc_info=True)
+

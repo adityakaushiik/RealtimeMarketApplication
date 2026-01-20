@@ -7,7 +7,6 @@ from sqlalchemy.orm import selectinload
 from features.instruments import instrument_service
 from features.instruments.instrument_schema import InstrumentInDb
 from models.watchlist import Watchlist, WatchlistItem
-from models.instruments import Instrument
 from features.watchlist.watchlist_schema import (
     WatchlistCreate,
     WatchlistUpdate,
@@ -187,7 +186,6 @@ async def add_item_to_watchlist(
     instrument = await instrument_service.get_instrument_by_id(
         session, item_data.instrument_id
     )
-
 
     if not instrument or instrument.exchange_id != watchlist.exchange_id:
         return None  # or raise an error

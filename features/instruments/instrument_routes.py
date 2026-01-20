@@ -29,11 +29,12 @@ async def list_instruments(
     instrument_type_id: int | None = None,
     limit: int = 200,
     user_claims: dict = Depends(require_auth()),
+    order_by: str = 'asc',
     session: AsyncSession = Depends(get_db_session),
 ):
     """List instruments for a given exchange"""
 
-    exchange_obj : ExchangeInDb = await get_exchange_by_code(session, exchange)
+    exchange_obj: ExchangeInDb = await get_exchange_by_code(session, exchange)
     if not exchange_obj:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -51,7 +52,9 @@ async def list_instruments(
     if instrument_type_id is not None:
         stmt = stmt.where(Instrument.instrument_type_id == instrument_type_id)
 
-    stmt = stmt.limit(limit)
+    stmt = stmt.order_by(
+        Instrument.updated_at.asc() if order_by == 'asc' else Instrument.updated_at.desc()
+    ).limit(limit)
 
     result = await session.execute(stmt)
     instrument_list = result.scalars().all()
@@ -124,14 +127,12 @@ async def search_instruments(
 ):
     only_active = not is_admin(user_claims)
 
-
-    exchange_obj : ExchangeInDb = await get_exchange_by_code(session, exchange)
+    exchange_obj: ExchangeInDb = await get_exchange_by_code(session, exchange)
     if not exchange_obj:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Invalid or Unsupported exchange code",
         )
-
 
     return await instrument_service.search_instruments(
         session, query, only_active=only_active, exchange_id=exchange_obj.id

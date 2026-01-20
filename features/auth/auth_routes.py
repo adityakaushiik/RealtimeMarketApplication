@@ -1,4 +1,3 @@
-from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -13,9 +12,7 @@ from features.user.user_schema import UserWithPassword, UserInDb, UserCreate
 from features.auth.auth_service import (
     authenticate_user,
     create_access_token,
-    require_auth,
 )
-from utils.common_constants import UserRoles
 
 auth_router = APIRouter(
     prefix="/auth",

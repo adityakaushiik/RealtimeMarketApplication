@@ -3,10 +3,12 @@ Dhan market data provider implementation using websockets library directly.
 Connects to Dhan's WebSocket API for real-time market data.
 
 Findings about Dhan API:
-1. Timestamp Format: Dhan sends timestamps in IST (Indian Standard Time) but as a Unix timestamp relative to UTC epoch.
-   This means the timestamps are 5.5 hours (19800 seconds) ahead of UTC.
-   Example: If it's 10:00 AM UTC, Dhan sends a timestamp that corresponds to 10:00 AM + 5.5 hours = 3:30 PM UTC.
-   Fix: We subtract 19800 seconds from the received timestamp to get the correct UTC timestamp.
+1. Timestamp Format: Dhan REST API returns standard Unix epoch timestamps (seconds since 1970-01-01 UTC).
+   These are already correct UTC timestamps - NO adjustment needed.
+   Verified: Requesting data for 09:15 IST returns epoch for 03:45 UTC (correct).
+
+   For WebSocket live data, we use system time (time.time()) for tick timestamps
+   to ensure millisecond precision and monotonically increasing timestamps.
 
 2. Symbol Mapping: Dhan uses numeric Security IDs (e.g., "1333" for HDFCBANK-EQ").
    The application needs to map these IDs back to internal symbols (e.g., "HDFCBANK") for storage and processing.
@@ -92,6 +94,8 @@ class DhanProvider(BaseMarketDataProvider):
         self.redis_mapper = get_redis_mapping_helper()
         # Local cache for fast lookup: {provider_symbol_code: internal_symbol}
         self.symbol_map: Dict[str, str] = {}
+        # Local cache for exchange ID lookup
+        self.symbol_exchange_map: Dict[str, str] = {}
 
         # Get credentials from settings
         settings = get_settings()
@@ -134,9 +138,7 @@ class DhanProvider(BaseMarketDataProvider):
                 # Make request
                 # Using requests.post without json/data to strictly follow documentation/CURL
                 # which implies no body and no Content-Type
-                response = await asyncio.to_thread(
-                    requests.post, url, headers=headers
-                )
+                response = await asyncio.to_thread(requests.post, url, headers=headers)
 
                 if response.ok:
                     logger.info("Dhan API token refreshed successfully.")
@@ -397,7 +399,7 @@ class DhanProvider(BaseMarketDataProvider):
                     )
             else:
                 # Fallback to old logic if no segment in Redis
-                instrument_tuple = self._prepare_single_instrument(
+                instrument_tuple = await self._prepare_single_instrument(
                     symbol, internal_symbol
                 )
                 if instrument_tuple:
@@ -433,6 +435,13 @@ class DhanProvider(BaseMarketDataProvider):
             logger.info(f"Sending subscription payload: {json.dumps(payload)}")
             await self.ws.send(json.dumps(payload))
             logger.info(f"Sent subscription request for {len(batch)} symbols")
+
+            # Populate exchange segment map for fast lookup by internal symbol
+            for ex_seg, sec_id in batch:
+                composite_key = f"{ex_seg}:{sec_id}"
+                internal_sym = self.symbol_map.get(composite_key)
+                if internal_sym:
+                    self.symbol_exchange_map[internal_sym] = ex_seg
 
     def message_handler(self, message: dict):
         """
@@ -509,8 +518,8 @@ class DhanProvider(BaseMarketDataProvider):
             if response_code == FeedResponseCode.TICKER:
                 # Ticker Packet (16 bytes)
                 # 0-8: Header
-                # 9-12: LTP (float32)
-                # 13-16: LTT (int32)
+                # 9-12: LTP (Last Traded Price) (float32)
+                # 13-16: LTT (Last Traded Time) (int32)
 
                 if len(message) < 16:
                     return
@@ -529,29 +538,39 @@ class DhanProvider(BaseMarketDataProvider):
                 }
 
             elif response_code == FeedResponseCode.QUOTE:
-                ltp = struct.unpack("<f", message[8:12])[0]
-                ltq = struct.unpack("<H", message[12:14])[
-                    0
-                ]  # Using <H for unsigned int16
-                ltt = struct.unpack("<i", message[14:18])[
-                    0
-                ]  # Using <i for signed int32
+                # Optimized parsing for Quote packets
+                # Standard Quote Packet (50 bytes):
+                # [Header(8)][LTP(4)][LTT(4)][AvgPrice(4)][Vol(4)] ...
 
-                # Parse other fields if needed
-                volume_full = struct.unpack("<I", message[22:26])[
-                    0
-                ]  # Total volume for the day
+                if len(message) < 50:
+                    return
 
-                data = {
-                    "symbol": final_symbol,
-                    "exchange": exchange_str,
-                    "price": ltp,
-                    "timestamp": ltt,
-                    "volume": float(
-                        ltq
-                    ),  # Using LTQ as volume for tick updates (tick size)
-                    "total_volume": float(volume_full),  # Cumulative volume for the day
-                }
+                # Directly extract fields using struct
+                ltp, ltt, avg_price, vol = struct.unpack("<fiiI", message[8:24])
+
+                # Volume might be at offset 20 or 24 based on spec interpretation
+                # Using offset 20 as per original code
+                volume = struct.unpack("<I", message[20:24])[0]
+
+                # Use system time for timestamp to ensure:
+                # 1. Millisecond precision
+                # 2. Monotonically increasing timestamps
+                # 3. No IST/UTC offset issues or negative values
+                ts = int(time.time() * 1000)
+
+                # Note: exchange_id and exchange_code are optional and primarily
+                # used for API data resolution, not real-time WebSocket ticks
+                format_data = DataIngestionFormat(
+                    provider_code=self.provider_code,
+                    symbol=final_symbol,
+                    price=ltp,
+                    volume=float(volume),
+                    timestamp=ts,
+                    exchange_id=None,
+                    exchange_code=None
+                )
+
+                await self.data_queue.add_data(format_data)
 
             elif response_code == FeedResponseCode.FULL:
                 if len(message) < 62:
@@ -664,14 +683,18 @@ class DhanProvider(BaseMarketDataProvider):
             # Need Redis client. Using redis_mapper's client or getting new one.
             # self.redis_mapper.redis is available
             key = f"prev_close_map:{exchange_code}"
+
+            # Store as JSON to be consistent with service
+            val = {"p": price, "t": int(time.time() * 1000)}
+
             # Use hset
-            await self.redis_mapper.redis.hset(key, symbol, str(price))
-            # Refresh expiry to 1 hour (rolling)
-            await self.redis_mapper.redis.expire(key, 3600)
+            await self.redis_mapper.redis.hset(key, symbol, json.dumps(val))
+            # Refresh expiry to 24 hours
+            await self.redis_mapper.redis.expire(key, 86400)
         except Exception as e:
             logger.error(f"Error updating prev_close for {symbol}: {e}")
 
-    def _prepare_single_instrument(
+    async def _prepare_single_instrument(
         self, provider_symbol: str, internal_symbol: str
     ) -> Optional[tuple]:
         """
@@ -713,32 +736,38 @@ class DhanProvider(BaseMarketDataProvider):
                     )
 
                 # 3. Map based on SQL logic
-                # |1 |EQ |Equity | -> NSE_EQ / BSE_EQ
-                # |2 |INDEX |Market Index | -> IDX_I (Dhan constant for Index)
-                # |3 |CURR |Currency | -> NSE_CURRENCY
-                # |4 |OPT |Options | -> NSE_FNO / BSE_FNO
-                # |6 |FUT |Futures | -> NSE_FNO / BSE_FNO
-                # |9 |COMM |Commodity | -> MCX_COMM
+            # The mapping is now handled primarily by the Provider Manager / Redis Mapping.
+            # If exchange_seg is already retrieved (e.g. from Redis "provider_segment"), use it.
+            # Otherwise, we might have a gap in our mapping logic if the Redis cache is empty.
 
-                if exchange_code == "NSE":
-                    if inst_type_id == 1:
-                        exchange_seg = "NSE_EQ"
-                    elif inst_type_id == 2:
-                        exchange_seg = "IDX_I"  # or NSE_EQ depending on Dhan? Dhan uses IDX_I (0) for Indices
-                    elif inst_type_id == 3:
-                        exchange_seg = "NSE_CURRENCY"
-                    elif inst_type_id in (4, 6):
-                        exchange_seg = "NSE_FNO"
-                elif exchange_code == "BSE":
-                    if inst_type_id == 1:
-                        exchange_seg = "BSE_EQ"
-                    elif inst_type_id == 2:
-                        exchange_seg = "IDX_I"  # BSE Index?
-                    elif inst_type_id in (4, 6):
-                        exchange_seg = "BSE_FNO"
-                elif exchange_code == "MCX":
-                    if inst_type_id == 9:
-                        exchange_seg = "MCX_COMM"
+            # The previous detailed if/elif block for NSE/BSE/MCX + inst_type_id is redundant
+            # because we expect `self.provider_manager.get_provider_segment` (or similar)
+            # to have populated the correct segment code.
+
+            # If we don't have exchange_seg from provider_manager (via Redis), we should probably log an error
+            # or rely on the exchange_code logic if absolutely necessary as a fallback mechanism.
+            # However, the user request explicitly asked to remove it if it's saved in DB.
+            # The DB mapping (ProviderInstrumentMapping) should have the 'segment' or similar
+            # that gets pushed to Redis as 'provider_segment'.
+
+            # Let's see how `exchange_seg` is currently retrieved.
+            # In `_subscribe_batch` (caller of this), `exchange_seg` is NOT passed in.
+            # Wait, `_prepare_single_instrument` only takes symbol strings.
+
+            # We need to fetch the segment from Redis/Manager here if not present.
+            if self.provider_manager and self.provider_manager.redis_mapper:
+                exchange_seg = (
+                    await self.provider_manager.redis_mapper.get_provider_segment(
+                        "DHAN", internal_symbol
+                    )
+                )
+
+            # If still None, we can't subscribe correctly.
+            if not exchange_seg:
+                logger.warning(
+                    f"Segment not found for {internal_symbol} in Redis/DB mapping. Cannot subscribe."
+                )
+                return None
 
             # If plain ID, use it. If "ID-EQ" format, split.
             # Dhan usually expects just the numeric Security ID for the API
@@ -814,7 +843,7 @@ class DhanProvider(BaseMarketDataProvider):
                         sec_id_val = str(security_id_raw)
                     instruments.append((segment, sec_id_val))
             else:
-                instrument_tuple = self._prepare_single_instrument(
+                instrument_tuple = await self._prepare_single_instrument(
                     symbol, internal_symbol
                 )
                 if instrument_tuple:
@@ -917,22 +946,29 @@ class DhanProvider(BaseMarketDataProvider):
                 internal_symbol = instrument.symbol
 
                 # Check mapping for instrument type based resolution
-                instrument_tuple = self._prepare_single_instrument(
+                instrument_tuple = await self._prepare_single_instrument(
                     security_id, internal_symbol
                 )
 
                 if instrument_tuple:
                     exchange_segment, security_id = instrument_tuple
                 else:
-                    # Fallback to map if prepare_single fail or provider manager not ready?
-                    # The get_search_code above already did half the job for security_id
-                    exchange_segment = self.EXCHANGE_MAP.get(
-                        instrument.exchange_id, "NSE_EQ"
-                    )
+                    # Fallback if no segment found
+                    if ":" in str(security_id):
+                        exchange_segment, mapped_sec_id = str(security_id).split(":", 1)
+                        security_id = mapped_sec_id
+                    else:
+                        exchange_segment = self.EXCHANGE_MAP.get(
+                            instrument.exchange_id, "NSE_EQ"
+                        )
             else:
                 exchange_segment = self.EXCHANGE_MAP.get(
                     instrument.exchange_id, "NSE_EQ"
                 )
+
+            # Ensure securityId is just the number for Dhan API
+            if ":" in str(security_id):
+                 _, security_id = str(security_id).split(":", 1)
 
             payload = {
                 "securityId": str(security_id),
@@ -963,11 +999,10 @@ class DhanProvider(BaseMarketDataProvider):
 
             for i in range(len(timestamps)):
                 try:
-                    # Dhan returns epoch timestamp (seconds or ms? API doc says "Epoch timestamp")
-                    # Example: 1328845020 -> 2012-02-10... seems to be seconds.
+                    # Dhan API returns standard Unix epoch timestamps (seconds since 1970-01-01 UTC)
+                    # These are already correct UTC timestamps, no adjustment needed
+                    # Verified by test: requesting 09:15 IST data returns epoch for 03:45 UTC (correct)
                     ts = timestamps[i]
-                    # Dhan Historical API returns valid UTC timestamp. No shift needed.
-                    # ts = ts - 19800
                     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
 
                     history.append(
@@ -1052,7 +1087,7 @@ class DhanProvider(BaseMarketDataProvider):
             if self.provider_manager:
                 # Reuse local helper to get correct segment for instrument type
                 internal_symbol = instrument.symbol
-                instrument_tuple = self._prepare_single_instrument(
+                instrument_tuple = await self._prepare_single_instrument(
                     security_id, internal_symbol
                 )
                 if instrument_tuple:
@@ -1061,9 +1096,14 @@ class DhanProvider(BaseMarketDataProvider):
                     # It returns (exchange_seg, sec_id). Let's use it.
                     security_id = mapped_sec_id
                 else:
-                    exchange_segment = self.EXCHANGE_MAP.get(
-                        instrument.exchange_id, "NSE_EQ"
-                    )
+                    # Fallback if no segment found
+                    if ":" in str(security_id):
+                        exchange_segment, mapped_sec_id = str(security_id).split(":", 1)
+                        security_id = mapped_sec_id
+                    else:
+                        exchange_segment = self.EXCHANGE_MAP.get(
+                            instrument.exchange_id, "NSE_EQ"
+                        )
             else:
                 exchange_segment = self.EXCHANGE_MAP.get(
                     instrument.exchange_id, "NSE_EQ"

@@ -9,8 +9,8 @@ from config.database_config import get_database_engine
 from config.redis_config import get_redis
 from features.instruments.instrument_service import get_instrument_by_symbol
 from features.marketdata.marketdata_service import (
-    get_price_history_daily,
     get_previous_closes_by_exchange,
+    get_previous_close_for_symbol,
 )
 from features.exchange.exchange_service import get_exchange_by_id
 from services.websocket_manager import WebSocketManager, get_websocket_manager
@@ -37,8 +37,14 @@ async def websocket_endpoint(
 
             message_type = msg.get("message_type")
             channel = msg.get("channel")
+            exchange_id = msg.get("exchange_id")
+            exchange_code = msg.get("exchange_code")
 
-            if message_type == WebSocketMessageType.SUBSCRIBE.value and channel:
+            if (
+                message_type == WebSocketMessageType.SUBSCRIBE.value
+                and channel
+                and exchange_id
+            ):
                 websocket_manager.subscribe(websocket, channel)
 
                 # Get Snapshot Data
@@ -54,54 +60,15 @@ async def websocket_endpoint(
                 )
                 open_price = daily_candle.get("open") if daily_candle else None
 
+                # OPTIMIZATION: Use robust single-source lookup
+                # This checks Redis O(1) -> DB Fallback (Last Trading Day)
+                # Removes double-request redundancy.
                 prev_close = None
-
-                # Get Prev Close (requires DB/Redis lookup)
                 engine = get_database_engine()
                 async with AsyncSession(engine) as session:
-                    instrument = await get_instrument_by_symbol(session, channel)
-                    if instrument:
-                        exchange = await get_exchange_by_id(
-                            session, instrument.exchange_id
-                        )
-                        if exchange:
-                            redis = get_redis()
-                            cache_key = f"prev_close:{exchange.code}"
-                            found_in_cache = False
-
-                            if redis:
-                                cached_data = await redis.get(cache_key)
-                                if cached_data:
-                                    try:
-                                        data = json.loads(cached_data)
-                                        for item in data:
-                                            if item.get("symbol") == channel:
-                                                prev_close = item.get("price")
-                                                found_in_cache = True
-                                                break
-                                    except Exception:
-                                        pass
-
-                            # NEW: Try fetching from Hash Map (O(1)) if not found in list
-                            if not found_in_cache and redis:
-                                hash_key = f"prev_close_map:{exchange.code}"
-                                price_str = await redis.hget(hash_key, channel)
-                                if price_str:
-                                    try:
-                                        prev_close = float(price_str)
-                                        found_in_cache = True
-                                    except:
-                                        pass
-
-                            if not found_in_cache:
-                                # Fallback to service
-                                pcs = await get_previous_closes_by_exchange(
-                                    session, exchange.code
-                                )
-                                for item in pcs:
-                                    if item.symbol == channel:
-                                        prev_close = item.price
-                                        break
+                    prev_close = await get_previous_close_for_symbol(
+                        session, exchange_code if exchange_code else "UNKNOWN", channel
+                    )
 
                 # Send Snapshot
                 await websocket.send_json(

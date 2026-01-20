@@ -147,6 +147,22 @@ async def reset_password(
     return {"message": "Password reset successfully"}
 
 
+@user_router.patch("/update_role/{user_id}", response_model=UserInDb)
+async def update_user_role(
+    user_id: int,
+    role_id: int,
+    user_claims: dict = Depends(require_auth([UserRoles.ADMIN])),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Update user role (Admin only)"""
+    updated_user = await user_service.update_user_role(session, user_id, role_id)
+    if not updated_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+    return updated_user
+
+
 # @user_router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 # async def delete_user(
 #     user_id: int,

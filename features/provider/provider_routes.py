@@ -1,20 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
 from config.database_config import get_db_session
 from features.auth.auth_service import require_auth
 from features.instruments import instrument_service
 from features.provider.provider_schema import (
     ProviderCreate,
-    ProviderUpdate,
     ProviderInDb,
     ProviderInstrumentMappingCreate,
-    ProviderInstrumentMappingUpdate,
     ProviderInstrumentMappingInDb,
 )
 from features.provider import provider_service
-from models import ProviderInstrumentMapping
 from utils.common_constants import UserRoles, is_admin
 
 provider_router = APIRouter(

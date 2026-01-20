@@ -246,7 +246,7 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                         resolve_required=False,
                     )
                 )
-            except Exception as e:
+            except Exception:
                 continue
         return records
 
@@ -354,6 +354,6 @@ class YahooFinanceProvider(BaseMarketDataProvider):
                         resolve_required=False,
                     )
                 )
-            except Exception as e:
+            except Exception:
                 continue
         return records

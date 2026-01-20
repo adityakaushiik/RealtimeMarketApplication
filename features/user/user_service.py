@@ -249,3 +249,32 @@ async def reset_user_password(
     user.hashed_password = hash_password(new_password)
     await session.commit()
     return True
+
+
+async def update_user_role(
+    session: AsyncSession,
+    user_id: int,
+    role_id: int,
+) -> UserInDb | None:
+    """Update user role"""
+    result = await session.execute(select(User).where(User.id == user_id))
+    user: User = result.scalar_one_or_none()
+    if not user:
+        return None
+
+    user.role_id = role_id
+
+    await session.commit()
+    await session.refresh(user)
+    return UserInDb(
+        id=user.id,
+        email=user.email,
+        fname=user.fname,
+        lname=user.lname,
+        username=user.username,
+        profile_picture_url=user.profile_picture_url,
+        blacklisted=user.blacklisted,
+        role_id=user.role_id,
+        is_active=user.is_active,
+        status=user.status,
+    )

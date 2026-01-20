@@ -205,7 +205,9 @@ class ProviderManager:
             if provider_code in self.providers and self.providers[provider_code]:
                 try:
                     logger.debug(f"Subscribing to {provider_code} {provider_symbols}")
-                    await self.providers[provider_code].subscribe_symbols(provider_symbols)
+                    await self.providers[provider_code].subscribe_symbols(
+                        provider_symbols
+                    )
 
                     logger.info(
                         f"Subscribed to {len(provider_symbols)} symbols on {provider_code}"
@@ -234,7 +236,9 @@ class ProviderManager:
         for provider_code, provider_symbols in symbols_by_provider.items():
             if provider_code in self.providers and self.providers[provider_code]:
                 try:
-                    await self.providers[provider_code].unsubscribe_symbols(provider_symbols)
+                    await self.providers[provider_code].unsubscribe_symbols(
+                        provider_symbols
+                    )
 
                     logger.info(
                         f"Unsubscribed from {len(provider_symbols)} symbols on {provider_code}"

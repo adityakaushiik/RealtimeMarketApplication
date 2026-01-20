@@ -38,6 +38,8 @@ class DataBroadcastFormat(BaseModelPy):
     symbol: str
     price: float
     volume: float
+    exchange_id: int | None = None
+    exchange_code: str | None = None
 
 
 class DataIngestionFormat(DataBroadcastFormat):

@@ -1,4 +1,4 @@
-from sqlalchemy import select, exists, delete
+from sqlalchemy import select, exists, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 import json
 from config.redis_config import get_redis
@@ -363,6 +363,7 @@ async def toggle_instrument_recording(
         )
 
     instrument.should_record_data = should_record
+    instrument.updated_at = func.now()
     session.add(instrument)
     await session.commit()
     await session.refresh(instrument)

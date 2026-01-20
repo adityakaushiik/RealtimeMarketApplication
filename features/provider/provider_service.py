@@ -7,7 +7,6 @@ from features.provider.provider_schema import (
     ProviderUpdate,
     ProviderInDb,
     ProviderInstrumentMappingCreate,
-    ProviderInstrumentMappingUpdate,
     ProviderInstrumentMappingInDb,
 )
 

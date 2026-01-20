@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, Text, TIMESTAMP, Enum, UniqueConstraint
+from sqlalchemy import Column, Text, TIMESTAMP, Enum
 from sqlalchemy.dialects.postgresql import UUID, INET
 from sqlalchemy.sql import func
 from models.base import Base

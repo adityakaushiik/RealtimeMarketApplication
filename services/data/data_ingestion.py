@@ -6,7 +6,6 @@ from services.data.data_queue import (
     get_data_ingestion_queue_instance,
     DataIngestionQueue,
 )
-from services.provider.provider_manager import get_provider_manager
 from services.redis_timeseries import get_redis_timeseries
 from services.websocket_manager import get_websocket_manager
 from utils.binary_conversions import pack_update

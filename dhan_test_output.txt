@@ -1,0 +1,61 @@
+================================================================================
+Direct Dhan API Timestamp Verification
+================================================================================
+
+Current time:
+  UTC: 2026-01-20 11:34:23 UTC
+  IST: 2026-01-20 17:04:23 IST
+
+Requesting data from Dhan:
+  From: 2026-01-20 15:04:23 (IST)
+  To: 2026-01-20 17:04:23 (IST)
+
+Payload: {'securityId': '13', 'exchangeSegment': 'IDX_I', 'instrument': 'INDEX', 'interval': '5', 'oi': False, 'fromDate': '2026-01-20 15:04:23', 'toDate': '2026-01-20 17:04:23'}
+
+[OK] Received 7 candles from Dhan API
+
+================================================================================
+TIMESTAMP ANALYSIS
+================================================================================
+
+Raw Epoch      As UTC (if epoch is UTC)     As IST (if epoch is IST)     Open Price  
+----------------------------------------------------------------------------------------------------
+1768901700.0   2026-01-20 09:35:00 UTC      2026-01-20 15:05:00 IST      25277.0     
+1768902000.0   2026-01-20 09:40:00 UTC      2026-01-20 15:10:00 IST      25269.3     
+1768902300.0   2026-01-20 09:45:00 UTC      2026-01-20 15:15:00 IST      25215.05    
+1768902600.0   2026-01-20 09:50:00 UTC      2026-01-20 15:20:00 IST      25199.25    
+1768902900.0   2026-01-20 09:55:00 UTC      2026-01-20 15:25:00 IST      25178.1     
+1768903200.0   2026-01-20 10:00:00 UTC      2026-01-20 15:30:00 IST      25225.35    
+1768908600.0   2026-01-20 11:30:00 UTC      2026-01-20 17:00:00 IST      25232.5     
+
+================================================================================
+VERIFICATION
+================================================================================
+
+First candle: epoch=1768901700.0
+.venv\Scripts\python.exe : Traceback (most recent call last):
+At line:1 char:72
++ ... plication ; .venv\Scripts\python.exe scripts\test_dhan_api_timestamps ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "C:\Users\tech\OneDrive\Documents\GitHub\RealtimeMarketApplication\scripts\test_dhan_api_timestamps.py", line 146, in <module>
+    asyncio.run(main())
+    ~~~~~~~~~~~^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.2544.0_x64__qbz5n2kfra8p0\Lib\asyncio\runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.2544.0_x64__qbz5n2kfra8p0\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.2544.0_x64__qbz5n2kfra8p0\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\tech\OneDrive\Documents\GitHub\RealtimeMarketApplication\scripts\test_dhan_api_timestamps.py", line 118, in main
+    print(f"  If treated as UTC epoch \u2192 {first_as_utc.strftime('%H:%M IST')}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.2544.0_x64__qbz5n2kfra8p0\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 26: character maps to <undefined>

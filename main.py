@@ -1,8 +1,11 @@
 import asyncio
 from contextlib import asynccontextmanager
-from sqlalchemy import select
+from typing import List, Dict
+
+from sqlalchemy import select, update, func
 
 from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.cors import CORSMiddleware
 
 from config.database_config import close_database_engine, get_db_session
@@ -21,14 +24,14 @@ from features.marketdata.marketdata_routes import marketdata_router  # added
 from features.watchlist.watchlist_routes import watchlist_router
 from features.suggestion.suggestion_router import router as suggestion_router
 from features.health.health_routes import health_router
-from services.data.data_ingestion import LiveDataIngestion, get_provider_manager
+from services.data.data_ingestion import LiveDataIngestion
 from services.data.data_saver import DataSaver
 from services.data.data_resolver import DataResolver
 from services.data.gap_detection import (
     get_gap_detection_service,
     set_gap_detection_provider,
 )
-from services.provider.provider_manager import ProviderManager
+from services.provider.provider_manager import ProviderManager, get_provider_manager
 from services.data.redis_mapping import get_redis_mapping_helper
 from services.redis_subscriber import redis_subscriber
 from services.redis_timeseries import get_redis_timeseries
@@ -37,7 +40,6 @@ from models import Exchange, Instrument, ProviderInstrumentMapping
 
 import sentry_sdk
 
-from utils.parse_file import parse_excel_file, parse_csv_file
 
 sentry_sdk.init(
     dsn="https://87837fe7f05ab475836caf4864a1c150@o4510497758576640.ingest.us.sentry.io/4510497760673792",
@@ -64,13 +66,33 @@ data_saver: DataSaver | None = None
 provider_manager: ProviderManager | None = None
 scheduled_jobs = None
 gap_detection_service = None
-data_broadcast = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown."""
-    global subscriber_task, live_data_ingestion, data_broadcast, data_saver, provider_manager, scheduled_jobs, gap_detection_service
+    global subscriber_task, live_data_ingestion, data_saver, provider_manager, scheduled_jobs, gap_detection_service
+
+    # data = await parse_csv_file(file_path=r"C:\Users\tech\OneDrive\Documents\BSE_INSTRUMENTS_CSV1111.csv")
+    #
+    # async for session in get_db_session():
+    #     # 1. Get existing symbols once (fast)
+    #     existing = await session.execute(
+    #         select(Instrument.symbol).where(
+    #             Instrument.exchange_id == 8,
+    #             Instrument.instrument_type_id == 1
+    #         )
+    #     )
+    #     existing_symbols = {row[0].replace(".BSE", "") for row in existing}
+    #
+    #     # 2. Create missing ones
+    #     await create_new_instruments_and_mappings(session, data, existing_symbols)
+    #
+    #     # 3. Update search codes for existing
+    #     updated = await update_existing_search_codes(session, data)
+    #     print(f"Updated {updated} search codes")
+    #
+    # return
 
     # data = await parse_csv_file(file_path=r"C:\Users\tech\OneDrive\Documents\BSE_INSTRUMENTS_CSV1111.csv")
     #
@@ -210,8 +232,10 @@ async def lifespan(app: FastAPI):
                 # Add exchange directly to data_saver
                 data_saver.add_exchange(exchange)
 
-    # Also start end-of-day monitors for final data consolidation
-    await data_saver.start_end_of_day_monitors()
+    # Start periodic saving for active exchanges
+    # Changed interval to 60 minutes (Hourly) as requested ("Buffer Zone" Strategy)
+    # This ensures that even if the session crashes, we have data persisted every hour.
+    await data_saver.start_all_exchanges(interval_minutes=60)
 
     # # Task - 4. Start Scheduled Jobs (A4: periodic gap detection, A2: retry alerts, B3: volume reconciliation)
     logger.info("Task - 4. Starting Scheduled Jobs...")
@@ -238,14 +262,6 @@ async def lifespan(app: FastAPI):
             await subscriber_task
         except asyncio.CancelledError:
             pass
-
-    # Stop publisher
-    # if data_broadcast and data_broadcast.broadcast_task:
-    #     data_broadcast.broadcast_task.cancel()
-    #     try:
-    #         await data_broadcast.broadcast_task
-    #     except asyncio.CancelledError:
-    #         pass
 
     if live_data_ingestion:
         live_data_ingestion.stop_ingestion()
@@ -288,3 +304,155 @@ app.include_router(instrument_type_router)
 app.include_router(health_router)
 app.include_router(user_router)
 app.include_router(suggestion_router)
+
+
+async def create_new_instruments_and_mappings(
+    session: AsyncSession,
+    csv_data: List[Dict],
+    existing_symbols: set[str],
+    batch_size: int = 300,
+) -> None:
+    """
+    Creates ONLY new instruments + their mappings.
+    - Skips anything that already exists in DB
+    - Uses batching + flush + single commit per batch for speed
+    """
+    new_instruments = []
+    new_mappings = []
+
+    for row in csv_data:
+        symbol = row.get("UNDERLYING_SYMBOL")
+        if not symbol or symbol in existing_symbols:
+            continue
+
+        instrument = Instrument(
+            exchange_id=8,
+            instrument_type_id=1,
+            symbol=f"{symbol}.BSE",
+            name=row.get("DISPLAY_NAME"),
+            is_active=True,
+            should_record_data=False,
+        )
+        new_instruments.append((instrument, row))
+
+        if len(new_instruments) >= batch_size:
+            await _process_creation_batch(session, new_instruments, new_mappings)
+            new_instruments.clear()
+            new_mappings.clear()
+
+    # Last batch
+    if new_instruments:
+        await _process_creation_batch(session, new_instruments, new_mappings)
+
+
+async def _process_creation_batch(
+    session: AsyncSession,
+    instruments_with_row: List[tuple[Instrument, dict]],
+    mappings_list: List[ProviderInstrumentMapping],
+) -> None:
+    # Add all instruments
+    for instrument, _ in instruments_with_row:
+        session.add(instrument)
+
+    await session.flush()  # Get all IDs in one go
+
+    # Create mappings
+    for instrument, row in instruments_with_row:
+        mapping = ProviderInstrumentMapping(
+            provider_id=2,
+            instrument_id=instrument.id,
+            provider_instrument_search_code=row.get("SECURITY_ID"),
+            is_active=True,
+            provider_instrument_segment="BSE_EQ",
+        )
+        mappings_list.append(mapping)
+        session.add(mapping)
+
+    await session.commit()
+    logger.info(
+        f"Created batch of {len(instruments_with_row)} new instruments + mappings"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def update_existing_search_codes(
+    session: AsyncSession, csv_data: List[Dict], batch_size: int = 500
+) -> int:
+    """
+    Updates ONLY provider_instrument_search_code for EXISTING instruments.
+    - Very fast: bulk update style + minimal loading
+    - Returns number of updated rows
+    """
+    session.expire_on_commit = False
+
+    # Get minimal data - only what we need
+    result = await session.execute(
+        select(Instrument.id, Instrument.symbol).where(
+            Instrument.exchange_id == 8, Instrument.instrument_type_id == 1
+        )
+    )
+    inst_map = {row.symbol.replace(".BSE", ""): row.id for row in result}
+
+    if not inst_map:
+        logger.info("No BSE equity instruments found in database")
+        return 0
+
+    updates_count = 0
+    update_statements = []
+
+    for row in csv_data:
+        symbol = row.get("UNDERLYING_SYMBOL")
+        new_code = row.get("SECURITY_ID")
+
+        if not symbol or not new_code:
+            continue
+
+        instrument_id = inst_map.get(symbol)
+        if not instrument_id:
+            continue
+
+        # We'll collect bulk update statements
+        update_statements.append(
+            update(ProviderInstrumentMapping)
+            .where(
+                ProviderInstrumentMapping.provider_id == 2,
+                ProviderInstrumentMapping.instrument_id == instrument_id,
+                ProviderInstrumentMapping.provider_instrument_search_code != new_code,
+            )
+            .values(provider_instrument_search_code=new_code)
+            .execution_options(synchronize_session=False)
+        )
+
+        updates_count += 1  # optimistic count
+
+        if len(update_statements) >= batch_size:
+            for stmt in update_statements:
+                await session.execute(stmt)
+            await session.commit()
+            update_statements.clear()
+            logger.info(f"Processed update batch ({updates_count} potential updates)")
+
+    # Final batch
+    if update_statements:
+        for stmt in update_statements:
+            await session.execute(stmt)
+        await session.commit()
+
+    actual_updated = await _get_actual_updated_count(session)  # optional verification
+    logger.info(
+        f"Update completed. Potential: {updates_count}, actual changes may be less."
+    )
+    return actual_updated or updates_count
+
+
+async def _get_actual_updated_count(session: AsyncSession) -> int:
+    """Optional: count how many were actually different"""
+    result = await session.execute(
+        select(func.count())
+        .select_from(ProviderInstrumentMapping)
+        .where(ProviderInstrumentMapping.provider_id == 2)
+        # You could add more precise tracking if needed
+    )
+    return result.scalar() or 0

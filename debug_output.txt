@@ -1,0 +1,59 @@
+================================================================================
+NIFTY Redis Data Debug
+================================================================================
+redis://localhost:6379
+Created redis client for redis://localhost:6379 (decode_responses=False)
+
+[1] Checking available NIFTY keys in Redis...
+  - NIFTY:5m:volume
+  - NIFTY:tick:volume
+  - NIFTY:5m:high
+  - NIFTY:tick:price
+  - NIFTY:5m:low
+  - NIFTY:5m:open
+  - NIFTY:5m:close
+
+[2] Checking 5m candle data in different time ranges...
+
+Yesterday UTC 00:00 to Midnight:
+  Range: 2026-01-19 00:00 UTC to 2026-01-20 00:00 UTC
+  Found: 0 candles
+
+Today UTC 00:00 to now:
+  Range: 2026-01-20 00:00 UTC to 2026-01-20 11:26 UTC
+  Found: 0 candles
+
+NSE Open IST (03:45 UTC) to now:
+  Range: 2026-01-20 03:45 UTC to 2026-01-20 11:26 UTC
+  Found: 0 candles
+
+Wrong timezone range (09:00-16:00 UTC):
+  Range: 2026-01-20 09:00 UTC to 2026-01-20 16:00 UTC
+  Found: 0 candles
+
+[3] Checking 5m series info...
+  NIFTY:5m:open:
+    First: 1768967100000 (2026-01-21 03:45 UTC)
+    Last:  1768989300000 (2026-01-21 09:55 UTC)
+    Count: 75
+  NIFTY:5m:high:
+    First: 1768967100000 (2026-01-21 03:45 UTC)
+    Last:  1768989300000 (2026-01-21 09:55 UTC)
+    Count: 75
+  NIFTY:5m:low:
+    First: 1768967100000 (2026-01-21 03:45 UTC)
+    Last:  1768989300000 (2026-01-21 09:55 UTC)
+    Count: 75
+  NIFTY:5m:close:
+    First: 1768967100000 (2026-01-21 03:45 UTC)
+    Last:  1768989300000 (2026-01-21 09:55 UTC)
+    Count: 75
+  NIFTY:5m:volume:
+    First: 1768967100000 (2026-01-21 03:45 UTC)
+    Last:  1768989300000 (2026-01-21 09:55 UTC)
+    Count: 75
+
+[4] ANALYSIS:
+================================================================================
+
+Done.

@@ -21,7 +21,7 @@ from features.marketdata.marketdata_schema import (
     InstrumentPreviousClose,
 )
 from models import PriceHistoryIntraday, PriceHistoryDaily, Instrument
-from services.data.data_ingestion import get_provider_manager
+from services.provider.provider_manager import get_provider_manager
 from services.redis_timeseries import get_redis_timeseries
 
 
@@ -296,8 +296,9 @@ async def get_price_history_intraday(
             now_ms = int(current_time_utc.timestamp() * 1000)
 
             # Use get_all_intraday_candles which includes both completed and current candle
+            # Cast to str to satisfy static analysis (Mapped[str] -> str)
             redis_candles = await rts.get_all_intraday_candles(
-                symbol=instrument.symbol,
+                symbol=str(instrument.symbol),
                 from_ts=today_start_ms,
                 to_ts=now_ms,
             )
@@ -427,7 +428,8 @@ async def get_price_history_daily(
     instrument = await session.get(Instrument, instrument_id)
     if instrument and result_list:
         rts = get_redis_timeseries()
-        latest_candle = await rts.get_current_5m_candle(instrument.symbol)
+        # Cast to str
+        latest_candle = await rts.get_current_5m_candle(str(instrument.symbol))
 
         if latest_candle:
             # We assume the first record is for the current day
@@ -515,21 +517,102 @@ async def _aggregate_intraday_for_daily_record(
         )
 
 
+async def get_previous_close_for_symbol(
+    session: AsyncSession, exchange_code: str, symbol: str
+) -> float | None:
+    """
+    Optimized lookup for a single symbol's previous close.
+    1. Checks Redis Hash Map (O(1))
+    2. Fallback: Fetches distinct latest close before today from DB
+    """
+    redis = get_redis()
+    hash_key = f"prev_close_map:{exchange_code}"
+
+    # 1. Try Redis
+    if redis:
+        try:
+            val_str = await redis.hget(hash_key, symbol)
+            if val_str:
+                if val_str.startswith("{"):
+                    d = json.loads(val_str)
+                    return d.get("p")
+                return float(val_str)
+        except Exception:
+            pass
+
+    # 2. DB Fallback (Specific Symbol)
+    # Get Instrument ID
+    stmt_inst = select(Instrument.id).where(Instrument.symbol == symbol)
+    inst_id = (await session.execute(stmt_inst)).scalar_one_or_none()
+
+    if not inst_id:
+        return None
+
+    # Simplified: Get latest daily record strictly before 'now' (minus small buffer if needed)
+    # Removing invalid timezone access. Just get latest finalized daily record.
+
+    stmt_price = (
+        select(PriceHistoryDaily.close)
+        .where(
+            PriceHistoryDaily.instrument_id == inst_id,
+        )
+        .order_by(PriceHistoryDaily.datetime.desc())
+        .limit(1)
+    )
+
+    return (await session.execute(stmt_price)).scalar_one_or_none()
+
+
 async def get_previous_closes_by_exchange(session: AsyncSession, exchange_code: str):
     """Get previous close prices for all instruments in a given exchange"""
 
-    # Try to get from Redis cache first
+    # Try to get from Redis cache first (ONLY Hash Map now)
     redis = get_redis()
-    cache_key = f"prev_close:{exchange_code}"
+    # Key: prev_close_map:{exchange_code}
+    hash_key = f"prev_close_map:{exchange_code}"
 
     if redis:
         try:
-            cached_data = await redis.get(cache_key)
-            if cached_data:
-                data = json.loads(cached_data)
-                return [InstrumentPreviousClose(**item) for item in data]
+            # Get all fields from the hash
+            cached_map = await redis.hgetall(hash_key)
+            if cached_map:
+                result = []
+                for symbol, val_str in cached_map.items():
+                    if val_str.startswith("{"):
+                        # New format: {"p": 100.5, "t": 1234567890}
+                        try:
+                            d = json.loads(val_str)
+                            result.append(
+                                InstrumentPreviousClose(
+                                    symbol=symbol,
+                                    price=d.get("p"),
+                                    timestamp=datetime.datetime.fromtimestamp(
+                                        d.get("t") / 1000, tz=datetime.timezone.utc
+                                    )
+                                    if d.get("t")
+                                    else None,
+                                )
+                            )
+                        except:
+                            pass
+                    else:
+                        # Old format: just price string
+                        try:
+                            result.append(
+                                InstrumentPreviousClose(
+                                    symbol=symbol,
+                                    price=float(val_str),
+                                    timestamp=datetime.datetime.now(datetime.timezone.utc)
+                                )
+                            )
+                        except:
+                            pass
+
+                if result:
+                    return result
+
         except Exception as e:
-            logger.error(f"Error reading prev_close from Redis: {e}")
+            logger.error(f"Error reading prev_close from Redis Hash: {e}")
 
     exchange = await get_exchange_by_code(session, exchange_code)
     if not exchange:
@@ -537,25 +620,27 @@ async def get_previous_closes_by_exchange(session: AsyncSession, exchange_code: 
 
     response = await _fetch_previous_closes_from_db(session, exchange.id)
 
-    # Cache the result in Redis
+    # Cache the result in Redis (ONLY Hash Map)
     if redis and response:
         try:
-            # Cache for 1 hour (or until next update)
-            # Serialize with Pydantic's model_dump_json or similar, but list of models needs manual handling
-            json_data = json.dumps([item.model_dump(mode="json") for item in response])
-            await redis.set(cache_key, json_data, ex=3600)
+            mapping = {}
+            for item in response:
+                # Store minimal JSON: p=price, t=timestamp(ms)
+                val = {
+                    "p": item.price,
+                    "t": int(item.timestamp.timestamp() * 1000)
+                    if item.timestamp
+                    else 0,
+                }
+                mapping[item.symbol] = json.dumps(val)
 
-            # NEW: Also populate the Hash Map for O(1) access
-            # Key: prev_close_map:{exchange_code}
-            hash_key = f"prev_close_map:{exchange_code}"
-            mapping = {item.symbol: str(item.price) for item in response}
             if mapping:
                 await redis.hset(hash_key, mapping=mapping)
-                # Set expiry same as list cache effectively (refresh resets it)
-                await redis.expire(hash_key, 3600)
+                # Set expiry to 24 hours (refresh daily) or until next manual sync
+                await redis.expire(hash_key, 86400)
 
         except Exception as e:
-            logger.error(f"Error caching prev_close to Redis: {e}")
+            logger.error(f"Error caching prev_close to Redis Hash: {e}")
 
     return response
 
@@ -569,7 +654,7 @@ async def _fetch_previous_closes_from_db(
     )
 
     # Use DISTINCT ON to get the latest record for each instrument efficiently
-    # This is PostgreSQL specific but highly efficient
+    # Fetch the LATEST close strictly before today_start
     stmt = (
         select(Instrument.symbol, PriceHistoryDaily.close, PriceHistoryDaily.datetime)
         .join(Instrument, PriceHistoryDaily.instrument_id == Instrument.id)
@@ -601,7 +686,26 @@ async def get_combined_daily_price_history(
         logger.error("Provider manager not initialized")
         return []
 
-    data = await provider_manager.get_daily_prices(instrument)
+    # Map Pydantic model to SQLAlchemy model stub for ProviderManager
+    # ProviderManager expects methods like .symbol and .exchange_id
+    inst_model = Instrument(
+        id=instrument.id,
+        symbol=instrument.symbol,
+        exchange_id=instrument.exchange_id,
+        instrument_type_id=instrument.instrument_type_id,
+        should_record_data=instrument.should_record_data,
+        name=instrument.name, # Optional but safe
+        is_active=instrument.is_active,
+    )
+
+    data = await provider_manager.get_daily_prices([inst_model])
+
+    # data is dict {symbol: list[PriceHistoryDaily]}
+    # Extract list for this instrument
+    if not data or instrument.symbol not in data:
+         return []
+
+    items = data[instrument.symbol]
 
     # Filter data to be up to current time
     current_time_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -621,7 +725,7 @@ async def get_combined_daily_price_history(
             deliver_percentage=d.deliver_percentage,
             resolve_required=d.resolve_required,
         )
-        for d in data
+        for d in items
         if d.datetime <= current_time_utc
     ]
 
@@ -637,7 +741,24 @@ async def get_combined_intraday_price_history(
         logger.error("Provider manager not initialized")
         return []
 
-    data = await provider_manager.get_intraday_prices(instrument)
+    # Map Pydantic model to SQLAlchemy model stub for ProviderManager
+    inst_model = Instrument(
+        id=instrument.id,
+        symbol=instrument.symbol,
+        exchange_id=instrument.exchange_id,
+        instrument_type_id=instrument.instrument_type_id,
+        should_record_data=instrument.should_record_data,
+        name=instrument.name, # Optional but safe
+        is_active=instrument.is_active,
+    )
+
+    data = await provider_manager.get_intraday_prices([inst_model])
+
+    # data is dict {symbol: list[PriceHistoryIntraday]}
+    if not data or instrument.symbol not in data:
+         return []
+
+    items = data[instrument.symbol]
 
     # Filter data to be up to current time
     current_time_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -658,6 +779,6 @@ async def get_combined_intraday_price_history(
             resolve_required=d.resolve_required,
             interval=d.interval if hasattr(d, "interval") else "5m",
         )
-        for d in data
+        for d in items
         if d.datetime <= current_time_utc
     ]

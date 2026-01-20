@@ -4,7 +4,7 @@ import pytz
 from datetime import datetime, timedelta, timezone
 from datetime import date as DateType
 from typing import List, Optional, Dict
-from sqlalchemy import select, update, func
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.redis_timeseries import get_redis_timeseries, RedisTimeSeries
@@ -218,11 +218,9 @@ class DataSaver:
                         inst_id = symbol_map.get(sym)
                         if inst_id:
                             # Create a dummy record with the target timestamp to indicate what we need
-                            # The timestamp is the START of the bucket we missed
-                            # The query_align_ts is the END of the bucket.
-                            # So start is query_align_ts - interval_ms
-                            interval_ms = interval_minutes * 60 * 1000
-                            bucket_start_ts = query_align_ts - interval_ms
+                            # The align_to_ts is the START of the bucket we missed.
+                            # So we use it directly.
+                            bucket_start_ts = align_to_ts
                             record_dt = datetime.fromtimestamp(
                                 bucket_start_ts / 1000, tz=timezone.utc
                             )
@@ -335,25 +333,24 @@ class DataSaver:
                                 ts / 1000, tz=timezone.utc
                             )
 
-                            # Update Intraday Record
-                            stmt = (
-                                update(PriceHistoryIntraday)
-                                .where(
-                                    PriceHistoryIntraday.instrument_id == instrument_id,
-                                    PriceHistoryIntraday.datetime == record_dt,
-                                )
-                                .values(
-                                    open=open_val,
-                                    high=high_val,
-                                    low=low_val,
-                                    close=close_val,
-                                    volume=vol_val,
-                                    resolve_required=False,
-                                )
+                            # Check if record exists first to avoid relying on rowcount
+                            existing_stmt = select(PriceHistoryIntraday).where(
+                                PriceHistoryIntraday.instrument_id == instrument_id,
+                                PriceHistoryIntraday.datetime == record_dt,
                             )
-                            result = await session.execute(stmt)
-                            if result.rowcount == 0:
-                                # Upsert: Insert if update failed (record doesn't exist)
+                            existing_result = await session.execute(existing_stmt)
+                            existing_record = existing_result.scalar_one_or_none()
+
+                            if existing_record:
+                                # Update existing record
+                                existing_record.open = open_val
+                                existing_record.high = high_val
+                                existing_record.low = low_val
+                                existing_record.close = close_val
+                                existing_record.volume = vol_val
+                                existing_record.resolve_required = False
+                            else:
+                                # Create new record
                                 logger.debug(
                                     f"Creating new intraday record for {symbol} at {record_dt}"
                                 )

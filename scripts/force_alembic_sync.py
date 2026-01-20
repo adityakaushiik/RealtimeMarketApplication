@@ -1,4 +1,3 @@
-import sqlalchemy
 from sqlalchemy import create_engine, text
 import sys
 import os
@@ -20,7 +19,7 @@ def fix_alembic_version(target_revision):
     if "postgresql+asyncpg" in url:
         url = url.replace("postgresql+asyncpg", "postgresql")
 
-    print(f"Connecting to database...")
+    print("Connecting to database...")
     engine = create_engine(url)
 
     with engine.connect() as connection:
