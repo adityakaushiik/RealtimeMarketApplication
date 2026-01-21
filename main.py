@@ -40,6 +40,7 @@ from models import Exchange, Instrument, ProviderInstrumentMapping
 
 import sentry_sdk
 
+from utils.parse_file import parse_csv_file
 
 sentry_sdk.init(
     dsn="https://87837fe7f05ab475836caf4864a1c150@o4510497758576640.ingest.us.sentry.io/4510497760673792",
@@ -73,24 +74,24 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown."""
     global subscriber_task, live_data_ingestion, data_saver, provider_manager, scheduled_jobs, gap_detection_service
 
-    # data = await parse_csv_file(file_path=r"C:\Users\tech\OneDrive\Documents\BSE_INSTRUMENTS_CSV1111.csv")
+    # data = await parse_csv_file(file_path=r"C:\Users\tech\Downloads\nasdaq_screener_1768980643297.csv")
     #
     # async for session in get_db_session():
     #     # 1. Get existing symbols once (fast)
     #     existing = await session.execute(
     #         select(Instrument.symbol).where(
-    #             Instrument.exchange_id == 8,
+    #             Instrument.exchange_id == 1,
     #             Instrument.instrument_type_id == 1
     #         )
     #     )
-    #     existing_symbols = {row[0].replace(".BSE", "") for row in existing}
+    #     existing_symbols = {row[0].replace(".NASDAQ", "") for row in existing}
     #
     #     # 2. Create missing ones
     #     await create_new_instruments_and_mappings(session, data, existing_symbols)
     #
-    #     # 3. Update search codes for existing
-    #     updated = await update_existing_search_codes(session, data)
-    #     print(f"Updated {updated} search codes")
+    #     # # 3. Update search codes for existing
+    #     # updated = await update_existing_search_codes(session, data)
+    #     # print(f"Updated {updated} search codes")
     #
     # return
 
@@ -321,17 +322,27 @@ async def create_new_instruments_and_mappings(
     new_mappings = []
 
     for row in csv_data:
-        symbol = row.get("UNDERLYING_SYMBOL")
+        symbol = row.get("Symbol")
+        exchange_id = 1
+        company_name = row.get("Name")
+
+
         if not symbol or symbol in existing_symbols:
             continue
 
+
+        symbol = symbol.strip()
+        symbol = f'{symbol}.NASDAQ'
+
         instrument = Instrument(
-            exchange_id=8,
+            exchange_id=exchange_id,
             instrument_type_id=1,
-            symbol=f"{symbol}.BSE",
-            name=row.get("DISPLAY_NAME"),
+            symbol=symbol,
+            name=company_name,
             is_active=True,
             should_record_data=False,
+            delisted=False,
+            blacklisted=False
         )
         new_instruments.append((instrument, row))
 
@@ -358,12 +369,15 @@ async def _process_creation_batch(
 
     # Create mappings
     for instrument, row in instruments_with_row:
+
+        search_code = instrument.symbol
+        search_code = search_code.replace(".NASDAQ", "")
+
         mapping = ProviderInstrumentMapping(
             provider_id=2,
             instrument_id=instrument.id,
-            provider_instrument_search_code=row.get("SECURITY_ID"),
+            provider_instrument_search_code=search_code,
             is_active=True,
-            provider_instrument_segment="BSE_EQ",
         )
         mappings_list.append(mapping)
         session.add(mapping)
@@ -377,74 +391,74 @@ async def _process_creation_batch(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-async def update_existing_search_codes(
-    session: AsyncSession, csv_data: List[Dict], batch_size: int = 500
-) -> int:
-    """
-    Updates ONLY provider_instrument_search_code for EXISTING instruments.
-    - Very fast: bulk update style + minimal loading
-    - Returns number of updated rows
-    """
-    session.expire_on_commit = False
-
-    # Get minimal data - only what we need
-    result = await session.execute(
-        select(Instrument.id, Instrument.symbol).where(
-            Instrument.exchange_id == 8, Instrument.instrument_type_id == 1
-        )
-    )
-    inst_map = {row.symbol.replace(".BSE", ""): row.id for row in result}
-
-    if not inst_map:
-        logger.info("No BSE equity instruments found in database")
-        return 0
-
-    updates_count = 0
-    update_statements = []
-
-    for row in csv_data:
-        symbol = row.get("UNDERLYING_SYMBOL")
-        new_code = row.get("SECURITY_ID")
-
-        if not symbol or not new_code:
-            continue
-
-        instrument_id = inst_map.get(symbol)
-        if not instrument_id:
-            continue
-
-        # We'll collect bulk update statements
-        update_statements.append(
-            update(ProviderInstrumentMapping)
-            .where(
-                ProviderInstrumentMapping.provider_id == 2,
-                ProviderInstrumentMapping.instrument_id == instrument_id,
-                ProviderInstrumentMapping.provider_instrument_search_code != new_code,
-            )
-            .values(provider_instrument_search_code=new_code)
-            .execution_options(synchronize_session=False)
-        )
-
-        updates_count += 1  # optimistic count
-
-        if len(update_statements) >= batch_size:
-            for stmt in update_statements:
-                await session.execute(stmt)
-            await session.commit()
-            update_statements.clear()
-            logger.info(f"Processed update batch ({updates_count} potential updates)")
-
-    # Final batch
-    if update_statements:
-        for stmt in update_statements:
-            await session.execute(stmt)
-        await session.commit()
-
-    actual_updated = await _get_actual_updated_count(session)  # optional verification
-    logger.info(
-        f"Update completed. Potential: {updates_count}, actual changes may be less."
-    )
-    return actual_updated or updates_count
+# async def update_existing_search_codes(
+#     session: AsyncSession, csv_data: List[Dict], batch_size: int = 500
+# ) -> int:
+#     """
+#     Updates ONLY provider_instrument_search_code for EXISTING instruments.
+#     - Very fast: bulk update style + minimal loading
+#     - Returns number of updated rows
+#     """
+#     session.expire_on_commit = False
+#
+#     # Get minimal data - only what we need
+#     result = await session.execute(
+#         select(Instrument.id, Instrument.symbol).where(
+#             Instrument.exchange_id == 8, Instrument.instrument_type_id == 1
+#         )
+#     )
+#     inst_map = {row.symbol.replace(".BSE", ""): row.id for row in result}
+#
+#     if not inst_map:
+#         logger.info("No BSE equity instruments found in database")
+#         return 0
+#
+#     updates_count = 0
+#     update_statements = []
+#
+#     for row in csv_data:
+#         symbol = row.get("UNDERLYING_SYMBOL")
+#         new_code = row.get("SECURITY_ID")
+#
+#         if not symbol or not new_code:
+#             continue
+#
+#         instrument_id = inst_map.get(symbol)
+#         if not instrument_id:
+#             continue
+#
+#         # We'll collect bulk update statements
+#         update_statements.append(
+#             update(ProviderInstrumentMapping)
+#             .where(
+#                 ProviderInstrumentMapping.provider_id == 2,
+#                 ProviderInstrumentMapping.instrument_id == instrument_id,
+#                 ProviderInstrumentMapping.provider_instrument_search_code != new_code,
+#             )
+#             .values(provider_instrument_search_code=new_code)
+#             .execution_options(synchronize_session=False)
+#         )
+#
+#         updates_count += 1  # optimistic count
+#
+#         if len(update_statements) >= batch_size:
+#             for stmt in update_statements:
+#                 await session.execute(stmt)
+#             await session.commit()
+#             update_statements.clear()
+#             logger.info(f"Processed update batch ({updates_count} potential updates)")
+#
+#     # Final batch
+#     if update_statements:
+#         for stmt in update_statements:
+#             await session.execute(stmt)
+#         await session.commit()
+#
+#     actual_updated = await _get_actual_updated_count(session)  # optional verification
+#     logger.info(
+#         f"Update completed. Potential: {updates_count}, actual changes may be less."
+#     )
+#     return actual_updated or updates_count
 
 
 async def _get_actual_updated_count(session: AsyncSession) -> int:
