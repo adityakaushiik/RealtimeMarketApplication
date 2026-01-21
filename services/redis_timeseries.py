@@ -202,9 +202,12 @@ class RedisTimeSeries:
     # ============================================================
 
     async def add_tick(
-        self, symbol: str, timestamp: int, price: float, volume: float = 0.0
+        self, symbol: str, timestamp: int, price: float, volume: Optional[float] = None
     ) -> None:
-        """Add a raw tick to the tick time series."""
+        """
+        Add a raw tick to the tick time series.
+        If volume is None or -1, the volume series update is skipped.
+        """
         r = self._get_client()
         price_key = self._tick_price_key(symbol)
         vol_key = self._tick_volume_key(symbol)
@@ -212,7 +215,8 @@ class RedisTimeSeries:
         try:
             async with r.pipeline() as pipe:
                 pipe.ts().add(price_key, timestamp, float(price), on_duplicate="last")
-                pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate="max")
+                if volume is not None and volume >= 0:
+                    pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate="max")
                 await pipe.execute()
         except ResponseError as e:
             err_str = str(e).lower()
@@ -222,7 +226,10 @@ class RedisTimeSeries:
                     pipe.ts().add(
                         price_key, timestamp, float(price), on_duplicate="last"
                     )
-                    pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate="max")
+                    if volume is not None and volume >= 0:
+                        pipe.ts().add(
+                            vol_key, timestamp, float(volume), on_duplicate="max"
+                        )
                     await pipe.execute()
             elif "timestamp cannot be older" in err_str:
                 pass

@@ -94,6 +94,8 @@ class DhanProvider(BaseMarketDataProvider):
         self.redis_mapper = get_redis_mapping_helper()
         # Local cache for fast lookup: {provider_symbol_code: internal_symbol}
         self.symbol_map: Dict[str, str] = {}
+        # Local cache for exchange ID lookup: {internal_symbol: exchange_id}
+        self.symbol_to_exchange_id_map: Dict[str, int] = {}
         # Local cache for exchange ID lookup
         self.symbol_exchange_map: Dict[str, str] = {}
 
@@ -442,6 +444,11 @@ class DhanProvider(BaseMarketDataProvider):
                 internal_sym = self.symbol_map.get(composite_key)
                 if internal_sym:
                     self.symbol_exchange_map[internal_sym] = ex_seg
+                    
+                    if self.provider_manager:
+                         exchange_id = self.provider_manager.get_exchange_id_for_symbol(internal_sym)
+                         if exchange_id:
+                             self.symbol_to_exchange_id_map[internal_sym] = exchange_id
 
     def message_handler(self, message: dict):
         """
@@ -534,7 +541,7 @@ class DhanProvider(BaseMarketDataProvider):
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
-                    "volume": 0,
+                    "volume": -1, # Use -1 to indicate no volume data in Ticker packet
                 }
 
             elif response_code == FeedResponseCode.QUOTE:
@@ -558,6 +565,9 @@ class DhanProvider(BaseMarketDataProvider):
                 # 3. No IST/UTC offset issues or negative values
                 ts = int(time.time() * 1000)
 
+                # Look up exchange ID
+                ex_id = self.symbol_to_exchange_id_map.get(final_symbol)
+
                 # Note: exchange_id and exchange_code are optional and primarily
                 # used for API data resolution, not real-time WebSocket ticks
                 format_data = DataIngestionFormat(
@@ -566,8 +576,8 @@ class DhanProvider(BaseMarketDataProvider):
                     price=ltp,
                     volume=float(volume),
                     timestamp=ts,
-                    exchange_id=None,
-                    exchange_code=None
+                    exchange_id=ex_id,
+                    exchange_code=exchange_str
                 )
 
                 await self.data_queue.add_data(format_data)
@@ -664,6 +674,9 @@ class DhanProvider(BaseMarketDataProvider):
                 if vol_to_use == 0:
                     vol_to_use = float(data.get("volume", 0))
 
+                # Look up exchange ID
+                ex_id = self.symbol_to_exchange_id_map.get(data["symbol"])
+
                 await self.data_queue.add_data(
                     DataIngestionFormat(
                         symbol=data["symbol"],
@@ -671,6 +684,8 @@ class DhanProvider(BaseMarketDataProvider):
                         volume=vol_to_use,
                         timestamp=ts,
                         provider_code="DHAN",
+                        exchange_id=ex_id,
+                        exchange_code=data.get("exchange")
                     )
                 )
 

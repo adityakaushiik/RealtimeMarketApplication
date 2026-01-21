@@ -10,6 +10,7 @@ from services.redis_timeseries import get_redis_timeseries
 from services.websocket_manager import get_websocket_manager
 from utils.binary_conversions import pack_update
 from utils.common_constants import DataIngestionFormat
+from services.data.market_hours_manager import get_market_hours_manager
 
 
 class LiveDataIngestion:
@@ -24,6 +25,9 @@ class LiveDataIngestion:
         self.redis_timeseries = get_redis_timeseries()
         self.websocket_manager = get_websocket_manager()
         self.redis = get_redis()
+        
+        self.market_hours_manager = get_market_hours_manager()
+        self._init_task = None
 
         # Stats tracking
         self.stats_processed_count = 0
@@ -38,6 +42,10 @@ class LiveDataIngestion:
         Batches writes to Redis for better performance.
         """
         logger.info("Starting data ingestion worker...")
+        
+        # Initialize market hours
+        await self.market_hours_manager.initialize()
+        
         batch_size = 50  # Process up to 50 items at a time
 
         while True:
@@ -74,6 +82,22 @@ class LiveDataIngestion:
     async def _process_message(self, message: DataIngestionFormat):
         """Process a single message and save to Redis."""
 
+        # 1. Check Market Hours
+        # If exchange_id is present, verify if market is open
+        if message.exchange_id:
+            if not self.market_hours_manager.is_market_open(message.exchange_id, message.timestamp):
+                # Market closed. Skip saving to DB.
+                # But what about broadcasting? 
+                # Usually we stop broadcasting too to prevent 'ghost' ticks.
+                # However, if it's a 'close' price update (final packet), we might want it.
+                # The market_hours_manager has a buffer (15m) for post-market.
+                # If it returns False, it means we are way past closing.
+                
+                # Log occasionally
+                if message.timestamp % 100 == 0: # Simple throttling
+                     pass 
+                return
+
         # Update stats
         self.stats_processed_count += 1
         self.stats_symbol_counts[message.symbol] = (
@@ -84,24 +108,41 @@ class LiveDataIngestion:
         # No need to resolve here anymore.
         symbol_to_use = message.symbol
 
-        # Calculate Volume Delta (Tick Size)
-        current_volume = int(message.volume)
-        last_volume = self.last_volumes.get(symbol_to_use)
+        # Check for invalid/missing volume (e.g. from Ticker updates)
+        # Dhan provider sends -1 for missing volume.
+        is_volume_valid = message.volume >= 0
 
-        if last_volume is None:
-            # First tick seen since restart.
-            # If we assume 0, we might get a huge spike equal to daily volume.
-            # If we assume current, we miss the volume of this specific tick.
-            # Safety choice: Assume current_volume is the baseline, delta is 0 for this first tick.
+        if not is_volume_valid:
+            # Volume unknown/missing - assume 0 delta and do NOT update cache
             tick_volume = 0
         else:
-            tick_volume = current_volume - last_volume
-            if tick_volume < 0:
-                # Data correction or reset event on provider side
-                tick_volume = 0
+            # Calculate Volume Delta (Tick Size)
+            current_volume = int(message.volume)
+            last_volume = self.last_volumes.get(symbol_to_use)
 
-        # Update cache
-        self.last_volumes[symbol_to_use] = current_volume
+            if last_volume is None:
+                # First tick seen since restart.
+                # If we assume 0, we might get a huge spike equal to daily volume.
+                # If we assume current, we miss the volume of this specific tick.
+                # Safety choice: Assume current_volume is the baseline, delta is 0 for this first tick.
+                tick_volume = 0
+            else:
+                tick_volume = current_volume - last_volume
+                if tick_volume < 0:
+                    # Data correction or reset event on provider side
+                    tick_volume = 0
+
+            # Update cache
+            self.last_volumes[symbol_to_use] = current_volume
+
+        # Determine effective volume for downstream operations
+        # If current msg has no volume (-1), we rely on last known volume.
+        # If we have no history either, we pass -1 (to skip save) and 0 (for UI).
+        effective_volume = -1
+        if is_volume_valid:
+            effective_volume = message.volume
+        elif symbol_to_use in self.last_volumes:
+            effective_volume = self.last_volumes[symbol_to_use]
 
         tasks = [
             # Save to timeseries
@@ -109,7 +150,7 @@ class LiveDataIngestion:
                 symbol=symbol_to_use,
                 timestamp=message.timestamp,
                 price=message.price,
-                volume=message.volume,  # Storing Cumulative in DB is usually correct for consistency
+                volume=effective_volume,  # If -1, add_tick filters it out
                 provider_code=message.provider_code,
             ),
             # Broadcast to clients
@@ -117,7 +158,7 @@ class LiveDataIngestion:
                 symbol=symbol_to_use,
                 timestamp=message.timestamp,
                 price=message.price,
-                volume=message.volume,  # Total Daily Volume (for UI Labels)
+                volume=effective_volume if effective_volume >= 0 else 0, # UI friendly
                 tick_volume=tick_volume,  # Delta Volume (for Charts/Candles)
                 provider_code=message.provider_code,
             ),
