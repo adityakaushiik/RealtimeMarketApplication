@@ -1,0 +1,25 @@
+DO NOT DELETE
+
+Findings for Yahoo Finance Provider:
+
+1. Tick Data Timestamp:
+   - Format: System Time (UTC)
+   - Type: Epoch Milliseconds
+   - Note: The provider sets the timestamp using `int(time.time() * 1000)` in `message_handler`.
+
+2. Intraday Data Timestamp:
+   - Returned Time: Naive Market Time (Treated as UTC).
+   - `yfinance` download is called with `ignore_tz=True`. This usually results in candles having the local market time (e.g., 15:25 for Last Update in India) but without timezone info.
+   - The provider then does `dt.replace(tzinfo=timezone.utc)`.
+   - **Result**: A candle happening at 15:25 IST is stored as `15:25 UTC`. This implies there is a timezone offset discrepancy in the stored data (it is effectively stored as Market Time, not True UTC).
+
+3. Daily Data Timestamp:
+   - Returned Time: Midnight (Naive -> UTC).
+   - Date string becomes `YYYY-MM-DD 00:00:00`.
+   - Provider forces invalid UTC timezone onto it.
+   - Result: `2026-01-20 00:00:00+00:00`.
+
+4. Data Format for Requests:
+   - Request inputs are standard Python `datetime` objects.
+   - The provider passes them to `yfinance.download`.
+   - `yfinance` handles the necessary conversions internally.

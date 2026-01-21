@@ -1,0 +1,26 @@
+DO NOT DELETE
+
+Findings for Dhan Provider:
+
+1. Tick Data Timestamp:
+   - Format: System Time (UTC)
+   - Type: Epoch Milliseconds
+   - Note: The provider sets the timestamp using `int(time.time() * 1000)` upon receipt of the message. It extracts 'LTT' (Last Traded Time) from Ticker packets but uses system time for the Quote packets (which are primarily used).
+
+2. Intraday Data Timestamp:
+   - Returned Time: UTC
+   - The Dhan API returns standard Unix epoch timestamps (seconds).
+   - The provider correctly converts these to UTC datetime objects using `datetime.fromtimestamp(ts, tz=timezone.utc)`.
+   - Verified: Intraday candles are stored with correct UTC info.
+
+3. Daily Data Timestamp:
+   - Returned Time: UTC (effectively midnight IST shifted to UTC approx, or just Date stamp).
+   - The Dhan API returns Unix epoch timestamps.
+   - The provider converts these to UTC.
+   - Note: Daily candles often align to 00:00 IST or 18:30 UTC (previous day) depending on the exact epoch returned. Test showed `2026-01-18 18:30:00+00:00` for a daily candle, which corresponds to `2026-01-19 00:00:00 IST`. So it represents the "Start of Day" in IST, expressed as UTC.
+
+4. Data Format for Requests:
+   - The script must convert UTC start/end times to **IST** before sending to Dhan.
+   - Intraday Format: `YYYY-MM-DD HH:MM:SS` (in IST).
+   - Daily Format: `YYYY-MM-DD` (in IST).
+   - The provider implementation handles this conversion internally (converting input `start_date` and `end_date` to 'Asia/Kolkata').
