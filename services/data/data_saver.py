@@ -50,118 +50,99 @@ class DataSaver:
         self.exchanges.append(exchange)
         logger.info(f"Added exchange: {exchange.name}")
 
-    async def start_all_exchanges(self, interval_minutes: Optional[int] = None) -> None:
-        """Start periodic updates for all exchanges."""
+    async def start_all_exchanges(self, interval_minutes: int = 60) -> None:
+        """Start global periodic saver."""
         if not self.exchanges:
             logger.warning("No exchanges registered")
             return
 
-        for exchange in self.exchanges:
-            task = asyncio.create_task(
-                self.run_periodic_save(exchange, interval_minutes)
-            )
-            self._running_tasks[exchange.name] = task
-
-        logger.info(f"Started periodic updates for {len(self.exchanges)} exchange(s)")
+        # Start a single global task if not already running
+        if "GLOBAL" not in self._running_tasks:
+            self._stop_flags["GLOBAL"] = False
+            task = asyncio.create_task(self.run_global_hourly_save(interval_minutes))
+            self._running_tasks["GLOBAL"] = task
+            logger.info("Started global hourly data saver task")
 
     async def stop_all_exchanges(self) -> None:
-        """Stop all running periodic updates."""
-        for exchange_name in self._running_tasks:
-            self._stop_flags[exchange_name] = True
+        """Stop global periodic saver."""
+        self._stop_flags["GLOBAL"] = True
+        
+        if "GLOBAL" in self._running_tasks:
+            task = self._running_tasks["GLOBAL"]
+            # Cancel the task
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            del self._running_tasks["GLOBAL"]
+            
+        logger.info("Stopped global periodic saver")
 
-        if self._running_tasks:
-            await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
+    async def run_global_hourly_save(self, interval_minutes: int = 60) -> None:
+        """
+        Run a single periodic save loop that triggers updates for all exchanges
+        at regular intervals (aligned to the hour).
+        """
+        logger.info(f"Starting global saver loop (Interval: {interval_minutes}m)")
+        
+        interval_ms = interval_minutes * 60 * 1000
 
-        self._running_tasks.clear()
-        self._stop_flags.clear()
-        logger.info("Stopped all periodic updates")
+        try:
+            while not self._stop_flags.get("GLOBAL", False):
+                now_ts = int(time.time() * 1000)
+                
+                # Calculate next alignment point (e.g., next hour mark)
+                next_interval_ts = ((now_ts // interval_ms) + 1) * interval_ms
+                
+                # Wait until next interval + buffer
+                wait_ms = next_interval_ts - now_ts + 5000  # 5s buffer
+                
+                logger.info(f"[GlobalSaver] Sleeping for {wait_ms / 1000:.1f}s until next interval")
+                await asyncio.sleep(wait_ms / 1000)
+
+                if self._stop_flags.get("GLOBAL", False):
+                    break
+
+                logger.info("[GlobalSaver] Waking up to save data for all exchanges...")
+                
+                # We want the bucket that just finished
+                target_bucket_ts = next_interval_ts - interval_ms
+                
+                for exchange in self.exchanges:
+                    # Update exchange timestamps just in case they are needed for internal logic
+                    # (though we are bypassing the open/close check loop)
+                    try:
+                        tz = pytz.timezone(exchange.timezone)
+                        exchange.update_timestamps_for_date(datetime.now(tz).date())
+                    except Exception as e:
+                        logger.warn(f"Failed to update timestamps for {exchange.name}: {e}")
+
+                    # Run update for this exchange
+                    # We create a task per exchange to run them in parallel? 
+                    # The user said "wont have to run separate exchange saves", but parallel is better for performance.
+                    # Or sequential is fine if volume is low.
+                    # Let's do sequential to avoid DB contention if any.
+                    try:
+                        await self.update_records_for_interval(
+                            exchange, interval_minutes, target_bucket_ts
+                        )
+                    except Exception as e:
+                        logger.error(f"Error executing save for {exchange.name}: {e}")
+
+        except asyncio.CancelledError:
+            logger.info("Global saver task cancelled")
+        except Exception as e:
+            logger.error(f"Fatal error in global saver: {e}", exc_info=True)
 
     async def run_periodic_save(
         self, exchange: Exchange, interval_minutes: Optional[int] = None
     ) -> None:
         """
-        Run periodic updates for a specific exchange.
+        Run periodic updates for a specific exchange. 
+        DEPRECATED: Use run_global_hourly_save instead.
         """
-        exchange_name = exchange.name
-        interval = (
-            interval_minutes
-            if interval_minutes is not None
-            else exchange.interval_minutes
-        )
-        interval_ms = interval * 60 * 1000
-
-        logger.info(
-            f"Starting periodic update for {exchange_name} (Interval: {interval}m)"
-        )
-
-        tz = pytz.timezone(exchange.timezone)
-
-        try:
-            while not self._stop_flags.get(exchange_name, False):
-                current_time_ms = int(time.time() * 1000)
-                logger.debug(
-                    f"[{exchange_name}] Check: Current={current_time_ms}, Start={exchange.start_time}, End={exchange.end_time}"
-                )
-
-                # Check if market is open or if we should do a final save
-                if current_time_ms > exchange.end_time + interval_ms:
-                    # Market closed for the current configured day.
-                    # Check if we need to roll over to tomorrow or if we just need to update to today (if stale).
-                    current_date = datetime.now(tz).date()
-
-                    # Update to current date first
-                    exchange.update_timestamps_for_date(current_date)
-
-                    # Check again
-                    if current_time_ms > exchange.end_time + interval_ms:
-                        # Still closed for today, so move to tomorrow
-                        next_date = current_date + timedelta(days=1)
-                        exchange.update_timestamps_for_date(next_date)
-                        logger.info(
-                            f"Market closed for {exchange_name}. Waiting for next session on {next_date}..."
-                        )
-                    else:
-                        logger.info(
-                            f"Updated schedule for {exchange_name} to today {current_date}"
-                        )
-
-                    # Continue to loop to hit the wait block
-                    continue
-
-                if current_time_ms < exchange.start_time:
-                    wait_ms = exchange.start_time - current_time_ms
-                    logger.info(f"Waiting {wait_ms / 1000:.0f}s for market open...")
-                    await asyncio.sleep(wait_ms / 1000)
-                    continue
-
-                # Calculate alignment to the next interval
-                # We want to run slightly after the interval closes to ensure data is available
-                next_interval_ts = ((current_time_ms // interval_ms) + 1) * interval_ms
-                wait_ms = next_interval_ts - current_time_ms + 5000  # Add 5s buffer
-
-                logger.info(
-                    f"[{exchange_name}] Sleeping for {wait_ms / 1000:.1f}s until next interval"
-                )
-                await asyncio.sleep(wait_ms / 1000)
-
-                if self._stop_flags.get(exchange_name, False):
-                    break
-
-                logger.info(f"[{exchange_name}] Woke up. Updating records...")
-                # We want the bucket that just finished, so we subtract one interval
-                # e.g. if we woke up at 10:05:05 (target 10:05:00), we want the 10:00:00 bucket
-                target_bucket_ts = next_interval_ts - interval_ms
-                await self.update_records_for_interval(
-                    exchange, interval, target_bucket_ts
-                )
-
-        except asyncio.CancelledError:
-            logger.info(f"Periodic update cancelled for {exchange_name}")
-        except Exception as e:
-            logger.error(
-                f"Fatal error in periodic update for {exchange_name}: {e}",
-                exc_info=True,
-            )
+        logger.warning(f"run_periodic_save called for {exchange.name} but is deprecated.")
 
     async def update_records_for_interval(
         self, exchange: Exchange, interval_minutes: int, align_to_ts: int
