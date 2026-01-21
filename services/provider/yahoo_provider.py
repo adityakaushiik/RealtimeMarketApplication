@@ -17,23 +17,37 @@ class YahooFinanceProvider(BaseMarketDataProvider):
     def __init__(self):
         super().__init__(provider_code="YF")
         self.redis_mapper = get_redis_mapping_helper()
-        self.symbol_map: Dict[str, str] = {}
+        self.symbol_map: Dict[str, str] = {}  # Provider to Internal
+        self.provider_symbol_map: Dict[str, str] = {}  # Internal to Provider
+
+    async def _ensure_mappings_loaded(self):
+        """Ensure symbol mappings are loaded from Redis."""
+        if not self.symbol_map or not self.provider_symbol_map:
+            try:
+                self.symbol_map = await self.redis_mapper.get_all_p2i_mappings("YF")
+                self.provider_symbol_map = await self.redis_mapper.get_all_i2p_mappings(
+                    "YF"
+                )
+                logger.info(
+                    f"Loaded {len(self.symbol_map)} p2i and {len(self.provider_symbol_map)} i2p mappings for Yahoo"
+                )
+            except Exception as e:
+                logger.error(f"Failed to load symbol mappings: {e}")
 
     async def connect_websocket(self, symbols: list[str]):
         """Connect to Yahoo Finance WebSocket for live data using AsyncWebSocket."""
         try:
             # Load mappings
-            try:
-                self.symbol_map = await self.redis_mapper.get_all_p2i_mappings("YF")
-                logger.info(f"Loaded {len(self.symbol_map)} symbol mappings for Yahoo")
-            except Exception as e:
-                logger.error(f"Failed to load symbol mappings: {e}")
+            await self._ensure_mappings_loaded()
 
             # Initialize AsyncWebSocket
             self.websocket_connection = yf.AsyncWebSocket()
 
+            # Map to provider symbols
+            provider_symbols = [self.provider_symbol_map.get(s, s) for s in symbols]
+
             # Subscribe to symbols
-            await self.websocket_connection.subscribe(symbols)
+            await self.websocket_connection.subscribe(provider_symbols)
             self.subscribed_symbols.update(symbols)
             self.is_connected = True
             logger.info(f"Yahoo Finance connected with {len(symbols)} symbols")
@@ -82,11 +96,15 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         if self.websocket_connection:
             try:
                 if self.subscribed_symbols:
+                    await self._ensure_mappings_loaded()
+                    # Map to provider symbols
+                    provider_symbols = [
+                        self.provider_symbol_map.get(s, s)
+                        for s in self.subscribed_symbols
+                    ]
                     # Depending on yfinance version, unsubscribe might be needed or just closing
                     # The library might strictly require a list, converting set to list
-                    await self.websocket_connection.unsubscribe(
-                        list(self.subscribed_symbols)
-                    )
+                    await self.websocket_connection.unsubscribe(provider_symbols)
 
                 # Cancel the listener task if running
                 if hasattr(self, "_listen_task") and self._listen_task:
@@ -114,7 +132,10 @@ class YahooFinanceProvider(BaseMarketDataProvider):
 
         if self.websocket_connection and symbols:
             try:
-                await self.websocket_connection.subscribe(symbols)
+                await self._ensure_mappings_loaded()
+                # Map to provider symbols
+                provider_symbols = [self.provider_symbol_map.get(s, s) for s in symbols]
+                await self.websocket_connection.subscribe(provider_symbols)
                 self.subscribed_symbols.update(symbols)
                 logger.info(f"Yahoo Finance subscribed to {len(symbols)} new symbols")
             except Exception as e:
@@ -124,7 +145,10 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         """Remove symbols from Yahoo Finance subscription."""
         if self.websocket_connection and symbols:
             try:
-                await self.websocket_connection.unsubscribe(symbols)
+                await self._ensure_mappings_loaded()
+                # Map to provider symbols
+                provider_symbols = [self.provider_symbol_map.get(s, s) for s in symbols]
+                await self.websocket_connection.unsubscribe(provider_symbols)
                 self.subscribed_symbols.difference_update(symbols)
                 logger.info(f"Yahoo Finance unsubscribed from {len(symbols)} symbols")
             except Exception as e:
@@ -143,7 +167,10 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         if not instruments:
             return {}
 
-        symbols = [i.symbol for i in instruments]
+        await self._ensure_mappings_loaded()
+        symbols = [
+            self.provider_symbol_map.get(i.symbol, i.symbol) for i in instruments
+        ]
         logger.info(f"Fetching intraday prices from YF for {len(symbols)} symbols")
 
         # Default to last 5 days if no dates provided
@@ -183,32 +210,44 @@ class YahooFinanceProvider(BaseMarketDataProvider):
 
             # Handle single symbol vs multiple symbols structure
             if len(symbols) == 1:
-                symbol = symbols[0]
+                provider_symbol = symbols[0]
+                # Map back to internal symbol
+                internal_symbol = self.symbol_map.get(provider_symbol, provider_symbol)
+
                 # Check if MultiIndex (happens if group_by='ticker' is respected even for 1 symbol)
                 if isinstance(df.columns, pd.MultiIndex):
                     try:
-                        symbol_df = df[symbol]
-                        result[symbol] = self._parse_intraday_dataframe(
-                            symbol_df, symbol
+                        symbol_df = df[provider_symbol]
+                        result[internal_symbol] = self._parse_intraday_dataframe(
+                            symbol_df, internal_symbol
                         )
                     except KeyError:
                         # Fallback if symbol is not top level (maybe it's not MultiIndex but looks like it?)
                         # Or maybe columns are just Open, High...
-                        result[symbol] = self._parse_intraday_dataframe(df, symbol)
+                        result[internal_symbol] = self._parse_intraday_dataframe(
+                            df, internal_symbol
+                        )
                 else:
-                    result[symbol] = self._parse_intraday_dataframe(df, symbol)
+                    result[internal_symbol] = self._parse_intraday_dataframe(
+                        df, internal_symbol
+                    )
             else:
                 # Multi-index columns: (Ticker, OHLCV)
-                for symbol in symbols:
+                for provider_symbol in symbols:
+                    internal_symbol = self.symbol_map.get(
+                        provider_symbol, provider_symbol
+                    )
                     try:
                         # Check if symbol is in columns (top level)
-                        if symbol in df.columns:
-                            symbol_df = df[symbol].dropna()
-                            result[symbol] = self._parse_intraday_dataframe(
-                                symbol_df, symbol
+                        if provider_symbol in df.columns:
+                            symbol_df = df[provider_symbol].dropna()
+                            result[internal_symbol] = self._parse_intraday_dataframe(
+                                symbol_df, internal_symbol
                             )
                     except Exception as e:
-                        logger.error(f"Error parsing intraday data for {symbol}: {e}")
+                        logger.error(
+                            f"Error parsing intraday data for {provider_symbol}: {e}"
+                        )
 
             return result
 
@@ -264,7 +303,10 @@ class YahooFinanceProvider(BaseMarketDataProvider):
         if not instruments:
             return {}
 
-        symbols = [i.symbol for i in instruments]
+        await self._ensure_mappings_loaded()
+        symbols = [
+            self.provider_symbol_map.get(i.symbol, i.symbol) for i in instruments
+        ]
         logger.info(f"Fetching daily prices from YF for {len(symbols)} symbols")
 
         # Default to last 1 year if no dates provided
@@ -296,25 +338,36 @@ class YahooFinanceProvider(BaseMarketDataProvider):
             result = {}
 
             if len(symbols) == 1:
-                symbol = symbols[0]
+                provider_symbol = symbols[0]
+                internal_symbol = self.symbol_map.get(provider_symbol, provider_symbol)
+
                 if isinstance(df.columns, pd.MultiIndex):
                     try:
-                        symbol_df = df[symbol]
-                        result[symbol] = self._parse_daily_dataframe(symbol_df, symbol)
+                        symbol_df = df[provider_symbol]
+                        result[internal_symbol] = self._parse_daily_dataframe(
+                            symbol_df, internal_symbol
+                        )
                     except KeyError:
-                        result[symbol] = self._parse_daily_dataframe(df, symbol)
+                        result[internal_symbol] = self._parse_daily_dataframe(
+                            df, internal_symbol
+                        )
                 else:
-                    result[symbol] = self._parse_daily_dataframe(df, symbol)
+                    result[internal_symbol] = self._parse_daily_dataframe(
+                        df, internal_symbol
+                    )
             else:
-                for symbol in symbols:
+                for provider_symbol in symbols:
+                    internal_symbol = self.symbol_map.get(
+                        provider_symbol, provider_symbol
+                    )
                     try:
-                        if symbol in df.columns:
-                            symbol_df = df[symbol].dropna()
-                            result[symbol] = self._parse_daily_dataframe(
-                                symbol_df, symbol
+                        if provider_symbol in df.columns:
+                            symbol_df = df[provider_symbol].dropna()
+                            result[internal_symbol] = self._parse_daily_dataframe(
+                                symbol_df, internal_symbol
                             )
                     except Exception as e:
-                        logger.error(f"Error parsing daily data for {symbol}: {e}")
+                        logger.error(f"Error parsing daily data for {provider_symbol}: {e}")
 
             return result
 
