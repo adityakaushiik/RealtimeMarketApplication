@@ -698,14 +698,13 @@ async def get_combined_daily_price_history(
         is_active=instrument.is_active,
     )
 
-    data = await provider_manager.get_daily_prices([inst_model])
+    data = await provider_manager.get_daily_prices(inst_model)
 
-    # data is dict {symbol: list[PriceHistoryDaily]}
-    # Extract list for this instrument
-    if not data or instrument.symbol not in data:
+    # data is list[PriceHistoryDaily]
+    if not data:
          return []
 
-    items = data[instrument.symbol]
+    items = data
 
     # Filter data to be up to current time
     current_time_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -752,13 +751,13 @@ async def get_combined_intraday_price_history(
         is_active=instrument.is_active,
     )
 
-    data = await provider_manager.get_intraday_prices([inst_model])
+    data = await provider_manager.get_intraday_prices(inst_model)
 
-    # data is dict {symbol: list[PriceHistoryIntraday]}
-    if not data or instrument.symbol not in data:
+    # data is list[PriceHistoryIntraday]
+    if not data:
          return []
 
-    items = data[instrument.symbol]
+    items = data
 
     # Filter data to be up to current time
     current_time_utc = datetime.datetime.now(datetime.timezone.utc)
