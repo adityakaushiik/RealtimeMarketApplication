@@ -20,7 +20,7 @@ from features.marketdata.marketdata_schema import (
     PriceHistoryDailyInDb,
     InstrumentPreviousClose,
 )
-from models import PriceHistoryIntraday, PriceHistoryDaily, Instrument
+from models import PriceHistoryIntraday, PriceHistoryDaily, Instrument, Exchange
 from services.provider.provider_manager import get_provider_manager
 from services.redis_timeseries import get_redis_timeseries
 
@@ -541,20 +541,38 @@ async def get_previous_close_for_symbol(
             pass
 
     # 2. DB Fallback (Specific Symbol)
-    # Get Instrument ID
-    stmt_inst = select(Instrument.id).where(Instrument.symbol == symbol)
-    inst_id = (await session.execute(stmt_inst)).scalar_one_or_none()
+    # We need timezone to know "today" boundary so we don't accidentally pick up today's partial record
+    stmt_info = (
+        select(Instrument.id, Exchange.timezone)
+        .join(Exchange, Instrument.exchange_id == Exchange.id)
+        .where(Instrument.symbol == symbol)
+    )
+    result = (await session.execute(stmt_info)).first()
+
+    inst_id = None
+    # Default to UTC if we can't find exchange or timezone info
+    tz_name = "UTC"
+
+    if result:
+        inst_id, tz_found = result
+        if tz_found:
+            tz_name = tz_found
+    else:
+        # Fallback if exchange join failed (rare but possible if bad data)
+        stmt_inst = select(Instrument.id).where(Instrument.symbol == symbol)
+        inst_id = (await session.execute(stmt_inst)).scalar_one_or_none()
 
     if not inst_id:
         return None
 
-    # Simplified: Get latest daily record strictly before 'now' (minus small buffer if needed)
-    # Removing invalid timezone access. Just get latest finalized daily record.
+    # Get start of today in exchange timezone, converted to UTC
+    today_utc = _get_today_boundary_utc(tz_name)
 
     stmt_price = (
         select(PriceHistoryDaily.close)
         .where(
             PriceHistoryDaily.instrument_id == inst_id,
+            PriceHistoryDaily.datetime < today_utc,  # Strictly before today
         )
         .order_by(PriceHistoryDaily.datetime.desc())
         .limit(1)
