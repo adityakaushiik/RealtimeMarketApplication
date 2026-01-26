@@ -251,13 +251,43 @@ class DhanProvider(BaseMarketDataProvider):
 
     async def _run_websocket_loop(self):
         """Main WebSocket loop handling connection, subscription and data processing"""
+        from services.data.market_hours_manager import get_market_hours_manager
+        
         url = f"{self.WS_URL}?version=2&token={self.access_token}&clientId={self.client_id}&authType=2"
         reconnect_delay = 5
         last_connected_time: Optional[int] = (
             None  # Track disconnect time for gap detection
         )
+        
+        market_hours_manager = get_market_hours_manager()
 
         while self._running:
+            # Holiday Check: If today is a holiday for ALL ACTIVE exchanges, skip connection
+            try:
+                if not market_hours_manager.exchanges:
+                    await market_hours_manager.initialize()
+                
+                today = datetime.now().date()
+                
+                # Get all active exchanges
+                active_exchanges = [ex for ex in market_hours_manager.exchanges.values() if ex.is_active]
+                all_active_closed = True
+                
+                # If we have exchange info, check holidays. If not (unlikely after init), proceed.
+                if active_exchanges:
+                    for ex in active_exchanges:
+                        if not market_hours_manager.is_holiday(ex.id, today):
+                            all_active_closed = False
+                            break
+                    
+                    if all_active_closed:
+                        logger.info("All active exchanges are closed (Holiday). Pausing Dhan WebSocket for 30 minutes.")
+                        await asyncio.sleep(1800) # Sleep 30 mins and check again
+                        continue
+            except Exception as e:
+                logger.error(f"Error checking market holidays in Dhan loop: {e}")
+                # Don't crash loop, just proceed to connect attempt
+            
             disconnect_time = int(time.time() * 1000) if last_connected_time else None
 
             try:
@@ -607,8 +637,9 @@ class DhanProvider(BaseMarketDataProvider):
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
-                    "volume": float(ltq),
-                    "total_volume": float(volume),  # Cumulative volume
+                    "volume": float(volume),  # Cumulative volume (Total Buy + Sell or just Total Traded?)
+                    "last_trade_qty": float(ltq),
+                    "total_volume": float(volume),
                 }
 
                 # Full packet implies we might get prev close (close_price is prev close in the Full packet spec usually)

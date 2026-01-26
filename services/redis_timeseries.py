@@ -114,10 +114,16 @@ class RedisTimeSeries:
                 vol_key,
                 retention_msecs=self.TICK_RETENTION_MS,
                 labels={"type": "tick", "field": "volume", "symbol": symbol},
-                duplicate_policy="max",
+                duplicate_policy="sum",
             )
         except ResponseError as e:
-            if "key already exists" not in str(e).lower():
+            if "key already exists" in str(e).lower():
+                # Enforce SUM policy on existing keys (Critical for Delta Volume Fix)
+                try:
+                    await r.ts().alter(vol_key, duplicate_policy="sum")
+                except Exception as ex:
+                    logger.warning(f"Error altering policy for {vol_key}: {ex}")
+            else:
                 logger.warning(f"Error creating timeseries {vol_key}: {e}")
 
     async def create_5m_timeseries(self, symbol: str) -> None:
@@ -143,7 +149,15 @@ class RedisTimeSeries:
                 )
             except ResponseError as e:
                 # Ignore "key already exists" errors
-                if "key already exists" not in str(e).lower():
+                if "key already exists" in str(e).lower():
+                    if field == "volume":
+                        try:
+                            await r.ts().alter(key, duplicate_policy="sum")
+                        except Exception as ex:
+                            logger.warning(
+                                f"Error altering 5m volume policy for {key}: {ex}"
+                            )
+                else:
                     logger.warning(f"Error creating 5m timeseries {key}: {e}")
 
     async def setup_downsampling_rules(self, symbol: str) -> None:
@@ -160,7 +174,7 @@ class RedisTimeSeries:
             (tick_price, self._5m_high_key(symbol), "max"),
             (tick_price, self._5m_low_key(symbol), "min"),
             (tick_price, self._5m_close_key(symbol), "last"),
-            (tick_volume, self._5m_volume_key(symbol), "range"),
+            (tick_volume, self._5m_volume_key(symbol), "sum"),
         ]
 
         for source_key, dest_key, agg_type in rules:
@@ -173,7 +187,21 @@ class RedisTimeSeries:
                 )
             except ResponseError as e:
                 err_msg = str(e).lower()
-                if (
+                # FIX: Force update Volume rule from RANGE to SUM if it exists
+                if "volume" in source_key and ("rule already exists" in err_msg or "destination key already has a src rule" in err_msg):
+                    try:
+                        # Deleting the existing rule (likely RANGE) to replace with SUM
+                        await r.ts().deleterule(source_key, dest_key)
+                        await r.ts().createrule(
+                            source_key,
+                            dest_key,
+                            aggregation_type=agg_type,
+                            bucket_size_msec=self.BUCKET_5M_MS,
+                        )
+                        logger.info(f"Updated downsampling rule for {source_key} to SUM")
+                    except Exception as ex:
+                         logger.warning(f"Failed to update volume rule for {source_key}: {ex}")
+                elif (
                     "rule already exists" not in err_msg
                     and "destination key already has a src rule" not in err_msg
                 ):
@@ -216,7 +244,7 @@ class RedisTimeSeries:
             async with r.pipeline() as pipe:
                 pipe.ts().add(price_key, timestamp, float(price), on_duplicate="last")
                 if volume is not None and volume >= 0:
-                    pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate="max")
+                    pipe.ts().add(vol_key, timestamp, float(volume), on_duplicate="sum")
                 await pipe.execute()
         except ResponseError as e:
             err_str = str(e).lower()
@@ -228,7 +256,7 @@ class RedisTimeSeries:
                     )
                     if volume is not None and volume >= 0:
                         pipe.ts().add(
-                            vol_key, timestamp, float(volume), on_duplicate="max"
+                            vol_key, timestamp, float(volume), on_duplicate="sum"
                         )
                     await pipe.execute()
             elif "timestamp cannot be older" in err_str:

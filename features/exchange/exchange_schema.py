@@ -4,6 +4,32 @@ from datetime import time, date
 from models.base_model_py import BaseModelPy
 
 
+
+class ExchangeHolidayBase(BaseModelPy):
+    date: date
+    description: Optional[str] = None
+    is_closed: bool = True
+    open_time: Optional[time] = None
+    close_time: Optional[time] = None
+
+
+class ExchangeHolidayCreate(ExchangeHolidayBase):
+    exchange_id: int
+
+
+class ExchangeHolidayUpdate(BaseModelPy):
+    date: Optional[date] = None
+    description: Optional[str] = None
+    is_closed: Optional[bool] = None
+    open_time: Optional[time] = None
+    close_time: Optional[time] = None
+
+
+class ExchangeHolidayInDb(ExchangeHolidayBase):
+    id: int
+    exchange_id: int
+
+
 class ExchangeBase(BaseModelPy):
     name: str
     code: str
@@ -34,6 +60,7 @@ class ExchangeUpdate(BaseModelPy):
 
 class ExchangeInDb(ExchangeBase):
     id: int
+    current_day_holidays: list[ExchangeHolidayInDb] = []
 
 
 class ExchangeProviderMappingCreate(BaseModelPy):
@@ -55,26 +82,4 @@ class ExchangeProviderMappingInDb(BaseModelPy):
     is_primary: bool
 
 
-class ExchangeHolidayBase(BaseModelPy):
-    date: date
-    description: Optional[str] = None
-    is_closed: bool = True
-    open_time: Optional[time] = None
-    close_time: Optional[time] = None
 
-
-class ExchangeHolidayCreate(ExchangeHolidayBase):
-    exchange_id: int
-
-
-class ExchangeHolidayUpdate(BaseModelPy):
-    date: Optional[date] = None
-    description: Optional[str] = None
-    is_closed: Optional[bool] = None
-    open_time: Optional[time] = None
-    close_time: Optional[time] = None
-
-
-class ExchangeHolidayInDb(ExchangeHolidayBase):
-    id: int
-    exchange_id: int

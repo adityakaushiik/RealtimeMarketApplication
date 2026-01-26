@@ -17,6 +17,9 @@ from features.exchange.exchange_schema import (
 import json
 from config.redis_config import get_redis
 from config.logger import logger
+from services.data.market_hours_manager import get_market_hours_manager
+from datetime import datetime
+import pytz
 
 
 async def create_exchange(
@@ -156,41 +159,65 @@ async def get_all_exchanges(
     """Get all exchanges"""
     redis = get_redis()
     cache_key = "exchange:all"
+    response = None
 
     if redis:
         try:
             cached_data = await redis.get(cache_key)
             if cached_data:
                 data = json.loads(cached_data)
-                return [ExchangeInDb(**item) for item in data]
+                response = [ExchangeInDb(**item) for item in data]
         except Exception as e:
             logger.error(f"Error reading all exchanges from Redis: {e}")
 
-    result = await session.execute(select(Exchange).where(Exchange.is_active == True))
-    exchanges = result.scalars().all()
-
-    response = [
-        ExchangeInDb(
-            id=exchange.id,
-            name=exchange.name,
-            code=exchange.code,
-            timezone=exchange.timezone,
-            country=exchange.country,
-            currency=exchange.currency,
-            pre_market_open_time=exchange.pre_market_open_time,
-            market_open_time=exchange.market_open_time,
-            market_close_time=exchange.market_close_time,
-            post_market_close_time=exchange.post_market_close_time,
+    if not response:
+        result = await session.execute(
+            select(Exchange).where(Exchange.is_active == True)
         )
-        for exchange in exchanges
-    ]
+        exchanges = result.scalars().all()
 
-    if redis and response:
+        response = [
+            ExchangeInDb(
+                id=exchange.id,
+                name=exchange.name,
+                code=exchange.code,
+                timezone=exchange.timezone,
+                country=exchange.country,
+                currency=exchange.currency,
+                pre_market_open_time=exchange.pre_market_open_time,
+                market_open_time=exchange.market_open_time,
+                market_close_time=exchange.market_close_time,
+                post_market_close_time=exchange.post_market_close_time,
+            )
+            for exchange in exchanges
+        ]
+
+        if redis and response:
+            try:
+                json_data = json.dumps(
+                    [item.model_dump(mode="json") for item in response]
+                )
+                await redis.set(cache_key, json_data, ex=86400)
+            except Exception as e:
+                logger.error(f"Error caching all exchanges to Redis: {e}")
+
+    # Populate current day holiday status dynamically
+    manager = get_market_hours_manager()
+    for exc in response:
+        tz_name = exc.timezone or "UTC"
         try:
-            json_data = json.dumps([item.model_dump(mode="json") for item in response])
-            await redis.set(cache_key, json_data, ex=86400)
+            tz = pytz.timezone(tz_name)
+            today_date = datetime.now(tz).date()
+            holiday_data = manager.get_holidays_for_date(exc.id, today_date)
+            # Map dicts to Pydantic models (ExchangeHolidayInDb)
+            if holiday_data:
+                exc.current_day_holidays = [
+                    ExchangeHolidayInDb(**h) for h in holiday_data
+                ]
+            else:
+                exc.current_day_holidays = []
         except Exception as e:
-            logger.error(f"Error caching all exchanges to Redis: {e}")
+            logger.debug(f"Error checking holiday for {exc.code}: {e}")
 
     return response
 

@@ -106,10 +106,23 @@ class DataSaver:
 
                 logger.info("[GlobalSaver] Waking up to save data for all exchanges...")
                 
+                # Market hours manager for holiday checks
+                from services.data.market_hours_manager import get_market_hours_manager
+                mhm = get_market_hours_manager()
+                if not mhm.exchanges:
+                    try:
+                        await mhm.initialize()
+                    except Exception as e:
+                        logger.warning(f"Failed to initialize market hours manager in saver: {e}")
+
                 # We want the bucket that just finished
                 target_bucket_ts = next_interval_ts - interval_ms
                 
                 for exchange in self.exchanges:
+                    # Skip inactive exchanges
+                    if not exchange.is_active:
+                        continue
+                        
                     # Update exchange timestamps just in case they are needed for internal logic
                     # (though we are bypassing the open/close check loop)
                     try:
@@ -117,6 +130,11 @@ class DataSaver:
                         exchange.update_timestamps_for_date(datetime.now(tz).date())
                     except Exception as e:
                         logger.warn(f"Failed to update timestamps for {exchange.name}: {e}")
+
+                    # Holiday Skip
+                    if mhm.is_holiday(exchange.id):
+                        logger.info(f"Skipping save for exchange {exchange.name} (Holiday)")
+                        continue
 
                     # Run update for this exchange
                     # We create a task per exchange to run them in parallel? 

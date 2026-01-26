@@ -145,12 +145,12 @@ class LiveDataIngestion:
             effective_volume = self.last_volumes[symbol_to_use]
 
         tasks = [
-            # Save to timeseries
+            # Save to timeseries (Use tick_volume/DELTA for accurate accumulation)
             self._save_to_timeseries(
                 symbol=symbol_to_use,
                 timestamp=message.timestamp,
                 price=message.price,
-                volume=effective_volume,  # If -1, add_tick filters it out
+                volume=tick_volume,  # Save DELTA volume, not cumulative
                 provider_code=message.provider_code,
             ),
             # Broadcast to clients

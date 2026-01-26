@@ -99,9 +99,23 @@ class GapDetectionService:
 
     def _is_within_trading_hours(self, ts_ms: int, exchange: Exchange) -> bool:
         """Check if a timestamp falls within trading hours."""
+        
+        # Market Hours Manager Check (includes Holiday check)
+        from services.data.market_hours_manager import get_market_hours_manager
+        mhm = get_market_hours_manager()
+        
+        # Check Holiday
         dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
         tz = pytz.timezone(exchange.timezone or "UTC")
         local_dt = dt.astimezone(tz)
+        
+        # Important: Rely on MHM for holiday check
+        # But ensure MHM is initialized? It likely is if we are here, or it lazy inits.
+        # But MHM.is_holiday is simple.
+        if mhm.is_holiday(exchange.id, local_dt.date()):
+            # Using logger at debug level to avoid spam
+            # logger.debug(f"{exchange.name} is closed on {local_dt.date()} (Holiday)")
+            return False
 
         market_open, market_close = self._get_exchange_trading_hours(
             exchange, local_dt.date()
