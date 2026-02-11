@@ -272,20 +272,39 @@ class RedisMappingHelper:
 
         logger.info(f"Synced {len(mappings)} mappings for {provider.code}")
 
+    def _safe_decode(self, val: Any) -> str:
+        """Safely decode redis return value to string"""
+        if isinstance(val, (bytes, bytearray)):
+            try:
+                return val.decode("utf-8")
+            except Exception:
+                return str(val)
+        if hasattr(val, "decode"):
+             try:
+                return val.decode("utf-8")
+             except Exception:
+                pass
+        return str(val)
+
     async def get_all_p2i_mappings(self, provider_code: str) -> Dict[str, str]:
         """Get all Provider->Internal mappings for a provider"""
         key = self.get_p2i_key(provider_code)
         # Redis hgetall returns bytes if decode_responses=False, assume we handle bytes
         data = await self.redis.hgetall(key)
         # data is {b'search_code': b'symbol'}
+        # Check if data is valid
+        if not data:
+            return {}
         # Decode keys and values to strings
-        return {k.decode("utf-8"): v.decode("utf-8") for k, v in data.items()}
+        return {self._safe_decode(k): self._safe_decode(v) for k, v in data.items()}
 
     async def get_all_i2p_mappings(self, provider_code: str) -> Dict[str, str]:
         """Get all Internal->Provider mappings for a provider"""
         key = self.get_i2p_key(provider_code)
         data = await self.redis.hgetall(key)
-        return {k.decode("utf-8"): v.decode("utf-8") for k, v in data.items()}
+        if not data:
+            return {}
+        return {self._safe_decode(k): self._safe_decode(v) for k, v in data.items()}
 
     async def get_provider_symbol(
         self, provider_code: str, internal_symbol: str
@@ -293,7 +312,7 @@ class RedisMappingHelper:
         """Get provider specific symbol code from internal symbol"""
         key = self.get_i2p_key(provider_code)
         val = await self.redis.hget(key, internal_symbol)
-        return val.decode("utf-8") if val else None
+        return self._safe_decode(val) if val else None
 
     async def get_provider_segment(
         self, provider_code: str, internal_symbol: str
@@ -301,7 +320,7 @@ class RedisMappingHelper:
         """Get provider specific instrument segment from internal symbol (e.g. for Dhan)"""
         key = self.get_i2s_key(provider_code)
         val = await self.redis.hget(key, internal_symbol)
-        return val.decode("utf-8") if val else None
+        return self._safe_decode(val) if val else None
 
     async def get_internal_symbol(
         self, provider_code: str, provider_symbol: str
@@ -309,7 +328,7 @@ class RedisMappingHelper:
         """Get single internal symbol for a provider symbol"""
         key = self.get_p2i_key(provider_code)
         val = await self.redis.hget(key, provider_symbol)
-        return val.decode("utf-8") if val else None
+        return self._safe_decode(val) if val else None
 
     async def get_provider_symbol(
         self, provider_code: str, internal_symbol: str

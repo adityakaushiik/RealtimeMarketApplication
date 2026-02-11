@@ -133,8 +133,7 @@ class DhanProvider(BaseMarketDataProvider):
                 url = f"{self.REST_URL}/RenewToken"
                 headers = {
                     "access-token": self.access_token,
-                    "dhanClientId": self.client_id,
-                    "Accept": "application/json",
+                    "dhanClientId": self.client_id
                 }
 
                 # Make request
@@ -152,19 +151,27 @@ class DhanProvider(BaseMarketDataProvider):
                         # Check for token in likely locations
                         if "accessToken" in data:
                             new_token = data["accessToken"]
+                        elif "token" in data:
+                            new_token = data["token"]
                         elif (
                             "data" in data
                             and isinstance(data["data"], dict)
                             and "accessToken" in data["data"]
                         ):
                             new_token = data["data"]["accessToken"]
+                        elif (
+                            "data" in data
+                            and isinstance(data["data"], dict)
+                            and "token" in data["data"]
+                        ):
+                            new_token = data["data"]["token"]
 
                         if new_token:
                             self.access_token = new_token
                             logger.info("Successfully updated Dhan access token.")
                         else:
                             logger.warning(
-                                f"Token refresh response did not contain accessToken. Response: {data}"
+                                f"Token refresh response did not contain accessToken or token. Response: {data}"
                             )
                     except Exception as e:
                         logger.error(f"Error parsing token refresh response: {e}")

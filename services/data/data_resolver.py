@@ -124,10 +124,16 @@ class DataResolver:
                 # Default to 24 hours ago if no previous save time exists
                 last_save_dt = datetime.now(timezone.utc) - timedelta(hours=24)
             else:
-                last_save_ts = int(last_save_ts_str)
-                last_save_dt = datetime.fromtimestamp(
-                    last_save_ts / 1000, tz=timezone.utc
-                )
+                try:
+                    last_save_ts = int(last_save_ts_str)
+                    last_save_dt = datetime.fromtimestamp(
+                        last_save_ts / 1000, tz=timezone.utc
+                    )
+                except (ValueError, TypeError):
+                    logger.warning(
+                        f"Invalid last_save_time in Redis: {last_save_ts_str}. Defaulting to 24h ago."
+                    )
+                    last_save_dt = datetime.now(timezone.utc) - timedelta(hours=24)
 
             now = datetime.now(timezone.utc)
 

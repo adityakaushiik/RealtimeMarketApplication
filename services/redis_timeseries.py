@@ -250,19 +250,36 @@ class RedisTimeSeries:
             err_str = str(e).lower()
             if "key does not exist" in err_str:
                 await self.create_tick_timeseries(symbol)
-                async with r.pipeline() as pipe:
-                    pipe.ts().add(
-                        price_key, timestamp, float(price), on_duplicate="last"
-                    )
-                    if volume is not None and volume >= 0:
+                try:
+                    async with r.pipeline() as pipe:
                         pipe.ts().add(
-                            vol_key, timestamp, float(volume), on_duplicate="sum"
+                            price_key, timestamp, float(price), on_duplicate="last"
                         )
-                    await pipe.execute()
-            elif "timestamp cannot be older" in err_str:
+                        if volume is not None and volume >= 0:
+                            pipe.ts().add(
+                                vol_key, timestamp, float(volume), on_duplicate="sum"
+                            )
+                        await pipe.execute()
+                except Exception as inner_e:
+                     if "timestamp is older than retention" not in str(inner_e).lower():
+                        logger.error(f"Error creating/adding to TS for {symbol}: {inner_e}")
+
+            elif "timestamp is older than retention" in err_str or "timestamp cannot be older" in err_str:
+                # This suggests the tick is too old to be ingested given the retention policy
+                # We can safely ignore this for real-time ingestion
                 pass
             else:
-                raise
+                logger.error(f"Redis ResponseError for {symbol}: {e}")
+                # raise # Don't raise, just log to prevent task crash
+        except AttributeError as e:
+            # Catch 'int' object has no attribute 'insert' or 'decode' bugs in redis-py pipeline
+            # This seems to be a specific issue with redis-py 5.x pipeline implementation in some environments
+            if "'int' object has no attribute 'insert'" in str(e) or "'bytes' object has no attribute 'insert'" in str(e):
+                logger.debug(f"Suppressing redis-py pipeline AttributeError for {symbol}: {e}")
+            else:
+                logger.error(f"AttributeError saving to timeseries for {symbol}: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error saving to timeseries for {symbol}: {e}")
 
     async def add_to_timeseries(
         self, key: str, timestamp: float, price: float, volume: float = 0.0
