@@ -66,7 +66,7 @@ class DataSaver:
     async def stop_all_exchanges(self) -> None:
         """Stop global periodic saver."""
         self._stop_flags["GLOBAL"] = True
-        
+
         if "GLOBAL" in self._running_tasks:
             task = self._running_tasks["GLOBAL"]
             # Cancel the task
@@ -76,7 +76,7 @@ class DataSaver:
             except asyncio.CancelledError:
                 pass
             del self._running_tasks["GLOBAL"]
-            
+
         logger.info("Stopped global periodic saver")
 
     async def run_global_hourly_save(self, interval_minutes: int = 60) -> None:
@@ -85,59 +85,68 @@ class DataSaver:
         at regular intervals (aligned to the hour).
         """
         logger.info(f"Starting global saver loop (Interval: {interval_minutes}m)")
-        
+
         interval_ms = interval_minutes * 60 * 1000
 
         try:
             while not self._stop_flags.get("GLOBAL", False):
                 now_ts = int(time.time() * 1000)
-                
+
                 # Calculate next alignment point (e.g., next hour mark)
                 next_interval_ts = ((now_ts // interval_ms) + 1) * interval_ms
-                
+
                 # Wait until next interval + buffer
                 wait_ms = next_interval_ts - now_ts + 5000  # 5s buffer
-                
-                logger.info(f"[GlobalSaver] Sleeping for {wait_ms / 1000:.1f}s until next interval")
+
+                logger.info(
+                    f"[GlobalSaver] Sleeping for {wait_ms / 1000:.1f}s until next interval"
+                )
                 await asyncio.sleep(wait_ms / 1000)
 
                 if self._stop_flags.get("GLOBAL", False):
                     break
 
                 logger.info("[GlobalSaver] Waking up to save data for all exchanges...")
-                
+
                 # Market hours manager for holiday checks
                 from services.data.market_hours_manager import get_market_hours_manager
+
                 mhm = get_market_hours_manager()
                 if not mhm.exchanges:
                     try:
                         await mhm.initialize()
                     except Exception as e:
-                        logger.warning(f"Failed to initialize market hours manager in saver: {e}")
+                        logger.warning(
+                            f"Failed to initialize market hours manager in saver: {e}"
+                        )
 
                 # We want the bucket that just finished
                 target_bucket_ts = next_interval_ts - interval_ms
-                
+
                 for exchange in self.exchanges:
                     # Skip inactive exchanges
                     if not exchange.is_active:
                         continue
-                        
+
                     # Update exchange timestamps just in case they are needed for internal logic
                     # (though we are bypassing the open/close check loop)
                     try:
                         tz = pytz.timezone(exchange.timezone)
                         exchange.update_timestamps_for_date(datetime.now(tz).date())
                     except Exception as e:
-                        logger.warn(f"Failed to update timestamps for {exchange.name}: {e}")
+                        logger.warn(
+                            f"Failed to update timestamps for {exchange.name}: {e}"
+                        )
 
                     # Holiday Skip
                     if mhm.is_holiday(exchange.id):
-                        logger.info(f"Skipping save for exchange {exchange.name} (Holiday)")
+                        logger.info(
+                            f"Skipping save for exchange {exchange.name} (Holiday)"
+                        )
                         continue
 
                     # Run update for this exchange
-                    # We create a task per exchange to run them in parallel? 
+                    # We create a task per exchange to run them in parallel?
                     # The user said "wont have to run separate exchange saves", but parallel is better for performance.
                     # Or sequential is fine if volume is low.
                     # Let's do sequential to avoid DB contention if any.
@@ -157,10 +166,12 @@ class DataSaver:
         self, exchange: Exchange, interval_minutes: Optional[int] = None
     ) -> None:
         """
-        Run periodic updates for a specific exchange. 
+        Run periodic updates for a specific exchange.
         DEPRECATED: Use run_global_hourly_save instead.
         """
-        logger.warning(f"run_periodic_save called for {exchange.name} but is deprecated.")
+        logger.warning(
+            f"run_periodic_save called for {exchange.name} but is deprecated."
+        )
 
     async def update_records_for_interval(
         self, exchange: Exchange, interval_minutes: int, align_to_ts: int

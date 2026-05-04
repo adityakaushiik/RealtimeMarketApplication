@@ -29,7 +29,7 @@ async def list_instruments(
     instrument_type_id: int | None = None,
     limit: int = 200,
     user_claims: dict = Depends(require_auth()),
-    order_by: str = 'asc',
+    order_by: str = "asc",
     session: AsyncSession = Depends(get_db_session),
 ):
     """List instruments for a given exchange"""
@@ -53,7 +53,9 @@ async def list_instruments(
         stmt = stmt.where(Instrument.instrument_type_id == instrument_type_id)
 
     stmt = stmt.order_by(
-        Instrument.updated_at.asc() if order_by == 'asc' else Instrument.updated_at.desc()
+        Instrument.updated_at.asc()
+        if order_by == "asc"
+        else Instrument.updated_at.desc()
     ).limit(limit)
 
     result = await session.execute(stmt)

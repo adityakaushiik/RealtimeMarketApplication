@@ -620,7 +620,9 @@ async def get_previous_closes_by_exchange(session: AsyncSession, exchange_code: 
                                 InstrumentPreviousClose(
                                     symbol=symbol,
                                     price=float(val_str),
-                                    timestamp=datetime.datetime.now(datetime.timezone.utc)
+                                    timestamp=datetime.datetime.now(
+                                        datetime.timezone.utc
+                                    ),
                                 )
                             )
                         except:
@@ -712,7 +714,7 @@ async def get_combined_daily_price_history(
         exchange_id=instrument.exchange_id,
         instrument_type_id=instrument.instrument_type_id,
         should_record_data=instrument.should_record_data,
-        name=instrument.name, # Optional but safe
+        name=instrument.name,  # Optional but safe
         is_active=instrument.is_active,
     )
 
@@ -720,7 +722,7 @@ async def get_combined_daily_price_history(
 
     # data is list[PriceHistoryDaily]
     if not data:
-         return []
+        return []
 
     items = data
 
@@ -765,7 +767,7 @@ async def get_combined_intraday_price_history(
         exchange_id=instrument.exchange_id,
         instrument_type_id=instrument.instrument_type_id,
         should_record_data=instrument.should_record_data,
-        name=instrument.name, # Optional but safe
+        name=instrument.name,  # Optional but safe
         is_active=instrument.is_active,
     )
 
@@ -773,7 +775,7 @@ async def get_combined_intraday_price_history(
 
     # data is list[PriceHistoryIntraday]
     if not data:
-         return []
+        return []
 
     items = data
 

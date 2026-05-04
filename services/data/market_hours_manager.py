@@ -11,7 +11,7 @@ from models.exchange import Exchange
 
 class MarketHoursManager:
     _instance = None
-    
+
     def __init__(self):
         self.exchanges: Dict[int, Exchange] = {}
         self.last_updated = datetime.datetime.min
@@ -39,52 +39,58 @@ class MarketHoursManager:
                     select(Exchange).options(joinedload(Exchange.holidays))
                 )
                 exchanges = result.scalars().unique().all()
-                
+
                 # Update cache
                 today = datetime.datetime.now().date()
                 for exchange in exchanges:
                     # Ensure timestamps are updated for today
                     exchange.update_timestamps_for_date(today)
                     self.exchanges[exchange.id] = exchange
-                    
+
                     # Cache holidays
                     holiday_map = {}
                     for h in exchange.holidays:
                         if h.date not in holiday_map:
                             holiday_map[h.date] = []
-                        
-                        holiday_map[h.date].append({
-                            "id": h.id,
-                            "exchange_id": h.exchange_id,
-                            "date": h.date,
-                            "description": h.description,
-                            "is_closed": h.is_closed,
-                            "open_time": h.open_time,
-                            "close_time": h.close_time
-                        })
+
+                        holiday_map[h.date].append(
+                            {
+                                "id": h.id,
+                                "exchange_id": h.exchange_id,
+                                "date": h.date,
+                                "description": h.description,
+                                "is_closed": h.is_closed,
+                                "open_time": h.open_time,
+                                "close_time": h.close_time,
+                            }
+                        )
 
                     self.holiday_details[exchange.id] = holiday_map
-                    
+
                     self.holidays[exchange.id] = {
                         h.date for h in exchange.holidays if h.is_closed
                     }
-                
-                logger.info(f"MarketHoursManager: Loaded {len(exchanges)} exchanges and their holidays.")
+
+                logger.info(
+                    f"MarketHoursManager: Loaded {len(exchanges)} exchanges and their holidays."
+                )
                 self.last_updated = datetime.datetime.now()
-                break # Close session after one use from generator
+                break  # Close session after one use from generator
         except Exception as e:
             logger.error(f"Error loading exchanges in MarketHoursManager: {e}")
 
-    def is_holiday(self, exchange_id: int, date_obj: Optional[datetime.date] = None) -> bool:
+    def is_holiday(
+        self, exchange_id: int, date_obj: Optional[datetime.date] = None
+    ) -> bool:
         """Check if the given date is a holiday for the exchange."""
         if not exchange_id:
             return False
-            
+
         if date_obj is None:
             # Default to today in exchange timezone? Or just UTC today?
             # Ideally provided, but if not, use UTC today
             date_obj = datetime.datetime.now(datetime.timezone.utc).date()
-            
+
         holidays = self.holidays.get(exchange_id)
         if holidays and date_obj in holidays:
             return True
@@ -122,7 +128,7 @@ class MarketHoursManager:
         # Check if 24 hours
         if exchange.is_open_24_hours:
             return True
-            
+
         # Check holiday
         tz = pytz.timezone(exchange.timezone)
         dt = datetime.datetime.fromtimestamp(timestamp_ms / 1000, tz)
@@ -131,17 +137,20 @@ class MarketHoursManager:
 
         # Check pre-calculated timestamps (which are UTC)
         # Note: exchange.start_time and end_time are set for "today".
-        # If the timestamp is for a different day, this might be inaccurate 
+        # If the timestamp is for a different day, this might be inaccurate
         # but for real-time data ingestion, timestamp is usually "now".
-        
+
         # Buffer: Allow data 5 minutes before open (pre-market activity sometimes comes as ticks)
         # and 15 minutes after close (closing prints).
-        buffer_ms = 15 * 60 * 1000 
-        
-        if timestamp_ms >= (exchange.start_time - buffer_ms) and timestamp_ms <= (exchange.end_time + buffer_ms):
+        buffer_ms = 15 * 60 * 1000
+
+        if timestamp_ms >= (exchange.start_time - buffer_ms) and timestamp_ms <= (
+            exchange.end_time + buffer_ms
+        ):
             return True
-        
+
         return False
+
 
 def get_market_hours_manager() -> MarketHoursManager:
     return MarketHoursManager.get_instance()

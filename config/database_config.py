@@ -2,11 +2,17 @@ import re
 from typing import Optional, AsyncGenerator
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from config.settings import get_settings
 
 _DATABASE_ENGINE: Optional[AsyncEngine] = None
+_ASYNC_SESSION_MAKER: Optional[async_sessionmaker[AsyncSession]] = None
 
 
 def _build_async_database_url(database_url: str) -> str:
@@ -40,13 +46,25 @@ async def check_database_connection() -> None:
 
 
 async def close_database_engine() -> None:
-    global _DATABASE_ENGINE
+    global _DATABASE_ENGINE, _ASYNC_SESSION_MAKER
     if _DATABASE_ENGINE is not None:
         await _DATABASE_ENGINE.dispose()
         _DATABASE_ENGINE = None
+        _ASYNC_SESSION_MAKER = None
+
+
+def get_async_session_maker() -> async_sessionmaker[AsyncSession]:
+    global _ASYNC_SESSION_MAKER
+    if _ASYNC_SESSION_MAKER is None:
+        _ASYNC_SESSION_MAKER = async_sessionmaker(
+            get_database_engine(),
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+    return _ASYNC_SESSION_MAKER
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    engine = get_database_engine()
-    async with AsyncSession(engine) as session:
+    async_session = get_async_session_maker()
+    async with async_session() as session:
         yield session

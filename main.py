@@ -242,6 +242,7 @@ async def lifespan(app: FastAPI):
     logger.info("Task - 4. Starting Scheduled Jobs...")
     scheduled_jobs = get_scheduled_jobs()
     scheduled_jobs.set_resolver(data_resolver)
+    scheduled_jobs.set_provider_manager(provider_manager)
     await scheduled_jobs.start()
 
     yield
@@ -251,6 +252,10 @@ async def lifespan(app: FastAPI):
     # Stop scheduled jobs
     if scheduled_jobs:
         await scheduled_jobs.stop()
+
+    if provider_manager:
+        provider_manager.stop_sync_task()
+        provider_manager.stop_all_providers()
 
     # Stop data_saver
     if data_saver:
@@ -326,13 +331,11 @@ async def create_new_instruments_and_mappings(
         exchange_id = 1
         company_name = row.get("Name")
 
-
         if not symbol or symbol in existing_symbols:
             continue
 
-
         symbol = symbol.strip()
-        symbol = f'{symbol}.NASDAQ'
+        symbol = f"{symbol}.NASDAQ"
 
         instrument = Instrument(
             exchange_id=exchange_id,
@@ -342,7 +345,7 @@ async def create_new_instruments_and_mappings(
             is_active=True,
             should_record_data=False,
             delisted=False,
-            blacklisted=False
+            blacklisted=False,
         )
         new_instruments.append((instrument, row))
 
@@ -369,7 +372,6 @@ async def _process_creation_batch(
 
     # Create mappings
     for instrument, row in instruments_with_row:
-
         search_code = instrument.symbol
         search_code = search_code.replace(".NASDAQ", "")
 

@@ -25,7 +25,7 @@ class LiveDataIngestion:
         self.redis_timeseries = get_redis_timeseries()
         self.websocket_manager = get_websocket_manager()
         self.redis = get_redis()
-        
+
         self.market_hours_manager = get_market_hours_manager()
         self._init_task = None
 
@@ -42,10 +42,10 @@ class LiveDataIngestion:
         Batches writes to Redis for better performance.
         """
         logger.info("Starting data ingestion worker...")
-        
+
         # Initialize market hours
         await self.market_hours_manager.initialize()
-        
+
         batch_size = 50  # Process up to 50 items at a time
 
         while True:
@@ -85,17 +85,19 @@ class LiveDataIngestion:
         # 1. Check Market Hours
         # If exchange_id is present, verify if market is open
         if message.exchange_id:
-            if not self.market_hours_manager.is_market_open(message.exchange_id, message.timestamp):
+            if not self.market_hours_manager.is_market_open(
+                message.exchange_id, message.timestamp
+            ):
                 # Market closed. Skip saving to DB.
-                # But what about broadcasting? 
+                # But what about broadcasting?
                 # Usually we stop broadcasting too to prevent 'ghost' ticks.
                 # However, if it's a 'close' price update (final packet), we might want it.
                 # The market_hours_manager has a buffer (15m) for post-market.
                 # If it returns False, it means we are way past closing.
-                
+
                 # Log occasionally
-                if message.timestamp % 100 == 0: # Simple throttling
-                     pass 
+                if message.timestamp % 100 == 0:  # Simple throttling
+                    pass
                 return
 
         # Update stats
@@ -158,7 +160,7 @@ class LiveDataIngestion:
                 symbol=symbol_to_use,
                 timestamp=message.timestamp,
                 price=message.price,
-                volume=effective_volume if effective_volume >= 0 else 0, # UI friendly
+                volume=effective_volume if effective_volume >= 0 else 0,  # UI friendly
                 tick_volume=tick_volume,  # Delta Volume (for Charts/Candles)
                 provider_code=message.provider_code,
             ),

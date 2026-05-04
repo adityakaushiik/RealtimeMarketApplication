@@ -106,87 +106,105 @@ class DhanProvider(BaseMarketDataProvider):
 
         self.ws: Any = None
         self._connection_task = None
-        self._token_refresh_task = None
         self._running = False
 
         # Rate Limiting
         self._last_request_time = 0
         self._request_interval = 0.2  # 5 requests per second max
 
-    async def _refresh_token_loop(self):
+    async def refresh_and_save_token(self):
         """
-        Background task to refresh Dhan API token every 20 hours.
+        Refresh Dhan API token and save to database.
+        Loads credentials from DB if available, otherwise uses env settings.
         """
-        refresh_interval = 20 * 60 * 60  # 20 hours in seconds
-        # refresh_interval = 60 # for testing
+        try:
+            from sqlalchemy import select
+            from config.database_config import get_db_session
+            from models.provider import Provider
 
-        logger.info("Starting Dhan token refresh loop (every 20 hours)")
+            logger.info("Initializing/Refreshing Dhan token...")
 
-        while self._running:
-            try:
-                # Wait for the interval
-                await asyncio.sleep(refresh_interval)
+            provider_obj = None
+            async for session in get_db_session():
+                stmt = select(Provider).filter(Provider.code == "DHAN")
+                result = await session.execute(stmt)
+                provider_obj = result.scalars().first()
+                break  # Only need one session passing
 
-                logger.info("Refreshing Dhan API token...")
+            if (
+                provider_obj
+                and provider_obj.credentials
+                and isinstance(provider_obj.credentials, dict)
+            ):
+                creds = provider_obj.credentials
+                if creds.get("client_id") and creds.get("access_token"):
+                    self.client_id = creds["client_id"]
+                    self.access_token = creds["access_token"]
+                    logger.info("Loaded DHAN credentials from DB")
+            else:
+                logger.warning("DB credentials empty, falling back to env settings")
 
-                # Prepare request
-                url = f"{self.REST_URL}/RenewToken"
-                headers = {
-                    "access-token": self.access_token,
-                    "dhanClientId": self.client_id
-                }
+            # Make token refresh API call
+            url = f"{self.REST_URL}/RenewToken"
+            headers = {
+                "access-token": self.access_token,
+                "dhanClientId": self.client_id,
+            }
 
-                # Make request
-                # Using requests.post without json/data to strictly follow documentation/CURL
-                # which implies no body and no Content-Type
-                response = await asyncio.to_thread(requests.post, url, headers=headers)
+            logger.info("Refreshing Dhan API token via GET...")
+            # We confirmed GET works
+            response = await asyncio.to_thread(requests.get, url, headers=headers)
 
-                if response.ok:
-                    logger.info("Dhan API token refreshed successfully.")
-                    # The old token is expired, so we must update to the new one.
-                    try:
-                        data = response.json()
-                        new_token = None
+            if response.ok:
+                logger.info("Dhan API token refreshed successfully.")
+                try:
+                    data = response.json()
+                    new_token = None
 
-                        # Check for token in likely locations
-                        if "accessToken" in data:
-                            new_token = data["accessToken"]
-                        elif "token" in data:
-                            new_token = data["token"]
-                        elif (
-                            "data" in data
-                            and isinstance(data["data"], dict)
-                            and "accessToken" in data["data"]
-                        ):
-                            new_token = data["data"]["accessToken"]
-                        elif (
-                            "data" in data
-                            and isinstance(data["data"], dict)
-                            and "token" in data["data"]
-                        ):
-                            new_token = data["data"]["token"]
+                    if "accessToken" in data:
+                        new_token = data["accessToken"]
+                    elif "token" in data:
+                        new_token = data["token"]
+                    elif "data" in data and isinstance(data["data"], dict):
+                        new_token = data["data"].get("accessToken") or data["data"].get(
+                            "token"
+                        )
 
-                        if new_token:
-                            self.access_token = new_token
-                            logger.info("Successfully updated Dhan access token.")
-                        else:
-                            logger.warning(
-                                f"Token refresh response did not contain accessToken or token. Response: {data}"
-                            )
-                    except Exception as e:
-                        logger.error(f"Error parsing token refresh response: {e}")
-                else:
-                    logger.error(
-                        f"Failed to refresh Dhan token: {response.status_code} - {response.text}"
-                    )
+                    if new_token:
+                        self.access_token = new_token
+                        logger.info("Successfully updated Dhan access token in memory.")
 
-            except asyncio.CancelledError:
-                logger.info("Dhan token refresh task cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Error in Dhan token refresh loop: {e}")
-                # Wait a bit before retrying to avoid tight loop in case of error
-                await asyncio.sleep(60)
+                        # Save to database
+                        async for session in get_db_session():
+                            stmt = select(Provider).filter(Provider.code == "DHAN")
+                            result = await session.execute(stmt)
+                            provider = result.scalars().first()
+
+                            if not provider:
+                                provider = Provider(code="DHAN", name="Dhan")
+                                session.add(provider)
+
+                            provider.credentials = {
+                                "client_id": self.client_id,
+                                "access_token": new_token,
+                            }
+                            await session.commit()
+                            logger.info("Saved new Dhan token to database")
+                            break  # Only need one pass
+                    else:
+                        logger.warning(
+                            f"Token refresh response did not contain accessToken. Response: {data}"
+                        )
+
+                except Exception as e:
+                    logger.error(f"Error parsing token refresh response: {e}")
+            else:
+                logger.error(
+                    f"Failed to refresh Dhan token: {response.status_code} - {response.text}"
+                )
+
+        except Exception as e:
+            logger.error(f"Error in refresh_and_save_token: {e}", exc_info=True)
 
     async def _make_request(self, endpoint: str, payload: dict) -> dict:
         """Helper to make async HTTP requests to Dhan API"""
@@ -225,20 +243,22 @@ class DhanProvider(BaseMarketDataProvider):
             logger.error(f"Dhan API request failed: {e}")
             return {}
 
-    async def connect_websocket(self, symbols: list[str]):
+    async def connect_websocket(self, symbols: list[str], refresh_token: bool = True):
         """Connect to Dhan WebSocket for live data."""
         if self._running:
             logger.warning("Dhan WebSocket is already running")
             return
+
+        # Fetch valid connection details and auto-refresh API token unless the caller
+        # already refreshed it as part of a scheduled window transition.
+        if refresh_token:
+            await self.refresh_and_save_token()
 
         self._running = True
         self.subscribed_symbols.update(symbols)
 
         # Start the connection loop in background
         self._connection_task = asyncio.create_task(self._run_websocket_loop())
-
-        # Start token refresh task
-        self._token_refresh_task = asyncio.create_task(self._refresh_token_loop())
 
         # Add callback to log any exceptions
         def handle_connection_result(task):
@@ -259,42 +279,46 @@ class DhanProvider(BaseMarketDataProvider):
     async def _run_websocket_loop(self):
         """Main WebSocket loop handling connection, subscription and data processing"""
         from services.data.market_hours_manager import get_market_hours_manager
-        
-        url = f"{self.WS_URL}?version=2&token={self.access_token}&clientId={self.client_id}&authType=2"
+
         reconnect_delay = 5
         last_connected_time: Optional[int] = (
             None  # Track disconnect time for gap detection
         )
-        
+
         market_hours_manager = get_market_hours_manager()
 
         while self._running:
+            url = f"{self.WS_URL}?version=2&token={self.access_token}&clientId={self.client_id}&authType=2"
             # Holiday Check: If today is a holiday for ALL ACTIVE exchanges, skip connection
             try:
                 if not market_hours_manager.exchanges:
                     await market_hours_manager.initialize()
-                
+
                 today = datetime.now().date()
-                
+
                 # Get all active exchanges
-                active_exchanges = [ex for ex in market_hours_manager.exchanges.values() if ex.is_active]
+                active_exchanges = [
+                    ex for ex in market_hours_manager.exchanges.values() if ex.is_active
+                ]
                 all_active_closed = True
-                
+
                 # If we have exchange info, check holidays. If not (unlikely after init), proceed.
                 if active_exchanges:
                     for ex in active_exchanges:
                         if not market_hours_manager.is_holiday(ex.id, today):
                             all_active_closed = False
                             break
-                    
+
                     if all_active_closed:
-                        logger.info("All active exchanges are closed (Holiday). Pausing Dhan WebSocket for 30 minutes.")
-                        await asyncio.sleep(1800) # Sleep 30 mins and check again
+                        logger.info(
+                            "All active exchanges are closed (Holiday). Pausing Dhan WebSocket for 30 minutes."
+                        )
+                        await asyncio.sleep(1800)  # Sleep 30 mins and check again
                         continue
             except Exception as e:
                 logger.error(f"Error checking market holidays in Dhan loop: {e}")
                 # Don't crash loop, just proceed to connect attempt
-            
+
             disconnect_time = int(time.time() * 1000) if last_connected_time else None
 
             try:
@@ -481,11 +505,13 @@ class DhanProvider(BaseMarketDataProvider):
                 internal_sym = self.symbol_map.get(composite_key)
                 if internal_sym:
                     self.symbol_exchange_map[internal_sym] = ex_seg
-                    
+
                     if self.provider_manager:
-                         exchange_id = self.provider_manager.get_exchange_id_for_symbol(internal_sym)
-                         if exchange_id:
-                             self.symbol_to_exchange_id_map[internal_sym] = exchange_id
+                        exchange_id = self.provider_manager.get_exchange_id_for_symbol(
+                            internal_sym
+                        )
+                        if exchange_id:
+                            self.symbol_to_exchange_id_map[internal_sym] = exchange_id
 
     def message_handler(self, message: dict):
         """
@@ -578,7 +604,7 @@ class DhanProvider(BaseMarketDataProvider):
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
-                    "volume": -1, # Use -1 to indicate no volume data in Ticker packet
+                    "volume": -1,  # Use -1 to indicate no volume data in Ticker packet
                 }
 
             elif response_code == FeedResponseCode.QUOTE:
@@ -614,7 +640,7 @@ class DhanProvider(BaseMarketDataProvider):
                     volume=float(volume),
                     timestamp=ts,
                     exchange_id=ex_id,
-                    exchange_code=exchange_str
+                    exchange_code=exchange_str,
                 )
 
                 await self.data_queue.add_data(format_data)
@@ -644,7 +670,9 @@ class DhanProvider(BaseMarketDataProvider):
                     "exchange": exchange_str,
                     "price": ltp,
                     "timestamp": ltt,
-                    "volume": float(volume),  # Cumulative volume (Total Buy + Sell or just Total Traded?)
+                    "volume": float(
+                        volume
+                    ),  # Cumulative volume (Total Buy + Sell or just Total Traded?)
                     "last_trade_qty": float(ltq),
                     "total_volume": float(volume),
                 }
@@ -723,7 +751,7 @@ class DhanProvider(BaseMarketDataProvider):
                         timestamp=ts,
                         provider_code="DHAN",
                         exchange_id=ex_id,
-                        exchange_code=data.get("exchange")
+                        exchange_code=data.get("exchange"),
                     )
                 )
 
@@ -844,8 +872,6 @@ class DhanProvider(BaseMarketDataProvider):
         self._running = False
         if self._connection_task:
             self._connection_task.cancel()
-        if self._token_refresh_task:
-            self._token_refresh_task.cancel()
         self.is_connected = False
         logger.info("Dhan WebSocket disconnected")
 
@@ -1021,7 +1047,7 @@ class DhanProvider(BaseMarketDataProvider):
 
             # Ensure securityId is just the number for Dhan API
             if ":" in str(security_id):
-                 _, security_id = str(security_id).split(":", 1)
+                _, security_id = str(security_id).split(":", 1)
 
             payload = {
                 "securityId": str(security_id),

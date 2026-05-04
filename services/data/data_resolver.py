@@ -45,29 +45,31 @@ class DataResolver:
 
         # Holiday check
         from services.data.market_hours_manager import get_market_hours_manager
+
         mhm = get_market_hours_manager()
         try:
             if not mhm.exchanges:
                 await mhm.initialize()
-            
+
             # Check all active exchanges
             # If all active exchanges are closed, we assume holiday and skip resolution
             all_active_closed = True
             active_exchanges = [ex for ex in mhm.exchanges.values() if ex.is_active]
-            
+
             if active_exchanges:
                 today = datetime.now().date()
                 for ex in active_exchanges:
                     if not mhm.is_holiday(ex.id, today):
                         all_active_closed = False
                         break
-                
+
                 if all_active_closed:
-                    logger.info("Skipping data resolution (All active exchanges on Holiday)")
+                    logger.info(
+                        "Skipping data resolution (All active exchanges on Holiday)"
+                    )
                     return
         except Exception as e:
             logger.error(f"Error checking holidays in resolve_all: {e}")
-
 
         async with self._lock:
             # Call internal logic directly to avoid deadlock
@@ -87,22 +89,23 @@ class DataResolver:
 
         # Holiday check
         from services.data.market_hours_manager import get_market_hours_manager
+
         mhm = get_market_hours_manager()
         try:
             if not mhm.exchanges:
                 await mhm.initialize()
-            
+
             # Check all active exchanges
             all_active_closed = True
             active_exchanges = [ex for ex in mhm.exchanges.values() if ex.is_active]
-            
+
             if active_exchanges:
                 today = datetime.now().date()
                 for ex in active_exchanges:
                     if not mhm.is_holiday(ex.id, today):
                         all_active_closed = False
                         break
-                
+
                 if all_active_closed:
                     logger.info("Skipping gap check (All active exchanges on Holiday)")
                     return
@@ -178,7 +181,8 @@ class DataResolver:
                         PriceHistoryIntraday.datetime < now,
                         PriceHistoryIntraday.instrument_id.in_(instrument_ids),
                         # Only mark records that don't already have valid data
-                        (PriceHistoryIntraday.close.is_(None)) | (PriceHistoryIntraday.close == 0),
+                        (PriceHistoryIntraday.close.is_(None))
+                        | (PriceHistoryIntraday.close == 0),
                     )
                     .values(
                         resolve_required=True,
@@ -517,7 +521,9 @@ class DataResolver:
                         instrument.exchange_id
                     )
                     if provider_code:
-                        instrument.provider_code = provider_code # Temporarily attach for filtered iteration
+                        instrument.provider_code = (
+                            provider_code  # Temporarily attach for filtered iteration
+                        )
                         tz_name = instrument.exchange.timezone or "UTC"
                         instruments_by_group[(provider_code, tz_name)].append(
                             instrument
@@ -529,6 +535,7 @@ class DataResolver:
 
                 # Initialize MarketHoursManager for holiday check
                 from services.data.market_hours_manager import get_market_hours_manager
+
                 mhm = get_market_hours_manager()
                 if not mhm.exchanges:
                     await mhm.initialize()
@@ -552,44 +559,46 @@ class DataResolver:
                     # If multiple days are requested, and one is holiday, we technically should fetch the non-holiday part.
                     # But typically this runs for "yesterday/today".
                     # Let's clean filtered_instruments.
-                    
+
                     filtered_instruments = []
                     skipped_count = 0
-                    
+
                     for inst in provider_instruments:
-                         # Check if any part of the requested specific range for this instrument is NOT a holiday?
-                         # Or simpler: if TODAY is a holiday for this exchange, don't ask for data ending "now".
-                         # Since we resolve "past" data (cutoff_time to buffer_zone), if that range falls on a holiday...
-                         # Let's say we check if the DATE of batch_max_dt is a holiday for this exchange.
-                         
-                         start_dt, end_dt = instrument_ranges[inst.id]
-                         # Convert to exchange timezone to check local date
-                         tz = pytz.timezone(inst.exchange.timezone or "UTC")
-                         
-                         # Check if the target date is a holiday
-                         # We check the date of the missing data. 
-                         # Since min_dt and max_dt define the missing range.
-                         # If the ENTIRE missing range is a holiday, skip.
-                         # If it spans valid days, we should probably allow it (or split, but splitting is hard).
-                         # But typically gaps are "today" or "yesterday".
-                         
-                         check_date = end_dt.astimezone(tz).date()
-                         if mhm.is_holiday(inst.exchange_id, check_date):
-                             # If the target end date is a holiday, we skip resolution for this instrument.
-                             # This prevents requesting data for a day the exchange is closed, which can cause 
-                             # provider errors (e.g. Dhan 400). We will effectively wait until the next 
-                             # valid trading day to resolve the gap.
-                             skipped_count += 1
-                             continue
-                         
-                         filtered_instruments.append(inst)
-                    
+                        # Check if any part of the requested specific range for this instrument is NOT a holiday?
+                        # Or simpler: if TODAY is a holiday for this exchange, don't ask for data ending "now".
+                        # Since we resolve "past" data (cutoff_time to buffer_zone), if that range falls on a holiday...
+                        # Let's say we check if the DATE of batch_max_dt is a holiday for this exchange.
+
+                        start_dt, end_dt = instrument_ranges[inst.id]
+                        # Convert to exchange timezone to check local date
+                        tz = pytz.timezone(inst.exchange.timezone or "UTC")
+
+                        # Check if the target date is a holiday
+                        # We check the date of the missing data.
+                        # Since min_dt and max_dt define the missing range.
+                        # If the ENTIRE missing range is a holiday, skip.
+                        # If it spans valid days, we should probably allow it (or split, but splitting is hard).
+                        # But typically gaps are "today" or "yesterday".
+
+                        check_date = end_dt.astimezone(tz).date()
+                        if mhm.is_holiday(inst.exchange_id, check_date):
+                            # If the target end date is a holiday, we skip resolution for this instrument.
+                            # This prevents requesting data for a day the exchange is closed, which can cause
+                            # provider errors (e.g. Dhan 400). We will effectively wait until the next
+                            # valid trading day to resolve the gap.
+                            skipped_count += 1
+                            continue
+
+                        filtered_instruments.append(inst)
+
                     if skipped_count > 0:
-                        logger.info(f"Skipped resolution for {skipped_count} instruments due to Holiday")
-                    
+                        logger.info(
+                            f"Skipped resolution for {skipped_count} instruments due to Holiday"
+                        )
+
                     if not filtered_instruments:
                         continue
-                        
+
                     provider_instruments = filtered_instruments
 
                     # Group instruments by date range to optimize calls
@@ -1113,4 +1122,3 @@ class DataResolver:
 
         except Exception as e:
             logger.error(f"Error saving to Redis TimeSeries: {e}", exc_info=True)
-

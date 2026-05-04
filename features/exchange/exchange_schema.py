@@ -4,7 +4,6 @@ from datetime import time, date
 from models.base_model_py import BaseModelPy
 
 
-
 class ExchangeHolidayBase(BaseModelPy):
     date: date
     description: Optional[str] = None
@@ -80,6 +79,3 @@ class ExchangeProviderMappingInDb(BaseModelPy):
     exchange_id: int
     is_active: bool
     is_primary: bool
-
-
-

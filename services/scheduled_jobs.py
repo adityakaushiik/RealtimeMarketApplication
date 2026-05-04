@@ -18,10 +18,15 @@ class ScheduledJobs:
         self._running = False
         self._tasks: dict = {}
         self._data_resolver = None
+        self._provider_manager = None
 
     def set_resolver(self, resolver):
         """Set the data resolver instance."""
         self._data_resolver = resolver
+
+    def set_provider_manager(self, provider_manager):
+        """Set the provider manager instance."""
+        self._provider_manager = provider_manager
 
     async def start(self):
         """Start all scheduled jobs."""
@@ -49,6 +54,11 @@ class ScheduledJobs:
         # C1: Daily data creation for the next day at 12 AM
         self._tasks["daily_data_creation"] = asyncio.create_task(
             self._run_daily_at(0, 0, self.run_daily_data_creation)
+        )
+
+        # Dynamic DHAN token refresh based on exchange times
+        self._tasks["dhan_token_refresh"] = asyncio.create_task(
+            self.schedule_dhan_token_refresh()
         )
 
         logger.info(f"Started {len(self._tasks)} scheduled jobs")
@@ -264,6 +274,149 @@ class ScheduledJobs:
 
         except Exception as e:
             logger.error(f"Volume reconciliation failed: {e}")
+
+    async def schedule_dhan_token_refresh(self):
+        """Refresh DHAN token and align websocket start/stop with the market window."""
+        import pytz
+        from services.provider.provider_manager import get_provider_manager
+        from services.data.market_hours_manager import get_market_hours_manager
+        from models.exchange import Exchange
+        from models.exchange_provider_mapping import ExchangeProviderMapping
+        from models.provider import Provider
+
+        logger.info("Starting dynamic DHAN token refresh scheduler...")
+
+        while self._running:
+            try:
+                exchange = None
+                async for session in get_db_session():
+                    stmt = (
+                        select(Exchange)
+                        .join(ExchangeProviderMapping)
+                        .join(Provider)
+                        .where(Provider.code == "DHAN")
+                    )
+                    result = await session.execute(stmt)
+                    exchange = result.scalars().first()
+                    break
+
+                if not exchange:
+                    logger.warning(
+                        "DHAN provider or exchange mapping not found in DB. Retrying in 1 hour."
+                    )
+                    await asyncio.sleep(3600)
+                    continue
+
+                market_hours_manager = get_market_hours_manager()
+                if not market_hours_manager.exchanges:
+                    await market_hours_manager.initialize()
+
+                today = datetime.now().date()
+                active_exchanges = [
+                    ex for ex in market_hours_manager.exchanges.values() if ex.is_active
+                ]
+                all_active_closed = True
+
+                if active_exchanges:
+                    for ex in active_exchanges:
+                        if not market_hours_manager.is_holiday(ex.id, today):
+                            all_active_closed = False
+                            break
+
+                    if all_active_closed:
+                        provider_manager = self._provider_manager or get_provider_manager()
+                        dhan_provider = provider_manager.providers.get("DHAN")
+                        if dhan_provider and dhan_provider.is_connected:
+                            logger.info(
+                                "All active exchanges are closed (holiday). Stopping DHAN websocket."
+                            )
+                            dhan_provider.disconnect_websocket()
+
+                        logger.info(
+                            "All active exchanges are closed (holiday). Pausing DHAN scheduler for 30 minutes."
+                        )
+                        await asyncio.sleep(1800)
+                        continue
+
+                tz = pytz.timezone(exchange.timezone)
+                now_utc = datetime.now(timezone.utc)
+                now_tz = now_utc.astimezone(tz)
+                today_tz = now_tz.date()
+
+                market_open_dt = tz.localize(
+                    datetime.combine(today_tz, exchange.market_open_time)
+                )
+                market_close_dt = tz.localize(
+                    datetime.combine(today_tz, exchange.market_close_time)
+                )
+
+                websocket_start_dt = market_open_dt - timedelta(hours=2)
+                websocket_stop_dt = market_close_dt + timedelta(hours=2)
+
+                if now_tz < websocket_start_dt:
+                    next_run = websocket_start_dt
+                    should_be_running = False
+                elif now_tz < websocket_stop_dt:
+                    next_run = websocket_stop_dt
+                    should_be_running = True
+                else:
+                    tomorrow_tz = today_tz + timedelta(days=1)
+                    next_run = tz.localize(
+                        datetime.combine(tomorrow_tz, exchange.market_open_time)
+                    ) - timedelta(hours=2)
+                    should_be_running = False
+
+                provider_manager = self._provider_manager or get_provider_manager()
+                dhan_provider = provider_manager.providers.get("DHAN")
+
+                if dhan_provider:
+                    await dhan_provider.refresh_and_save_token()
+
+                    is_connected = bool(dhan_provider.is_connected)
+                    symbols_by_provider = await provider_manager.get_symbols_by_provider(
+                        check_should_record=True
+                    )
+                    dhan_symbols = symbols_by_provider.get("DHAN", [])
+
+                    if should_be_running and not is_connected:
+                        if dhan_symbols:
+                            logger.info(
+                                f"Starting DHAN websocket for the market window with {len(dhan_symbols)} symbols."
+                            )
+                            await dhan_provider.connect_websocket(
+                                dhan_symbols, refresh_token=False
+                            )
+                        else:
+                            logger.warning(
+                                "No DHAN symbols available to start the websocket."
+                            )
+                    elif not should_be_running and is_connected:
+                        logger.info("Stopping DHAN websocket outside the market window.")
+                        dhan_provider.disconnect_websocket()
+                    else:
+                        logger.info(
+                            "DHAN websocket already in the desired state for the current market window."
+                        )
+                else:
+                    logger.warning(
+                        "DhanProvider not found in ProviderManager currently. Cannot manage websocket window."
+                    )
+
+                wait_seconds = (next_run - datetime.now(tz)).total_seconds()
+                logger.info(
+                    f"Next DHAN token refresh / websocket transition scheduled for {next_run} ({wait_seconds:.2f} seconds away)."
+                )
+
+                if wait_seconds > 0:
+                    await asyncio.sleep(wait_seconds)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(
+                    f"Error in dynamic DHAN token refresh scheduler: {e}", exc_info=True
+                )
+                await asyncio.sleep(300)  # wait 5 mins on error
 
 
 # Singleton

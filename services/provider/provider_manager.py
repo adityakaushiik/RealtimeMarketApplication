@@ -99,7 +99,13 @@ class ProviderManager:
         symbols_by_provider = await self.get_symbols_by_provider(
             check_should_record=True
         )
+        dhan_symbols = symbols_by_provider.pop("DHAN", None)
         await self.start_all_providers(symbols_by_provider)
+
+        if dhan_symbols:
+            logger.info(
+                "Deferring DHAN websocket startup to the scheduled market window."
+            )
 
         # Start the dynamic subscription sync task
         await self.start_sync_task()

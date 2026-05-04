@@ -5,7 +5,7 @@ from fastapi import WebSocket, WebSocketDisconnect, APIRouter
 from fastapi.params import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config.database_config import get_database_engine
+from config.database_config import get_db_session
 from config.redis_config import get_redis
 from features.instruments.instrument_service import get_instrument_by_symbol
 from features.marketdata.marketdata_service import (
@@ -64,11 +64,11 @@ async def websocket_endpoint(
                 # This checks Redis O(1) -> DB Fallback (Last Trading Day)
                 # Removes double-request redundancy.
                 prev_close = None
-                engine = get_database_engine()
-                async with AsyncSession(engine) as session:
+                async for session in get_db_session():
                     prev_close = await get_previous_close_for_symbol(
                         session, exchange_code if exchange_code else "UNKNOWN", channel
                     )
+                    break
 
                 # Send Snapshot
                 await websocket.send_json(
